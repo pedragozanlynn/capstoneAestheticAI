@@ -1,0 +1,8 @@
+{
+    "name": "ai-extension",
+    "type": "module",
+    "private": true,
+    "dependencies": {
+        "dotenv": "^17.2.3"
+    }
+}
