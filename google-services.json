@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "873025464768",
+    "project_id": "aestheticai-c3795",
+    "storage_bucket": "aestheticai-c3795.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:873025464768:android:49bb9dffb2f52f1aafc025",
+        "android_client_info": {
+          "package_name": "com.pmftci.aestheticai"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "873025464768-ipmmnlhtjj1erddf3jo708gpuehu5483.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.pmftci.aestheticai",
+            "certificate_hash": "49737d1ef0cc1952542be4946a88d798071290a9"
+          }
+        },
+        {
+          "client_id": "873025464768-7e4buvv8sr3n7g8ovgr1d7hbpf4vm4ir.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAFdW-wIHdpci42YcngOBP-hhACBKGvW1Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "873025464768-7e4buvv8sr3n7g8ovgr1d7hbpf4vm4ir.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
