@@ -5,55 +5,161 @@ import multer from "multer";
 import { startAIDesignFlow } from "./index.js";
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+
+/* ===============================
+   CONFIG
+   =============================== */
+const PORT = process.env.PORT || 3001;
+const MAX_IMAGE_MB = 10;
+
+const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+/* ===============================
+   MULTER (MEMORY)
+   =============================== */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMAGE_MB * 1024 * 1024 },
+});
 
 /* ===============================
    MIDDLEWARE
    =============================== */
-app.use(cors());
-app.use(express.json());
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN || "*",
+    methods: ["POST", "GET"],
+  })
+);
+
+app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
+
+/* ===============================
+   HELPERS
+   =============================== */
+function isPlaceholderMessage(msg = "") {
+  const t = String(msg || "").trim().toLowerCase();
+  if (!t) return true;
+
+  return (
+    t === "reference image attached." ||
+    t === "photo captured and attached." ||
+    t === "reference attached" ||
+    t === "attached" ||
+    t === "image attached"
+  );
+}
+
+function defaultPromptForImage(mode = "generate") {
+  const m = String(mode || "generate").toLowerCase();
+
+  if (m === "edit" || m === "update") {
+    return `Use the attached photo as reference.
+Keep the same room layout, camera angle, and furniture positions.
+Only apply design refinements (materials, colors, lighting, styling).
+Do not change the room structure.`;
+  }
+
+  return `Use the attached photo as reference.
+Keep the same room layout and camera perspective.
+Improve the design realistically with better styling, materials, and lighting.`;
+}
+
+function looksLikeEditRequest(message = "") {
+  const t = String(message || "").toLowerCase();
+  return /(make it|change|switch|convert|turn it|adjust|improve|upgrade|refine|minimalist|modern|industrial|scandinavian|japandi|boho|luxury|rustic|coastal|warmer|cooler|brighter|darker|add|remove)/i.test(
+    t
+  );
+}
+
+function resolveMode({ rawMode, hasImage, message }) {
+  const normalized = String(rawMode || "generate").toLowerCase();
+  if (!hasImage) return normalized;
+
+  if (normalized === "edit" || normalized === "update") return "edit";
+  if (looksLikeEditRequest(message)) return "edit";
+
+  // ✅ For your requirement: any attached photo should behave like img2img edit
+  return "edit";
+}
 
 /* ===============================
    HEALTH CHECK
    =============================== */
-app.get("/", (req, res) => {
-  console.log("🟢 Health check hit");
-  res.send("AI Design Server is running");
+app.get("/", (_, res) => {
+  res.status(200).send("AI Design Server is running");
 });
 
 /* ===============================
    AI DESIGN ENDPOINT
    =============================== */
 app.post("/ai/design", upload.single("image"), async (req, res) => {
-  console.log("📩 /ai/design endpoint HIT");
+  console.log("📩 /ai/design HIT");
 
   try {
-    const { message, mode } = req.body;
+    let { message, mode, sessionId } = req.body;
+    const hasImage = Boolean(req.file);
 
     console.log("➡ Message:", message);
     console.log("➡ Mode:", mode);
-    console.log("➡ Has image:", !!req.file);
+    console.log("➡ Session:", sessionId || "(new)");
+    console.log("➡ Has image:", hasImage);
 
-    if (!message) {
-      console.warn("⚠️ No message provided");
-      return res.status(400).json({
-        error: "Message is required",
-      });
+    // ✅ Validate image mimetype
+    let base64Image = null;
+    if (hasImage) {
+      const mime = req.file.mimetype || "";
+      if (!ALLOWED_MIME.has(mime)) {
+        return res.status(400).json({
+          error: "Unsupported image type. Use JPG, PNG, or WEBP.",
+        });
+      }
+
+      const base64 = req.file.buffer.toString("base64");
+      base64Image = `data:${mime};base64,${base64}`;
+    }
+
+    // ✅ Ensure message exists if there is no image
+    if (!hasImage && (!message || typeof message !== "string")) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    // ✅ If image exists but message is placeholder/empty, inject default prompt
+    if (hasImage && isPlaceholderMessage(message)) {
+      message = defaultPromptForImage(mode);
+      console.log("🧩 Injected default prompt for image-based request");
+    }
+
+    // ✅ Final message validation
+    if (!message || typeof message !== "string" || !message.trim()) {
+      return res.status(400).json({ error: "Message is required" });
+    }
+
+    // ✅ Resolve mode intelligently
+    const normalizedMode = resolveMode({ rawMode: mode, hasImage, message });
+
+    // 🔒 Block edit without image (safety)
+    if (normalizedMode === "edit" && !hasImage) {
+      return res.status(400).json({ error: "Edit mode requires an image" });
     }
 
     const result = await startAIDesignFlow({
       message,
-      mode,
-      image: req.file || null,
+      mode: normalizedMode,
+      image: base64Image, // ✅ passed for img2img
+      sessionId,
     });
 
-    console.log("✅ AI response generated successfully");
+    console.log("✅ AI response generated");
 
-    res.json(result);
+    // ✅ ADD: Return the input image too so frontend can display the original photo
+    res.status(200).json({
+      ...result,
+      inputImage: base64Image || null,
+    });
   } catch (error) {
     console.error("❌ AI ERROR:", error.message);
-    console.error(error.stack);
 
     res.status(500).json({
       error: "AI processing failed",
@@ -65,7 +171,6 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
 /* ===============================
    START SERVER
    =============================== */
-const PORT = 3001;
 app.listen(PORT, () => {
   console.log(`🚀 AI Design Server running on port ${PORT}`);
 });

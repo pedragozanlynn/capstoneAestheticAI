@@ -7,12 +7,13 @@ import { buildInteriorPrompt } from "../llm/promptBuilder.js";
 import { classifySpace } from "../llm/spaceClassifier.js";
 import { getSession, saveSession } from "../memory/designSessionStore.js";
 import { generateInteriorImage } from "../visualization/imageGenerator.js";
+import { generateLayout } from "../design-engine/layoutGenerator.js"; // ✅ if you implemented layout gen
 
 /* ===============================
    🧹 NORMALIZE MESSAGE
    =============================== */
 function normalizeMessage(message = "") {
-  return message
+  return String(message)
     .toLowerCase()
     .replace(/[^a-z0-9\s.x]/g, "")
     .replace(/\s+/g, " ")
@@ -23,7 +24,7 @@ function normalizeMessage(message = "") {
    🔍 SPACE DETECTION
    =============================== */
 function mentionsNewSpace(message = "") {
-  return /(bedroom|living room|office|workspace|coffee shop|cafe|restaurant|kitchen|studio)/i.test(
+  return /\b(bedroom|living\s*room|office|workspace|coffee\s*shop|cafe|restaurant|kitchen|studio|bathroom|dining|retail|salon|spa|hotel)\b/i.test(
     message
   );
 }
@@ -32,25 +33,70 @@ function mentionsNewSpace(message = "") {
    🔒 LAST-RESORT FALLBACKS
    =============================== */
 function fallbackExplanation(roomType, style) {
-  return `This ${roomType} is designed in a ${style.name.toLowerCase()} style with a clear layout, cohesive materials, and a comfortable visual balance.`;
+  return `This ${roomType} is designed in a ${String(style?.name || "modern").toLowerCase()} style with a clear layout and practical material choices.`;
 }
 
 const fallbackTips = [
-  "Refine lighting placement to enhance spatial depth",
-  "Balance structured elements with softer textures",
-  "Maintain comfortable spacing between key furniture pieces",
+  "Adjust lighting placement to better support how the room is used",
+  "Add one contrasting material to create depth without clutter",
+  "Keep clear walkways between key furniture pieces",
 ];
 
 /* ===============================
-   🚀 FINAL ORCHESTRATOR (FIXED)
+   ✅ ADD: Placeholder/attachment message detection
+   (so image + “Photo captured…” becomes a real edit prompt)
    =============================== */
-export async function orchestrateChat({ sessionId, message }) {
+function isPlaceholderMessage(msg = "") {
+  const t = String(msg || "").trim().toLowerCase();
+  if (!t) return true;
+  return (
+    t === "reference image attached." ||
+    t === "photo captured and attached." ||
+    t === "reference attached" ||
+    t === "attached" ||
+    t === "image attached"
+  );
+}
+
+function defaultPromptForImage(mode = "generate") {
+  const m = String(mode || "generate").toLowerCase();
+  if (m === "edit" || m === "update") {
+    return `Use the attached photo as reference. Keep the same room layout, camera angle, and furniture positions. Only apply design refinements (materials, colors, lighting, styling). Do not change the room structure.`;
+  }
+  return `Use the attached photo as reference. Keep the same room layout and camera perspective. Improve the design realistically with better styling, materials, and lighting.`;
+}
+
+function looksLikeEditRequest(message = "") {
+  const t = String(message || "").toLowerCase();
+  return /(make it|change|switch|convert|turn it|adjust|improve|upgrade|refine|more|less|minimalist|modern|industrial|scandinavian|japandi|boho|luxury|rustic|coastal|warmer|cooler|brighter|darker|add|remove)/i.test(
+    t
+  );
+}
+
+/* ===============================
+   🚀 FINAL ORCHESTRATOR (UPDATED + MODE + IMAGE SUPPORT)
+   =============================== */
+export async function orchestrateChat({
+  sessionId,
+  message,
+  mode = "generate",
+  image = null,
+  isEdit: forcedEdit = null,
+} = {}) {
   console.log("\n================ AI ORCHESTRATOR ================");
   console.log("📩 Incoming message:", message);
 
-  if (!message) throw new Error("No message provided");
+  /* ===============================
+     ✅ ADD: if an image is attached but message is placeholder,
+     inject a strong default prompt so edit behavior is correct.
+     =============================== */
+  if (image && isPlaceholderMessage(message)) {
+    message = defaultPromptForImage(mode);
+  }
 
   const cleanMessage = normalizeMessage(message);
+  if (!cleanMessage) throw new Error("No message provided");
+
   const previousSession = getSession(sessionId);
 
   /* ===============================
@@ -80,16 +126,31 @@ export async function orchestrateChat({ sessionId, message }) {
      =============================== */
   const isNewDesign =
     !previousSession ||
-    (userMentionsSpace &&
-      currentRoomType !== previousSession?.room?.type);
+    (userMentionsSpace && currentRoomType !== previousSession?.room?.type);
 
-  const isEdit =
+  const normalizedMode = String(mode || "generate").toLowerCase();
+  const modeSaysEdit = normalizedMode === "edit" || normalizedMode === "update";
+
+  const inferredEdit =
     !!previousSession &&
     !isNewDesign &&
-    (/make it|add|remove|adjust|warmer|cooler|brighter|darker/i.test(
-      cleanMessage
-    ) ||
+    (modeSaysEdit ||
+      /make it|add|remove|adjust|warmer|cooler|brighter|darker|bigger|smaller|switch|change/i.test(
+        cleanMessage
+      ) ||
       intent === "CHANGE_STYLE");
+
+  /* ===============================
+     ✅ ADD: if an image is present AND message looks like an edit request,
+     force edit even if previousSession doesn't exist.
+     (Key for: upload/capture photo + “make it minimalist”.)
+     =============================== */
+  const forceEditBecauseImageAndEditText = !!image && looksLikeEditRequest(cleanMessage);
+
+  const isEdit =
+    typeof forcedEdit === "boolean"
+      ? forcedEdit
+      : (inferredEdit || forceEditBecauseImageAndEditText || (modeSaysEdit && !!image));
 
   const activeSession = isNewDesign ? null : previousSession;
 
@@ -102,7 +163,7 @@ export async function orchestrateChat({ sessionId, message }) {
   };
 
   /* ===============================
-     5️⃣ STYLE DETECTION
+     5️⃣ STYLE DETECTION (LOCKED)
      =============================== */
   const style = detectStyle({
     message: cleanMessage,
@@ -112,16 +173,16 @@ export async function orchestrateChat({ sessionId, message }) {
   });
 
   /* ===============================
-     6️⃣ COLOR PALETTE
+     6️⃣ COLOR PALETTE (MEMORY-FIRST)
      =============================== */
   const palette =
-    activeSession?.palette ||
-    (await getColorPalette(style, cleanMessage));
+    activeSession?.palette || (await getColorPalette(style, cleanMessage));
 
   /* ===============================
      7️⃣ IMAGE PROMPT (SOURCE OF TRUTH)
      =============================== */
-  const imagePrompt = buildInteriorPrompt({
+  // ✅ buildInteriorPrompt returns { prompt, emphasis }
+  const { prompt: imagePrompt, emphasis } = buildInteriorPrompt({
     userMessage: cleanMessage,
     room,
     style,
@@ -132,33 +193,57 @@ export async function orchestrateChat({ sessionId, message }) {
   });
 
   console.log("🧠 IMAGE PROMPT:\n", imagePrompt);
+  console.log("🎯 DECOR EMPHASIS:", emphasis);
 
   /* ===============================
-     8️⃣ IMAGE GENERATION
+     8️⃣ INIT IMAGE SOURCE (EDIT)
      =============================== */
-  const image = await generateInteriorImage({
+  const initImage = isEdit ? image || activeSession?.lastImage || null : null;
+
+  /* ===============================
+     ✅ ADD: keep a copy of the “source/original” image for UI
+     - If user uploaded/captured now -> use `image`
+     - Else if continuing edits -> use last saved image
+     =============================== */
+  const inputImage = image || activeSession?.lastImage || null;
+
+  /* ===============================
+     9️⃣ IMAGE GENERATION
+     =============================== */
+  const imageOut = await generateInteriorImage({
     prompt: `3d interior render, ultra realistic, architectural visualization, ${imagePrompt}`,
-    initImage: isEdit ? activeSession?.lastImage : null,
+    initImage,
     strength: isEdit ? 0.18 : 0.85,
   });
 
-  decor = await getDecorTips({
+  /* ===============================
+     🔟 OPTIONAL: LAYOUT GENERATION
+     =============================== */
+  const layout = generateLayout ? generateLayout(room) : null;
+
+  /* ===============================
+     1️⃣1️⃣ DECOR TIPS (PASS RAW PROMPT + EMPHASIS)
+     =============================== */
+  const decor = await getDecorTips({
     style,
     roomType: currentRoomType,
     palette,
     userMessage: cleanMessage,
-    imagePrompt, // 🔥 REQUIRED
+    imagePrompt, // ✅ pass raw prompt (no wrapper string)
+    emphasis,    // ✅ pass emphasis so tips vary by design
   });
-  
+
   /* ===============================
      💾 SAVE SESSION
      =============================== */
   saveSession(sessionId, {
-    lastImage: image,
+    lastImage: imageOut,
     lastPrompt: imagePrompt,
     room,
     style,
     palette,
+    decor,
+    emphasis,
     space: {
       spaceType: currentSpaceType,
       roomType: currentRoomType,
@@ -170,7 +255,13 @@ export async function orchestrateChat({ sessionId, message }) {
      =============================== */
   return {
     status: "SUCCESS",
-    image,
+
+    // ✅ ADD: return the original/source photo so frontend can display it
+    inputImage,
+
+    // existing field (generated)
+    image: imageOut,
+
     data: {
       intent,
       space: currentSpaceType,
@@ -179,16 +270,19 @@ export async function orchestrateChat({ sessionId, message }) {
       palette,
 
       explanation:
-        decor?.explanation ||
-        fallbackExplanation(currentRoomType, style),
+        decor?.explanation || fallbackExplanation(currentRoomType, style),
 
       tips:
         Array.isArray(decor?.tips) && decor.tips.length === 3
           ? decor.tips
           : fallbackTips,
 
+      layout,
       isEdit,
       isNewDesign,
+
+      // ✅ ADD: also expose it inside data if you prefer frontend to read it here
+      inputImage,
     },
   };
 }
