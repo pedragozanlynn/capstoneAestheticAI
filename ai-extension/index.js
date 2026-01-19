@@ -3,63 +3,89 @@ import { orchestrateChat } from "./chatbot/orchestrator.js";
 
 /**
  * startAIDesignFlow
- * ✅ Validates inputs
- * ✅ Uses stable sessionId (if provided) so style/palette/layout don't reset every message
- * ✅ Passes mode + image through to orchestrator (supports edit flows)
- * ✅ Auto-forces edit when an image is provided (so upload/capture + prompt modifies the photo)
- * ✅ Returns a consistent frontend contract (never undefined fields)
+ * ✅ Stable session
+ * ✅ Supports img2img edit
+ * ✅ Returns layoutSuggestions + furniture links for UI
+ * ✅ NEVER returns undefined fields
  */
 export async function startAIDesignFlow({
   message,
   mode = "generate",
-  image = null, // base64 data URL from server (req.file -> base64)
+  image = null, // base64 data URL
   sessionId = null,
 } = {}) {
   console.log("🚀 startAIDesignFlow CALLED");
 
-  const cleanMessage = typeof message === "string" ? message.trim() : "";
-  if (!cleanMessage) throw new Error("Message is required");
+  const rawMessage = typeof message === "string" ? message.trim() : "";
+  if (!rawMessage) throw new Error("Message is required");
 
-  // ✅ IMPORTANT: Keep session stable across messages
+  // Stable session
   const finalSessionId = sessionId || crypto.randomUUID();
 
-  // ✅ Normalize mode + enforce edit when an image exists
   const normalizedMode = String(mode || "generate").toLowerCase();
   const modeSaysEdit = normalizedMode === "edit" || normalizedMode === "update";
-
-  // If a photo is attached, we want img2img behavior (preserve layout, apply prompt)
   const hasImage = Boolean(image);
-  const effectiveMode = hasImage ? "edit" : normalizedMode;
 
-  // ✅ Drive orchestrator edit behavior deterministically
-  // forcedEdit = true when we have image or explicit edit/update
+  // Force edit if image exists
+  const effectiveMode = hasImage ? "edit" : normalizedMode;
   const forcedEdit = hasImage || modeSaysEdit;
 
   const result = await orchestrateChat({
     sessionId: finalSessionId,
-    message: cleanMessage,
+    message: rawMessage,
     mode: effectiveMode,
-    image, // init image for edits (data URL/base64) or null
-    isEdit: forcedEdit, // orchestrator supports forced edit
+    image,
+    isEdit: forcedEdit,
   });
 
-  // ✅ Safe extraction
-  const style = result?.data?.style || { name: "Modern" };
-  const room = result?.data?.room || {};
-  const tips = Array.isArray(result?.data?.tips) ? result.data.tips : [];
-  const explanation = typeof result?.data?.explanation === "string" ? result.data.explanation : "";
-  const palette = result?.data?.palette || null;
+  /* ===============================
+     SAFE EXTRACTION
+     =============================== */
+  const data = result?.data || {};
 
-  // ✅ Frontend Response Contract (consistent shape)
+  const style = data.style || { name: "Modern" };
+  const palette = data.palette || null;
+  const room = data.room || {};
+
+  const explanation = typeof data.explanation === "string" ? data.explanation : "";
+  const tips = Array.isArray(data.tips) ? data.tips : [];
+
+  const layout = data.layout || null;
+  const layoutSuggestions = Array.isArray(data.layoutSuggestions)
+    ? data.layoutSuggestions
+    : [];
+
+  // ✅ CRITICAL: Furniture links
+  const furniture = Array.isArray(data.furniture) ? data.furniture : [];
+
+  // For image comparison UI
+  const inputImage =
+    result?.inputImage || data?.inputImage || (hasImage ? image : null);
+
+  // Optional debug/meta
+  const emphasis = data.emphasis || null;
+  const imagePrompt = data.imagePrompt || null;
+
+  // ✅ DEBUG (remove later)
+  console.log(
+    "[AI FLOW] furniture items:",
+    furniture.length,
+    furniture.map((f) => f.name)
+  );
+
+  /* ===============================
+     FRONTEND RESPONSE CONTRACT
+     =============================== */
   return {
-    sessionId: finalSessionId, // ✅ send back so frontend can reuse on next message
+    sessionId: finalSessionId,
+    inputImage,
     image: result?.image || null,
     data: {
-      intent: result?.data?.intent || "UNKNOWN",
-      space: result?.data?.space || "residential",
+      intent: data.intent || "UNKNOWN",
+      space: data.space || "residential",
 
-      style,   // { name, confidence?, locked? }
-      palette, // { name, colors: [...] } or null
+      style,
+      palette,
 
       room: {
         type: room?.type || room?.roomType || "generic",
@@ -79,16 +105,21 @@ export async function startAIDesignFlow({
       explanation,
       tips,
 
-      // Helpful flags for UI
-      isEdit: Boolean(result?.data?.isEdit),
-      isNewDesign: Boolean(result?.data?.isNewDesign),
+      // ✅ REQUIRED FOR UI
+      layout,
+      layoutSuggestions,
+      furniture, // ✅ THIS FIXES YOUR UI ISSUE
 
-      // Optional extras if your orchestrator returns them
-      layout: result?.data?.layout || null,
+      // UI flags
+      isEdit: Boolean(data.isEdit),
+      isNewDesign: Boolean(data.isNewDesign),
 
-      // Debug/telemetry (optional but helpful)
+      // Meta
       mode: effectiveMode,
       hasImage,
+
+      emphasis,
+      imagePrompt,
     },
   };
 }

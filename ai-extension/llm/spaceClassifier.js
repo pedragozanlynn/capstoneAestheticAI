@@ -2,15 +2,23 @@ import fetch from "node-fetch";
 
 const HF_API_KEY = process.env.HF_API_KEY;
 
-// ✅ Supported Hugging Face Router endpoint
+// ✅ HF Router Chat Completions endpoint
 const HF_CHAT_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
-const HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3";
+
+// ✅ IMPORTANT: use chat-compatible models (do NOT use Mistral-7B-Instruct here)
+const HF_CHAT_MODELS = [
+  "meta-llama/Meta-Llama-3-8B-Instruct",
+  "meta-llama/Llama-3.1-8B-Instruct",
+  "meta-llama/Llama-3.2-3B-Instruct",
+];
 
 /**
  * SPACE CLASSIFIER (PRODUCTION)
  * ✅ Rule-based primary (covers most cases)
  * ✅ LLM fallback for ambiguous cases
- * ✅ Normalized roomType (snake_case) for consistent prompts
+ * ✅ Safer phrase matching (word boundaries)
+ * ✅ Residential-first priority to reduce living_room → bar/coffee drift
+ * ✅ Fallback roomType = "unknown" (no hidden bedroom defaults)
  *
  * Returns:
  * {
@@ -21,7 +29,7 @@ const HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3";
  * }
  */
 export async function classifySpace(userMessage = "") {
-  const text = (userMessage || "").toLowerCase();
+  const text = String(userMessage || "").toLowerCase();
 
   /* ===============================
      1️⃣ RULE-BASED (PRIMARY)
@@ -29,50 +37,60 @@ export async function classifySpace(userMessage = "") {
 
   // ---- RESIDENTIAL (most common)
   const residential = [
-    { roomType: "bedroom", keys: ["bedroom", "master bedroom", "guest room", "kids room", "nursery"] },
-    { roomType: "living_room", keys: ["living room", "livingroom", "lounge", "family room"] },
+    { roomType: "bedroom", keys: ["master bedroom", "guest room", "kids room", "nursery", "bedroom"] },
+    { roomType: "living_room", keys: ["living room", "livingroom", "family room", "lounge"] },
     { roomType: "kitchen", keys: ["kitchen", "pantry"] },
-    { roomType: "bathroom", keys: ["bathroom", "toilet", "cr", "powder room"] },
+    { roomType: "bathroom", keys: ["powder room", "bathroom", "toilet", "cr"] },
     { roomType: "dining_room", keys: ["dining room", "dining area"] },
     { roomType: "home_office", keys: ["home office", "study room", "workspace", "study"] },
     { roomType: "studio_apartment", keys: ["studio apartment", "studio unit", "small apartment"] },
-    { roomType: "laundry_room", keys: ["laundry", "utility room"] },
-    { roomType: "walk_in_closet", keys: ["walk in closet", "walk-in closet", "closet room"] },
+    { roomType: "laundry_room", keys: ["laundry room", "utility room", "laundry"] },
+    { roomType: "walk_in_closet", keys: ["walk-in closet", "walk in closet", "closet room"] },
     { roomType: "balcony", keys: ["balcony", "terrace"] },
     { roomType: "garage", keys: ["garage"] },
     { roomType: "entryway", keys: ["entryway", "foyer", "entrance"] },
   ];
 
   // ---- COMMERCIAL / HOSPITALITY
+  // NOTE: Removed overly-broad keywords ("coffee", "bar") to prevent matching "coffee table" / "bar stools" in residential prompts.
   const commercial = [
-    { roomType: "coffee_shop", keys: ["coffee shop", "cafe", "coffee", "espresso bar"] },
+    { roomType: "coffee_shop", keys: ["coffee shop", "cafe", "espresso bar"] },
     { roomType: "restaurant", keys: ["restaurant", "bistro", "diner"] },
-    { roomType: "bar", keys: ["bar", "pub", "lounge bar"] },
-    { roomType: "retail_store", keys: ["retail", "boutique", "clothing store", "store", "shop"] },
-    { roomType: "salon", keys: ["salon", "barbershop", "barber"] },
+    { roomType: "bar", keys: ["lounge bar", "cocktail bar", "sports bar", "pub"] },
+    { roomType: "retail_store", keys: ["clothing store", "retail store", "boutique", "retail", "shop", "store"] },
+    { roomType: "salon", keys: ["barbershop", "barber", "salon"] },
     { roomType: "spa", keys: ["spa", "massage"] },
     { roomType: "gym", keys: ["gym", "fitness", "workout"] },
-    { roomType: "office", keys: ["office", "corporate office", "workplace", "coworking", "co-working"] },
-    { roomType: "reception", keys: ["reception", "front desk", "lobby"] },
-    { roomType: "meeting_room", keys: ["meeting room", "conference room", "boardroom"] },
-    { roomType: "hotel_room", keys: ["hotel room", "suite", "guest suite"] },
-    { roomType: "airbnb_unit", keys: ["airbnb", "short stay", "rental unit"] },
+    { roomType: "office", keys: ["corporate office", "workplace", "coworking", "co-working", "office"] },
+    { roomType: "reception", keys: ["front desk", "reception", "lobby"] },
+    { roomType: "meeting_room", keys: ["conference room", "boardroom", "meeting room"] },
+    { roomType: "hotel_room", keys: ["guest suite", "hotel room", "suite"] },
+    { roomType: "airbnb_unit", keys: ["rental unit", "short stay", "airbnb"] },
     { roomType: "clinic_waiting_area", keys: ["waiting area", "waiting room"] },
   ];
 
   // ---- INSTITUTIONAL / EDUCATION / HEALTH
   const institutional = [
-    { roomType: "classroom", keys: ["classroom", "lecture room"] },
-    { roomType: "library", keys: ["library", "reading area"] },
-    { roomType: "clinic", keys: ["clinic", "dental", "medical", "hospital"] },
+    { roomType: "classroom", keys: ["lecture room", "classroom"] },
+    { roomType: "library", keys: ["reading area", "library"] },
+    // NOTE: Keep order: "hospital" last to avoid accidentally classifying "hospitality" (if user writes it)
+    { roomType: "clinic", keys: ["dental", "medical", "clinic", "hospital"] },
     { roomType: "laboratory", keys: ["laboratory", "lab"] },
   ];
+
+  // Safer phrase matcher: uses word boundaries and escapes regex metacharacters.
+  const hasPhrase = (fullText, phrase) => {
+    const escaped = String(phrase).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`\\b${escaped}\\b`, "i");
+    return re.test(fullText);
+  };
 
   // Priority matching helper (most specific phrase first)
   const matchFrom = (list, spaceType) => {
     for (const item of list) {
-      for (const k of item.keys.sort((a, b) => b.length - a.length)) {
-        if (text.includes(k)) {
+      const keys = [...item.keys].sort((a, b) => b.length - a.length);
+      for (const k of keys) {
+        if (hasPhrase(text, k)) {
           return {
             spaceType,
             roomType: item.roomType,
@@ -85,22 +103,21 @@ export async function classifySpace(userMessage = "") {
     return null;
   };
 
-  // Check order: commercial > institutional > residential (you can adjust)
+  // ✅ Fix: Residential first to reduce living_room misrouting.
   const ruleMatch =
+    matchFrom(residential, "residential") ||
     matchFrom(commercial, "commercial") ||
-    matchFrom(institutional, "institutional") ||
-    matchFrom(residential, "residential");
+    matchFrom(institutional, "institutional");
 
   if (ruleMatch) return ruleMatch;
 
   /* ===============================
      2️⃣ LLM FALLBACK (SECONDARY)
      =============================== */
-  // If no HF key, skip LLM and return fallback.
   if (!HF_API_KEY) {
     return {
       spaceType: "residential",
-      roomType: "generic",
+      roomType: "unknown",
       confidence: 0.35,
       source: "fallback",
     };
@@ -171,33 +188,16 @@ Return JSON exactly:
 `.trim();
 
   try {
-    const res = await fetch(HF_CHAT_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${HF_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: HF_MODEL,
-        messages: [
-          { role: "system", content: "You output strictly valid JSON only." },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0,
-        top_p: 1,
-        max_tokens: 80,
-      }),
+    const data = await hfChatWithFallback({
+      messages: [
+        { role: "system", content: "You output strictly valid JSON only." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0,
+      max_tokens: 90,
     });
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.warn("HF space error:", res.status, res.statusText, errText);
-      throw new Error(`HF failed: ${res.status}`);
-    }
-
-    const data = await res.json();
     const raw = data?.choices?.[0]?.message?.content;
-
     const parsed = safeParseJSON(raw);
     const normalized = normalizeSpace(parsed);
 
@@ -215,11 +215,66 @@ Return JSON exactly:
 
     return {
       spaceType: "residential",
-      roomType: "generic",
+      roomType: "unknown",
       confidence: 0.35,
       source: "fallback",
     };
   }
+}
+
+/* ===============================
+   HF Chat helper with model fallback
+   =============================== */
+
+async function hfChatWithFallback({ messages, temperature = 0, max_tokens = 120 }) {
+  let lastErr = null;
+
+  for (const model of HF_CHAT_MODELS) {
+    try {
+      const res = await fetch(HF_CHAT_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HF_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature,
+          top_p: 1,
+          max_tokens,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+
+        // ✅ If router says "not a chat model", try next model
+        if (res.status === 400 && body.includes("not a chat model")) {
+          console.warn(`HF model not chat-compatible: ${model}`);
+          lastErr = new Error(`${model} not chat-compatible`);
+          continue;
+        }
+
+        // ✅ If model/provider is unavailable or rate-limited, try next
+        if (res.status === 429 || res.status === 503) {
+          console.warn(`HF model temporarily unavailable: ${model} (${res.status})`);
+          lastErr = new Error(`${model} temporarily unavailable`);
+          continue;
+        }
+
+        console.warn("HF space error:", model, res.status, res.statusText, body);
+        lastErr = new Error(`HF failed: ${model} ${res.status} ${body}`);
+        continue;
+      }
+
+      return await res.json();
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr || new Error("HF chat failed: no compatible model worked");
 }
 
 /* ===============================
@@ -253,10 +308,8 @@ function normalizeSpace(obj) {
   const normalizedSpace = spaceType.toLowerCase();
 
   const allowedSpaces = new Set(["residential", "commercial", "institutional"]);
-
   if (!allowedSpaces.has(normalizedSpace)) return null;
 
-  // minimal roomType validation (allow generic/unknown)
   if (!normalizedRoom) return null;
 
   return {

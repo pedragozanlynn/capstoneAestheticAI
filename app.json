@@ -1,46 +1,54 @@
 {
   "expo": {
-"name": "",    
-  "slug": "frontend",
+    "name": "AestheticAI",
+    "slug": "frontend",
     "owner": "nllynnn",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icons.png",
     "scheme": "aestheticai",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+
+    "newArchEnabled": false,
+
     "splash": {
       "image": "./assets/icons.png",
       "resizeMode": "contain",
       "backgroundColor": "#FFFFFF"
     },
+
     "ios": {
       "supportsTablet": true,
       "backgroundColor": "#FFFFFF",
       "bundleIdentifier": "com.pedragozanlynn.aestheticai"
     },
+
     "android": {
-  "package": "com.pedragozanlynn.aestheticai",
-  "icon": "./assets/icons.png",
-  "adaptiveIcon": {
-    "foregroundImage": "./assets/icons.png",
-    "backgroundColor": "#FFFFFF"
-  },
-  "edgeToEdgeEnabled": true,
-  "softwareKeyboardLayoutMode": "pan"
-},
+      "package": "com.pedragozanlynn.aestheticai",
+      "icon": "./assets/icons.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icons.png",
+        "backgroundColor": "#FFFFFF"
+      },
+      "edgeToEdgeEnabled": true,
+      "softwareKeyboardLayoutMode": "pan"
+    },
+
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/icons.png",
       "backgroundColor": "#FFFFFF"
     },
+
     "plugins": [
       "expo-router"
     ],
+
     "experiments": {
       "typedRoutes": true
     },
+
     "extra": {
       "router": {},
       "eas": {

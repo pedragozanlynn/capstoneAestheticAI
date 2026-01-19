@@ -75,12 +75,17 @@ function looksLikeEditRequest(message = "") {
 
 function resolveMode({ rawMode, hasImage, message }) {
   const normalized = String(rawMode || "generate").toLowerCase();
-  if (!hasImage) return normalized;
 
+  // No image: keep requested mode (generate/edit) — backend can return text-only.
+  if (!hasImage) {
+    return normalized === "update" ? "edit" : normalized;
+  }
+
+  // With image: enforce edit when appropriate
   if (normalized === "edit" || normalized === "update") return "edit";
   if (looksLikeEditRequest(message)) return "edit";
 
-  // ✅ For your requirement: any attached photo should behave like img2img edit
+  // Requirement: any attached photo behaves like img2img edit
   return "edit";
 }
 
@@ -106,8 +111,9 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
     console.log("➡ Session:", sessionId || "(new)");
     console.log("➡ Has image:", hasImage);
 
-    // ✅ Validate image mimetype
+    /* ---------- Image validation + base64 ---------- */
     let base64Image = null;
+
     if (hasImage) {
       const mime = req.file.mimetype || "";
       if (!ALLOWED_MIME.has(mime)) {
@@ -120,50 +126,49 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
       base64Image = `data:${mime};base64,${base64}`;
     }
 
-    // ✅ Ensure message exists if there is no image
-    if (!hasImage && (!message || typeof message !== "string")) {
+    /* ---------- Message rules ---------- */
+    // If no image, message is required
+    if (!hasImage && (!message || typeof message !== "string" || !message.trim())) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    // ✅ If image exists but message is placeholder/empty, inject default prompt
+    // If image exists but message is placeholder/empty, inject default prompt
     if (hasImage && isPlaceholderMessage(message)) {
       message = defaultPromptForImage(mode);
       console.log("🧩 Injected default prompt for image-based request");
     }
 
-    // ✅ Final message validation
+    // Final message validation
     if (!message || typeof message !== "string" || !message.trim()) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    // ✅ Resolve mode intelligently
+    /* ---------- Resolve mode ---------- */
     const normalizedMode = resolveMode({ rawMode: mode, hasImage, message });
 
-    // 🔒 Block edit without image (safety)
-    if (normalizedMode === "edit" && !hasImage) {
-      return res.status(400).json({ error: "Edit mode requires an image" });
-    }
-
+    // ✅ IMPORTANT CHANGE:
+    // Do NOT block "edit" without image.
+    // We allow text-only customization responses; image generation is decided in orchestrator.
     const result = await startAIDesignFlow({
       message,
       mode: normalizedMode,
-      image: base64Image, // ✅ passed for img2img
+      image: base64Image, // base64 data URL (or null)
       sessionId,
     });
 
     console.log("✅ AI response generated");
 
-    // ✅ ADD: Return the input image too so frontend can display the original photo
-    res.status(200).json({
+    // Return input image too (for UI original photo display)
+    return res.status(200).json({
       ...result,
       inputImage: base64Image || null,
     });
   } catch (error) {
-    console.error("❌ AI ERROR:", error.message);
+    console.error("❌ AI ERROR:", error?.message || error);
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "AI processing failed",
-      details: error.message,
+      details: error?.message || String(error),
     });
   }
 });

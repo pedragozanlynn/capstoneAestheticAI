@@ -1,8 +1,6 @@
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,122 +8,442 @@ import {
   View,
   Image,
   StatusBar,
-  SafeAreaView, // Idinagdag ang SafeAreaView
+  SafeAreaView,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
 
+// ✅ Firebase
+import { getAuth } from "firebase/auth";
+import { collection, limit, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import { getApp } from "firebase/app";
+import { db } from "../../config/firebase";
+
+function formatChatDate(tsLike) {
+  try {
+    if (!tsLike) return "";
+    const d =
+      typeof tsLike?.toDate === "function" ? tsLike.toDate() : new Date(tsLike);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+function safeString(v) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
 export default function AIDesigner() {
   const router = useRouter();
   const subType = useSubscriptionType();
 
-  const [chatSummaries] = useState({
-    design: [
-      { id: "1", title: "Living Room Design", lastMessage: "Great! I suggest neutral colors...", date: "Nov 17" },
-      { id: "2", title: "Workspace Redesign", lastMessage: "Consider adding a small desk...", date: "Nov 15" },
-    ],
-    customize: [
-      { id: "1", title: "Bedroom Layout", lastMessage: "Try moving the bed to the corner...", date: "Nov 16" },
-    ],
-  });
+  const auth = getAuth();
 
-  const openChatScreen = (mode) => {
-    router.push(`/User/AIDesignerChat?tab=${mode}&chatId=new`);
+  const [uid, setUid] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  const [loadingChats, setLoadingChats] = useState(true);
+  const [chatSummaries, setChatSummaries] = useState([]);
+
+  // main conversation listener (root or users/{uid})
+  const unsubMainRef = useRef(null);
+
+  // per-conversation message listeners (to fill missing lastMessage/title/date)
+  const messageUnsubsRef = useRef(new Map());
+
+  // fallback mode tracker
+  const usedFallbackRef = useRef(false);
+
+  // ✅ NEW CHAT
+  const openChatScreen = () => {
+    router.push({
+      pathname: "/User/AIDesignerChat",
+      params: { tab: "design", chatId: "new" },
+    });
   };
 
-  const openChatHistory = (tab, chatId) => {
-    router.push(`/User/AIDesignerChat?tab=${tab}&chatId=${chatId}`);
+  // ✅ CHAT HISTORY (same push format) + ✅ NEW: source param
+  const openChatHistory = (chat) => {
+    router.push({
+      pathname: "/User/AIDesignerChat",
+      params: {
+        tab: "design",
+        chatId: chat.id,
+        sessionId: chat.sessionId || "",
+        source: chat.source || "root", // ✅ NEW
+      },
+    });
   };
 
-  const historyList = [
-    ...chatSummaries.design.map((c) => ({ ...c, tab: "design" })),
-    ...chatSummaries.customize.map((c) => ({ ...c, tab: "customize" })),
-  ];
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => {
+      const nextUid = u?.uid || null;
+      setUid(nextUid);
+      setAuthReady(true);
+
+      try {
+        console.log("AUTH uid:", nextUid);
+        console.log("Firebase projectId:", getApp().options.projectId);
+      } catch {}
+    });
+    return unsub;
+  }, [auth]);
+
+  // Convert snapshot -> list rows (parent doc only) + ✅ NEW: source
+  const mapDocs = (snap, source) => {
+    return snap.docs.map((d) => {
+      const data = d.data() || {};
+      const title = safeString(data.title) || "Aesthetic AI";
+      const lastMessage = safeString(data.lastMessage);
+
+      return {
+        id: d.id,
+        title,
+        lastMessage,
+        date: formatChatDate(data.updatedAt || data.createdAt),
+        updatedAt: data.updatedAt || null,
+        createdAt: data.createdAt || null,
+
+        // ✅ must exist to resume reliably
+        sessionId: data.sessionId || null,
+
+        // internal: tells us if we need to enrich from /messages
+        _needsEnrich: !lastMessage || !data.updatedAt,
+
+        // ✅ NEW: tells chat screen where to read
+        source, // "root" | "user"
+      };
+    });
+  };
+
+  // Cleanup per-chat message listeners
+  const clearMessageListeners = () => {
+    try {
+      const map = messageUnsubsRef.current;
+      for (const [, unsub] of map.entries()) {
+        try {
+          unsub?.();
+        } catch {}
+      }
+      map.clear();
+    } catch {}
+  };
+
+  // Attach message listener to fill missing lastMessage/date/title from subcollection
+  const ensureMessageListener = ({ basePath, chatId }) => {
+    const key = `${basePath}::${chatId}`;
+    if (messageUnsubsRef.current.has(key)) return;
+
+    // messages path:
+    // - basePath = "aiConversations" -> aiConversations/{chatId}/messages
+    // - basePath = `users/${uid}/aiConversations` -> users/{uid}/aiConversations/{chatId}/messages
+    const messagesCol =
+      basePath === "aiConversations"
+        ? collection(db, "aiConversations", chatId, "messages")
+        : collection(db, "users", uid, "aiConversations", chatId, "messages");
+
+    const mq = query(messagesCol, orderBy("createdAt", "desc"), limit(1));
+
+    const unsub = onSnapshot(
+      mq,
+      (snap) => {
+        const m = snap.docs?.[0]?.data?.() || {};
+        const text =
+          safeString(m.text) ||
+          safeString(m.message) ||
+          safeString(m.content) ||
+          "";
+        const createdAt = m.createdAt || m.timestamp || null;
+
+        // Update ONLY the row that needs enriching
+        setChatSummaries((prev) =>
+          prev.map((c) => {
+            if (c.id !== chatId) return c;
+
+            const nextLast = c.lastMessage || text;
+            const nextDate =
+              c.date ||
+              formatChatDate(createdAt || c.updatedAt || c.createdAt);
+
+            // Keep existing title, but if it's default and message has a "title" field, allow it
+            const maybeTitle = safeString(m.title);
+            const nextTitle =
+              c.title === "Aesthetic AI" && maybeTitle ? maybeTitle : c.title;
+
+            return {
+              ...c,
+              title: nextTitle,
+              lastMessage: nextLast,
+              date: nextDate,
+              _needsEnrich: false,
+            };
+          })
+        );
+      },
+      (err) => {
+        // If messages path doesn't exist or permission blocked, just stop trying
+        console.warn("Message enrich snapshot error:", err?.message || String(err));
+      }
+    );
+
+    messageUnsubsRef.current.set(key, unsub);
+  };
+
+  // Attach main listener (root path by default)
+  const attachMainListener = ({ useFallback }) => {
+    // basePath determines where conversations live
+    const basePath = useFallback ? `users/${uid}/aiConversations` : "aiConversations";
+
+    const conversationsCol =
+      basePath === "aiConversations"
+        ? collection(db, "aiConversations")
+        : collection(db, "users", uid, "aiConversations");
+
+    // Try updatedAt first, then createdAt
+    const qUpdated = query(
+      conversationsCol,
+      where("userId", "==", uid),
+      orderBy("updatedAt", "desc"),
+      limit(20)
+    );
+
+    const qCreated = query(
+      conversationsCol,
+      where("userId", "==", uid),
+      orderBy("createdAt", "desc"),
+      limit(20)
+    );
+
+    const attach = (q, tag) =>
+      onSnapshot(
+        q,
+        (snap) => {
+          // ✅ NEW: pass source
+          const rows = mapDocs(snap, useFallback ? "user" : "root");
+
+          setChatSummaries(rows);
+          setLoadingChats(false);
+
+          // If we got 0 rows on root, try fallback once
+          if (!useFallback && !usedFallbackRef.current && rows.length === 0) {
+            usedFallbackRef.current = true;
+
+            // switch to fallback location
+            try {
+              unsubMainRef.current?.();
+            } catch {}
+            unsubMainRef.current = attachMainListener({ useFallback: true });
+          }
+        },
+        (err) => {
+          const msg = err?.message || String(err);
+          console.warn(`Recent chats realtime error (${tag}):`, msg);
+
+          // fallback if updatedAt index/field missing
+          if (tag === "updatedAt") {
+            try {
+              unsubMainRef.current?.();
+            } catch {}
+            unsubMainRef.current = attach(qCreated, "createdAt");
+            return;
+          }
+
+          setChatSummaries([]);
+          setLoadingChats(false);
+        }
+      );
+
+    // Use updatedAt query first
+    return attach(qUpdated, "updatedAt");
+  };
+
+  useEffect(() => {
+    // cleanup old listeners
+    if (unsubMainRef.current) {
+      try {
+        unsubMainRef.current();
+      } catch {}
+      unsubMainRef.current = null;
+    }
+    clearMessageListeners();
+    usedFallbackRef.current = false;
+
+    if (!authReady) {
+      setLoadingChats(true);
+      return;
+    }
+
+    if (!uid) {
+      setChatSummaries([]);
+      setLoadingChats(false);
+      return;
+    }
+
+    setLoadingChats(true);
+
+    unsubMainRef.current = attachMainListener({ useFallback: false });
+
+    return () => {
+      if (unsubMainRef.current) {
+        try {
+          unsubMainRef.current();
+        } catch {}
+        unsubMainRef.current = null;
+      }
+      clearMessageListeners();
+    };
+  }, [uid, authReady]);
+
+  // Enrich rows that lack lastMessage/updatedAt by listening to /messages
+  useEffect(() => {
+    if (!uid) return;
+    if (!chatSummaries?.length) return;
+
+    // Determine which base path is active (if fallback already used, we might be on users/{uid}/...)
+    // We infer it: if fallback was used, basePath is users/{uid}/aiConversations; else aiConversations.
+    const basePath = usedFallbackRef.current ? `users/${uid}/aiConversations` : "aiConversations";
+
+    chatSummaries.forEach((c) => {
+      if (!c?._needsEnrich) return;
+      ensureMessageListener({
+        basePath: basePath === "aiConversations" ? "aiConversations" : basePath,
+        chatId: c.id,
+      });
+    });
+  }, [chatSummaries, uid]);
+
+  const historyList = useMemo(
+    () => chatSummaries.map((c) => ({ ...c })),
+    [chatSummaries]
+  );
 
   return (
     <View style={styles.page}>
-      {/* Ginawang dark-content para itim ang icons at translucent=false para hindi mag-overlap */}
-      <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
-      
-      {/* SafeAreaView para sa iOS (Notch area) */}
-      <SafeAreaView style={{ backgroundColor: "#FFF" }} />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#F8FAFC"
+        translucent={false}
+      />
+      <SafeAreaView style={styles.safeTop} />
 
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>AI Interior Hub</Text>
-        <Text style={styles.headerSubtitle}>Personalized design at your fingertips</Text>
-      </View>
-
-      <ScrollView 
-        style={styles.container} 
+      <ScrollView
+        style={styles.container}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
       >
-        {/* ===== AI TOOLS SECTION ===== */}
-        <Text style={styles.sectionLabel}>Start a New Project</Text>
-        <View style={styles.cardsContainer}>
-          <TouchableOpacity
-            onPress={() => openChatScreen("design")}
-            style={[styles.mainCard, { backgroundColor: "#0F3E48" }]}
-            activeOpacity={0.9}
-          >
-            <View style={styles.cardIconCircle}>
-              <Image source={require("../../assets/design.png")} style={styles.cardIcon} />
-            </View>
-            <Text style={styles.cardTitle}>Full Room Design</Text>
-            <Text style={styles.cardDesc}>Create a new room concept from scratch.</Text>
-            <Ionicons name="arrow-forward-circle" size={24} color="#3FA796" style={styles.cardArrow} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => openChatScreen("customize")}
-            style={[styles.mainCard, { backgroundColor: "#FFF", borderWidth: 1, borderColor: "#E2E8F0" }]}
-            activeOpacity={0.9}
-          >
-            <View style={[styles.cardIconCircle, { backgroundColor: "#FDF2F8" }]}>
-              <Image source={require("../../assets/customize.png")} style={styles.cardIcon} />
-            </View>
-            <Text style={[styles.cardTitle, { color: "#1E293B" }]}>Customize Space</Text>
-            <Text style={styles.cardDescLight}>Adjust layouts, colors, and furniture.</Text>
-            <Ionicons name="arrow-forward-circle" size={24} color="#DB2777" style={styles.cardArrow} />
-          </TouchableOpacity>
+        <View style={styles.sectionHeadRow}>
+          <Text style={styles.sectionHint}>Create a new design session</Text>
         </View>
 
-        {/* ===== HISTORY SECTION ===== */}
+        <TouchableOpacity
+          style={styles.primaryCard}
+          onPress={openChatScreen}
+          activeOpacity={0.92}
+        >
+          <View style={styles.primaryCardTop}>
+            <View style={styles.primaryIconWrap}>
+              <Image
+                source={require("../../assets/design.png")}
+                style={styles.primaryIcon}
+              />
+            </View>
+
+            <View style={styles.primaryTextWrap}>
+              <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
+              <Text style={styles.primaryDesc} numberOfLines={2}>
+                Generate layouts, refine styles, and modify furniture using a
+                conversational interface.
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.primaryCardBottom}>
+            <View style={styles.miniPillsRow}>
+              <View style={styles.miniPill}>
+                <Ionicons name="image" size={14} color="#0F3E48" />
+                <Text style={styles.miniPillText}>Image-based</Text>
+              </View>
+              <View style={styles.miniPill}>
+                <Ionicons name="chatbubble-ellipses" size={14} color="#0F3E48" />
+                <Text style={styles.miniPillText}>Prompt-driven</Text>
+              </View>
+            </View>
+
+            <View style={styles.startBtn}>
+              <Text style={styles.startBtnText}>Start Chat</Text>
+              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+            </View>
+          </View>
+        </TouchableOpacity>
+
         <View style={styles.historyHeaderRow}>
-          <Text style={styles.historyTitle}>Recent Chats</Text>
-          <TouchableOpacity>
-            <Text style={styles.seeAllText}>View All</Text>
-          </TouchableOpacity>
+          <View>
+            <Text style={styles.historyTitle}>Recent Chats</Text>
+            <Text style={styles.historySubtitle}>
+              Resume your previous design sessions
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.historyList}>
-          {historyList.map((chat) => (
-            <TouchableOpacity
-              key={`${chat.tab}-${chat.id}`}
-              style={styles.historyItem}
-              onPress={() => openChatHistory(chat.tab, chat.id)}
-            >
-              <View style={[styles.historyIconBox, { backgroundColor: chat.tab === 'design' ? '#E0F2FE' : '#FCE7F3' }]}>
-                <Ionicons 
-                  name={chat.tab === 'design' ? "color-wand" : "brush"} 
-                  size={20} 
-                  color={chat.tab === 'design' ? "#0284C7" : "#DB2777"} 
-                />
-              </View>
-              
-              <View style={styles.historyTextContent}>
-                <View style={styles.historyTopLine}>
-                  <Text style={styles.historyItemTitle} numberOfLines={1}>{chat.title}</Text>
-                  <Text style={styles.historyItemDate}>{chat.date}</Text>
+        {!authReady ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator />
+            <Text style={styles.loadingText}>Checking account…</Text>
+          </View>
+        ) : loadingChats ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator />
+            <Text style={styles.loadingText}>Loading chats…</Text>
+          </View>
+        ) : !uid ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyTitle}>Sign in required</Text>
+            <Text style={styles.emptySubtitle}>
+              Please sign in to view your chat history.
+            </Text>
+          </View>
+        ) : historyList.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <Text style={styles.emptyTitle}>No recent chats</Text>
+            <Text style={styles.emptySubtitle}>
+              Start a new session to see it appear here.
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.historyList}>
+            {historyList.map((chat) => (
+              <TouchableOpacity
+                key={chat.id}
+                style={styles.historyItem}
+                onPress={() => openChatHistory(chat)}
+                activeOpacity={0.85}
+              >
+                <View style={styles.historyIconBox}>
+                  <Ionicons name="color-wand" size={20} color="#01579B" />
                 </View>
-                <Text style={styles.historyItemSnippet} numberOfLines={1}>
-                  {chat.lastMessage}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ))}
-        </View>
+
+                <View style={styles.historyTextContent}>
+                  <View style={styles.historyTopLine}>
+                    <Text style={styles.historyItemTitle} numberOfLines={1}>
+                      {chat.title}
+                    </Text>
+                    <Text style={styles.historyItemDate}>{chat.date || ""}</Text>
+                  </View>
+
+                  <Text style={styles.historyItemSnippet} numberOfLines={1}>
+                    {chat.lastMessage || "Tap to continue…"}
+                  </Text>
+                </View>
+
+                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </ScrollView>
 
       <BottomNavbar subType={subType} />
@@ -135,87 +453,158 @@ export default function AIDesigner() {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
-  
-  header: {
-    // Binawasan ang paddingTop dahil sa SafeAreaView/StatusBar adjustment
-    paddingTop: Platform.OS === 'android' ? 15 : 10,
-    paddingHorizontal: 25,
-    paddingBottom: 20,
-    backgroundColor: "#FFF",
-  },
-  headerTitle: { fontSize: 26, fontWeight: "900", color: "#0F3E48" },
-  headerSubtitle: { fontSize: 14, color: "#64748B", marginTop: 4 },
+  safeTop: { backgroundColor: "#F8FAFC" },
 
   container: { flex: 1 },
-  scrollContent: { paddingHorizontal: 25, paddingBottom: 100 },
+  scrollContent: { paddingHorizontal: 22, paddingBottom: 110 },
 
-  sectionLabel: { 
-    fontSize: 12, 
-    fontWeight: "800", 
-    color: "#94A3B8", 
-    textTransform: "uppercase", 
-    letterSpacing: 1,
-    marginTop: 25,
-    marginBottom: 15
+  sectionHeadRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-end",
+    marginTop: 40,
+  },
+  sectionHint: {
+    fontSize: 12,
+    color: "#94A3B8",
+    fontWeight: "700",
+    marginBottom: 5,
   },
 
-  cardsContainer: { flexDirection: "row", gap: 15 },
-  mainCard: {
-    flex: 1,
-    padding: 20,
+  primaryCard: {
+    marginTop: 12,
+    backgroundColor: "#FFFFFF",
     borderRadius: 24,
-    height: 200,
-    elevation: 4,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    justifyContent: 'space-between'
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    elevation: 2,
+    overflow: "hidden",
   },
-  cardIconCircle: {
-    width: 45,
-    height: 45,
-    borderRadius: 15,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    justifyContent: 'center',
-    alignItems: 'center'
+  primaryCardTop: { flexDirection: "row", gap: 12, alignItems: "center" },
+  primaryIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    backgroundColor: "#E0F2FE",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#BAE6FD",
   },
-  cardIcon: { width: 28, height: 28, resizeMode: 'contain' },
-  cardTitle: { fontSize: 16, fontWeight: "800", color: "#FFF", marginTop: 10 },
-  cardDesc: { fontSize: 11, color: "#94A3B8", lineHeight: 16 },
-  cardDescLight: { fontSize: 11, color: "#64748B", lineHeight: 16 },
-  cardArrow: { alignSelf: 'flex-end' },
+  primaryIcon: { width: 30, height: 30, resizeMode: "contain" },
+  primaryTextWrap: { flex: 1 },
+  primaryTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
+  primaryDesc: {
+    fontSize: 12,
+    color: "#64748B",
+    marginTop: 4,
+    lineHeight: 16,
+  },
 
-  historyHeaderRow: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center',
-    marginTop: 35,
-    marginBottom: 15
+  primaryCardBottom: {
+    marginTop: 14,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
-  historyTitle: { fontSize: 18, fontWeight: "800", color: "#1E293B" },
-  seeAllText: { fontSize: 13, color: "#3FA796", fontWeight: "700" },
+  miniPillsRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", flex: 1 },
+  miniPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  miniPillText: { fontSize: 11, fontWeight: "800", color: "#0F3E48" },
+
+  startBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#01579B",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  startBtnText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
+
+  historyHeaderRow: { marginTop: 26, marginBottom: 12 },
+  historyTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
+  historySubtitle: {
+    fontSize: 12,
+    color: "#94A3B8",
+    marginTop: 3,
+    fontWeight: "700",
+  },
 
   historyList: { gap: 12 },
   historyItem: {
-    flexDirection: 'row',
-    backgroundColor: "#FFF",
-    padding: 15,
-    borderRadius: 20,
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    padding: 14,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#F1F5F9"
+    borderColor: "#E2E8F0",
   },
   historyIconBox: {
-    width: 45,
-    height: 45,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 15
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: "#E0F2FE",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#BAE6FD",
+    marginRight: 12,
   },
   historyTextContent: { flex: 1 },
-  historyTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  historyItemTitle: { fontSize: 15, fontWeight: "700", color: "#0F3E48", flex: 1 },
-  historyItemDate: { fontSize: 11, color: "#94A3B8", fontWeight: "600" },
-  historyItemSnippet: { fontSize: 13, color: "#64748B" },
+  historyTopLine: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  historyItemTitle: {
+    fontSize: 14,
+    fontWeight: "900",
+    color: "#0F3E48",
+    flex: 1,
+    paddingRight: 10,
+  },
+  historyItemDate: { fontSize: 11, color: "#94A3B8", fontWeight: "800" },
+  historyItemSnippet: { fontSize: 12, color: "#64748B" },
+
+  loadingWrap: { paddingVertical: 18, alignItems: "center" },
+  loadingText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "700",
+  },
+
+  emptyWrap: {
+    paddingVertical: 18,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    backgroundColor: "#FFFFFF",
+  },
+  emptyTitle: { fontSize: 13, fontWeight: "900", color: "#0F3E48" },
+  emptySubtitle: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "700",
+    lineHeight: 16,
+  },
 });

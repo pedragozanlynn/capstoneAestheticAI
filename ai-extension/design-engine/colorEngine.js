@@ -2,9 +2,17 @@ import fetch from "node-fetch";
 
 const HF_API_KEY = process.env.HF_API_KEY;
 
-// ✅ Hugging Face Router (supported)
+// ✅ HF Router Chat Completions endpoint
 const HF_CHAT_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
-const HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3";
+
+/**
+ * ✅ Chat model fallback chain (router-compatible)
+ */
+const HF_CHAT_MODELS = [
+  "meta-llama/Meta-Llama-3-8B-Instruct",
+  "meta-llama/Llama-3.1-8B-Instruct",
+  "meta-llama/Llama-3.2-3B-Instruct",
+];
 
 /**
  * Returns a color palette object
@@ -18,7 +26,7 @@ export async function getColorPalette(styleInput, userMessage = "") {
   const text = (userMessage || "").toLowerCase();
 
   /* ===============================
-     ✅ ADD: style keyword boost (helps “make it minimalist” etc.)
+     STYLE KEYWORD BOOST
      =============================== */
   const wantsMinimalist = /\b(minimalist|minimal|clean|declutter|simple)\b/.test(text);
   const wantsModern = /\b(modern|contemporary)\b/.test(text);
@@ -46,8 +54,6 @@ export async function getColorPalette(styleInput, userMessage = "") {
     { keys: ["blue"], name: "Blue", hex: "#60A5FA" },
     { keys: ["navy"], name: "Navy", hex: "#1E3A8A" },
     { keys: ["teal"], name: "Teal", hex: "#3FA796" },
-
-    // ✅ ADD: common interior accents (still realistic)
     { keys: ["terracotta"], name: "Terracotta", hex: "#C16A4A" },
     { keys: ["sage"], name: "Sage Green", hex: "#A3B18A" },
     { keys: ["taupe"], name: "Taupe", hex: "#CBBBA0" },
@@ -68,138 +74,19 @@ export async function getColorPalette(styleInput, userMessage = "") {
   }
 
   /* ===============================
-     2️⃣ MOOD-BASED RULES
+     2️⃣ STYLE / MOOD RULES (FAST PATH)
      =============================== */
-  const wantsWarm = /\b(warm|cozy|cozier|soft|relaxing|warmth|mainit)\b/.test(text);
-  const wantsDark = /\b(dark|moody|dramatic|madilim)\b/.test(text);
-  const wantsLight = /\b(light|airy|bright|brighter|maliwanag)\b/.test(text);
-
-  // ✅ ADD: if user explicitly asked for a known style, prioritize a matching palette
-  if (wantsMinimalist) {
-    return {
-      name: "Minimalist Calm",
-      colors: [
-        { name: "Pure White", hex: "#FFFFFF" },
-        { name: "Light Gray", hex: "#E5E7EB" },
-        { name: "Warm Beige", hex: "#E7D7C1" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-      ],
-    };
-  }
-
-  if (wantsScandi) {
-    return {
-      name: "Scandi Soft",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Warm Beige", hex: "#E7D7C1" },
-        { name: "Light Oak", hex: "#C19A6B" },
-        { name: "Muted Gray", hex: "#D1D5DB" },
-      ],
-    };
-  }
-
-  if (wantsIndustrial) {
-    return {
-      name: "Industrial Urban",
-      colors: [
-        { name: "Concrete Gray", hex: "#9CA3AF" },
-        { name: "Steel Dark", hex: "#374151" },
-        { name: "Rust Accent", hex: "#B45309" },
-        { name: "Matte Black", hex: "#111827" },
-      ],
-    };
-  }
-
-  if (wantsJapandi) {
-    return {
-      name: "Japandi Natural",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Sand Beige", hex: "#EAD9C3" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-        { name: "Charcoal", hex: "#334155" },
-      ],
-    };
-  }
-
-  if (wantsBoho) {
-    return {
-      name: "Boho Earthy",
-      colors: [
-        { name: "Cream", hex: "#F5F5DC" },
-        { name: "Terracotta", hex: "#C16A4A" },
-        { name: "Sage Green", hex: "#A3B18A" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-      ],
-    };
-  }
-
-  if (wantsLuxury) {
-    return {
-      name: "Luxury Contrast",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Charcoal", hex: "#334155" },
-        { name: "Deep Navy", hex: "#1E3A8A" },
-        { name: "Warm Walnut", hex: "#6B4F3A" },
-      ],
-    };
-  }
-
-  if (wantsWarm && !wantsDark) {
-    return {
-      name: "Warm Neutral",
-      colors: [
-        { name: "Warm Beige", hex: "#E7D7C1" },
-        { name: "Soft Cream", hex: "#F5F5DC" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-        { name: "Muted Taupe", hex: "#CBBBA0" },
-      ],
-    };
-  }
-
-  if (wantsDark) {
-    return {
-      name: "Dark Contrast",
-      colors: [
-        { name: "Charcoal", hex: "#334155" },
-        { name: "Deep Gray", hex: "#1F2937" },
-        { name: "Muted Black", hex: "#0F172A" },
-        { name: "Warm Walnut", hex: "#6B4F3A" },
-      ],
-    };
-  }
-
-  if (wantsLight) {
-    return {
-      name: "Light & Airy",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Light Gray", hex: "#E5E7EB" },
-        { name: "Pale Beige", hex: "#EFE6D8" },
-        { name: "Dusty Blue", hex: "#BFD3E6" },
-      ],
-    };
-  }
-
-  // ✅ ADD: modern fallback if user explicitly says “modern”
-  if (wantsModern) {
-    return {
-      name: "Modern Neutral",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Cool Gray", hex: "#CBD5E1" },
-        { name: "Charcoal", hex: "#334155" },
-        { name: "Muted Teal", hex: "#3FA796" },
-      ],
-    };
-  }
+  if (wantsMinimalist) return presetPalettes.minimalist;
+  if (wantsScandi) return presetPalettes.scandinavian;
+  if (wantsIndustrial) return presetPalettes.industrial;
+  if (wantsJapandi) return presetPalettes.japandi;
+  if (wantsBoho) return presetPalettes.boho;
+  if (wantsLuxury) return presetPalettes.luxury;
+  if (wantsModern) return presetPalettes.modern;
 
   /* ===============================
-     3️⃣ HF PALETTE REFINEMENT (OPTIONAL)
+     3️⃣ HF PALETTE REFINEMENT (SAFE, OPTIONAL)
      =============================== */
-  // ✅ IMPORTANT: This section should NEVER crash the app.
   if (HF_API_KEY) {
     const styleName =
       typeof styleInput === "string"
@@ -215,14 +102,13 @@ Inputs:
 - Style: ${styleName}
 - User request: "${userMessage}"
 
-Hard rules:
-- Output ONLY valid JSON (no markdown, no commentary)
+Rules:
+- JSON only
 - Max 4 colors
-- Use common interior color names
-- Hex must be 6-digit #RRGGBB
-- Avoid neon/fantasy colors
+- Common interior color names
+- Valid 6-digit hex codes
 
-JSON shape:
+JSON:
 {
   "name": "Palette Name",
   "colors": [
@@ -231,6 +117,30 @@ JSON shape:
 }
 `.trim();
 
+    const raw = await callHF(prompt);
+    const parsed = safeParsePaletteJSON(raw);
+    const validated = validatePalette(parsed);
+    if (validated) return validated;
+  }
+
+  /* ===============================
+     4️⃣ FINAL SAFE FALLBACK
+     =============================== */
+  const styleKey =
+    typeof styleInput === "string"
+      ? styleInput.toLowerCase()
+      : styleInput?.name?.toLowerCase() || "modern";
+
+  return presetPalettes[styleKey] || presetPalettes.modern;
+}
+
+/* ===============================
+   HF CALL (CHAT FALLBACK)
+   =============================== */
+async function callHF(prompt) {
+  let lastErr = "";
+
+  for (const model of HF_CHAT_MODELS) {
     try {
       const res = await fetch(HF_CHAT_ENDPOINT, {
         method: "POST",
@@ -239,9 +149,9 @@ JSON shape:
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: HF_MODEL,
+          model,
           messages: [
-            { role: "system", content: "You output strictly valid JSON only." },
+            { role: "system", content: "Return STRICT JSON only." },
             { role: "user", content: prompt },
           ],
           temperature: 0.25,
@@ -250,162 +160,137 @@ JSON shape:
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        const raw = data?.choices?.[0]?.message?.content;
-
-        const parsed = safeParsePaletteJSON(raw);
-        const validated = validatePalette(parsed);
-        if (validated) return validated;
-      } else {
-        // ✅ log only; do not throw
-        const errText = await res.text().catch(() => "");
-        console.warn("HF palette error:", res.status, res.statusText, errText);
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        lastErr = t;
+        if (res.status === 400 && t.includes("not a chat model")) continue;
+        if (res.status === 429 || res.status === 503) continue;
+        continue;
       }
-    } catch (err) {
-      console.warn("HF palette exception (ignored):", err?.message || err);
+
+      const data = await res.json();
+      return data?.choices?.[0]?.message?.content || "";
+    } catch (e) {
+      lastErr = String(e?.message || e);
     }
   }
 
-  /* ===============================
-     4️⃣ STYLE-BASED FALLBACK (SAFE)
-     =============================== */
-  const styleName =
-    typeof styleInput === "string"
-      ? styleInput.toLowerCase()
-      : styleInput?.name?.toLowerCase() || "modern";
-
-  const palettes = {
-    modern: {
-      name: "Modern Neutral",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Cool Gray", hex: "#CBD5E1" },
-        { name: "Charcoal", hex: "#334155" },
-        { name: "Muted Teal", hex: "#3FA796" },
-      ],
-    },
-    minimalist: {
-      name: "Minimalist Calm",
-      colors: [
-        { name: "Pure White", hex: "#FFFFFF" },
-        { name: "Light Gray", hex: "#E5E7EB" },
-        { name: "Warm Beige", hex: "#E7D7C1" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-      ],
-    },
-    industrial: {
-      name: "Industrial Urban",
-      colors: [
-        { name: "Concrete Gray", hex: "#9CA3AF" },
-        { name: "Steel Dark", hex: "#374151" },
-        { name: "Rust Accent", hex: "#B45309" },
-        { name: "Matte Black", hex: "#111827" },
-      ],
-    },
-    scandinavian: {
-      name: "Scandi Soft",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Warm Beige", hex: "#E7D7C1" },
-        { name: "Light Oak", hex: "#C19A6B" },
-        { name: "Muted Gray", hex: "#D1D5DB" },
-      ],
-    },
-
-    // ✅ ADD: more fallbacks (still safe + realistic)
-    japandi: {
-      name: "Japandi Natural",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Sand Beige", hex: "#EAD9C3" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-        { name: "Charcoal", hex: "#334155" },
-      ],
-    },
-    boho: {
-      name: "Boho Earthy",
-      colors: [
-        { name: "Cream", hex: "#F5F5DC" },
-        { name: "Terracotta", hex: "#C16A4A" },
-        { name: "Sage Green", hex: "#A3B18A" },
-        { name: "Natural Wood", hex: "#C19A6B" },
-      ],
-    },
-    luxury: {
-      name: "Luxury Contrast",
-      colors: [
-        { name: "Soft White", hex: "#F8FAFC" },
-        { name: "Charcoal", hex: "#334155" },
-        { name: "Deep Navy", hex: "#1E3A8A" },
-        { name: "Warm Walnut", hex: "#6B4F3A" },
-      ],
-    },
-  };
-
-  return palettes[styleName] || palettes.modern;
+  console.warn("HF palette fallback used:", lastErr);
+  return "";
 }
 
 /* ===============================
-   Helpers
+   PRESET PALETTES
    =============================== */
+const presetPalettes = {
+  modern: {
+    name: "Modern Neutral",
+    colors: [
+      { name: "Soft White", hex: "#F8FAFC" },
+      { name: "Cool Gray", hex: "#CBD5E1" },
+      { name: "Charcoal", hex: "#334155" },
+      { name: "Muted Teal", hex: "#3FA796" },
+    ],
+  },
+  minimalist: {
+    name: "Minimalist Calm",
+    colors: [
+      { name: "Pure White", hex: "#FFFFFF" },
+      { name: "Light Gray", hex: "#E5E7EB" },
+      { name: "Warm Beige", hex: "#E7D7C1" },
+      { name: "Natural Wood", hex: "#C19A6B" },
+    ],
+  },
+  industrial: {
+    name: "Industrial Urban",
+    colors: [
+      { name: "Concrete Gray", hex: "#9CA3AF" },
+      { name: "Steel Dark", hex: "#374151" },
+      { name: "Rust Accent", hex: "#B45309" },
+      { name: "Matte Black", hex: "#111827" },
+    ],
+  },
+  scandinavian: {
+    name: "Scandi Soft",
+    colors: [
+      { name: "Soft White", hex: "#F8FAFC" },
+      { name: "Warm Beige", hex: "#E7D7C1" },
+      { name: "Light Oak", hex: "#C19A6B" },
+      { name: "Muted Gray", hex: "#D1D5DB" },
+    ],
+  },
+  japandi: {
+    name: "Japandi Natural",
+    colors: [
+      { name: "Soft White", hex: "#F8FAFC" },
+      { name: "Sand Beige", hex: "#EAD9C3" },
+      { name: "Natural Wood", hex: "#C19A6B" },
+      { name: "Charcoal", hex: "#334155" },
+    ],
+  },
+  boho: {
+    name: "Boho Earthy",
+    colors: [
+      { name: "Cream", hex: "#F5F5DC" },
+      { name: "Terracotta", hex: "#C16A4A" },
+      { name: "Sage Green", hex: "#A3B18A" },
+      { name: "Natural Wood", hex: "#C19A6B" },
+    ],
+  },
+  luxury: {
+    name: "Luxury Contrast",
+    colors: [
+      { name: "Soft White", hex: "#F8FAFC" },
+      { name: "Charcoal", hex: "#334155" },
+      { name: "Deep Navy", hex: "#1E3A8A" },
+      { name: "Warm Walnut", hex: "#6B4F3A" },
+    ],
+  },
+};
 
+/* ===============================
+   HELPERS
+   =============================== */
 function dedupeByHex(arr) {
   const seen = new Set();
-  const out = [];
-  for (const item of arr) {
-    const hex = (item.hex || "").toUpperCase();
-    if (!seen.has(hex)) {
-      seen.add(hex);
-      out.push(item);
-    }
-  }
-  return out;
+  return arr.filter((i) => {
+    const h = (i.hex || "").toUpperCase();
+    if (seen.has(h)) return false;
+    seen.add(h);
+    return true;
+  });
 }
 
 function safeParsePaletteJSON(raw) {
   if (!raw || typeof raw !== "string") return null;
-
-  // Direct parse
   try {
     return JSON.parse(raw);
   } catch {}
-
-  // Extract first JSON block
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) return null;
   try {
-    return JSON.parse(match[0]);
+    return JSON.parse(m[0]);
   } catch {
     return null;
   }
 }
 
 function validatePalette(p) {
-  if (!p || typeof p !== "object") return null;
-  if (typeof p.name !== "string" || !Array.isArray(p.colors)) return null;
-
+  if (!p || typeof p !== "object" || !Array.isArray(p.colors)) return null;
   const colors = p.colors
-    .filter((c) => c && typeof c.name === "string" && typeof c.hex === "string")
     .map((c) => ({ name: cleanName(c.name), hex: normalizeHex(c.hex) }))
     .filter((c) => c.name && isHex(c.hex))
     .slice(0, 4);
-
-  if (colors.length === 0) return null;
-
-  return {
-    name: cleanName(p.name) || "Suggested Palette",
-    colors,
-  };
+  if (!colors.length) return null;
+  return { name: cleanName(p.name) || "Suggested Palette", colors };
 }
 
 function cleanName(s) {
-  return String(s).trim().replace(/\s+/g, " ").slice(0, 40);
+  return String(s || "").trim().replace(/\s+/g, " ").slice(0, 40);
 }
 
 function normalizeHex(h) {
-  const v = String(h).trim().toUpperCase();
+  const v = String(h || "").trim().toUpperCase();
   if (/^[0-9A-F]{6}$/.test(v)) return `#${v}`;
   return v;
 }

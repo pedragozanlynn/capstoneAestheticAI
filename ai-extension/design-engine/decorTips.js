@@ -2,15 +2,32 @@ import fetch from "node-fetch";
 import crypto from "crypto";
 
 const HF_API_KEY = process.env.HF_API_KEY;
+
+// ✅ HF Router Chat Completions endpoint
 const HF_CHAT_ENDPOINT = "https://router.huggingface.co/v1/chat/completions";
-const HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3";
 
 /**
- * getDecorTips
- * ✅ Different explanation/tips per prompt (stable variation)
- * ✅ Strict format + validation
- * ✅ 1 retry with stricter constraints
- * ✅ Fallback is also varied (not identical every time)
+ * ✅ Chat model fallback chain (router-compatible).
+ * Reorder based on what works best for your account/plan.
+ */
+const HF_CHAT_MODELS = [
+  "meta-llama/Meta-Llama-3-8B-Instruct",
+  "meta-llama/Llama-3.1-8B-Instruct",
+  "meta-llama/Llama-3.2-3B-Instruct",
+];
+
+/**
+ * getDecorTips (UPDATED)
+ * ✅ Tips/explanation are forced to align with:
+ *   - user prompt (highest priority)
+ *   - palette
+ *   - layoutSuggestions (AI layout)
+ *   - edit mode + image presence (reference vs generated)
+ *
+ * Notes:
+ * - This does NOT "see" the image pixels (no vision model here).
+ * - But it will strictly tie outputs to your prompt + palette + layoutSuggestions
+ *   so UI text stays consistent with what you asked.
  */
 export async function getDecorTips({
   style,
@@ -18,18 +35,50 @@ export async function getDecorTips({
   palette,
   userMessage,
   imagePrompt,
-  emphasis = null, // optional if you pass it from promptBuilder
-}) {
+  emphasis = null,
+
+  // ✅ ADD (so tips can align with AI layout + edit flow)
+  layoutSuggestions = [],
+  isEdit = false,
+  inputImage = null, // reference photo (data URL)
+  outputImage = null, // generated image (data URL)
+} = {}) {
   const safeStyle = style?.name || "Modern";
   const safeRoom = roomType || "room";
   const safeUser = (userMessage || "").trim();
+
   const paletteNames = Array.isArray(palette?.colors)
     ? palette.colors.map((c) => c?.name).filter(Boolean)
     : [];
 
-  // ✅ Signature drives deterministic variation per prompt
+  const paletteHex = Array.isArray(palette?.colors)
+    ? palette.colors
+        .slice(0, 6)
+        .map((c) => String(c?.hex || "").toUpperCase())
+        .filter(Boolean)
+    : [];
+
+  const safeLayoutSuggestions = Array.isArray(layoutSuggestions)
+    ? layoutSuggestions.filter(Boolean).slice(0, 8)
+    : [];
+
+  const hasReferenceImage = Boolean(inputImage);
+  const hasGeneratedImage = Boolean(outputImage);
+
+  // ✅ Signature drives deterministic variation per prompt + layout + palette
   const signature = stableSignature(
-    `${safeRoom}|${safeStyle}|${paletteNames.join(",")}|${safeUser}|${imagePrompt || ""}`
+    [
+      safeRoom,
+      safeStyle,
+      paletteNames.join(","),
+      paletteHex.join(","),
+      safeLayoutSuggestions.join("|"),
+      safeUser,
+      imagePrompt || "",
+      isEdit ? "EDIT" : "GEN",
+      hasReferenceImage ? "HAS_REF" : "NO_REF",
+      hasGeneratedImage ? "HAS_OUT" : "NO_OUT",
+    ].join("||")
   );
 
   // Derive an emphasis if not provided (based on signature)
@@ -75,21 +124,36 @@ export async function getDecorTips({
     "adds warmth and character",
   ];
 
-  // ✅ Prompt includes signature + bucket constraints (forces variation)
   const prompt = buildPrompt({
     imagePrompt,
     safeUser,
     safeRoom,
     safeStyle,
     paletteNames,
+    paletteHex,
     finalEmphasis,
     signature: signature.hex,
     buckets: [bucketA, bucketB, bucketC],
     bannedPhrases,
+    layoutSuggestions: safeLayoutSuggestions,
+    isEdit,
+    hasReferenceImage,
+    hasGeneratedImage,
   });
 
-  // If no HF key, return deterministic varied fallback
-  if (!HF_API_KEY) return variedFallback({ safeRoom, safeStyle, signature, paletteNames, finalEmphasis });
+  // If no HF key, return deterministic varied fallback (now also respects palette + layout)
+  if (!HF_API_KEY) {
+    return variedFallback({
+      safeRoom,
+      safeStyle,
+      signature,
+      paletteNames,
+      paletteHex,
+      finalEmphasis,
+      layoutSuggestions: safeLayoutSuggestions,
+      isEdit,
+    });
+  }
 
   // Try once, then retry with stricter constraints if needed
   const first = await callHF(prompt, 0.85);
@@ -97,12 +161,16 @@ export async function getDecorTips({
 
   if (parsed1.ok) return parsed1.data;
 
-  const retryPrompt = prompt + `
+  const retryPrompt =
+    prompt +
+    `
 
 STRICT RETRY RULES:
 - Avoid ALL generic interior design wording
 - Each tip must start with a different verb
 - Each tip must mention a concrete object (e.g., lamp, curtain, rug, shelf, mirror, chair, table)
+- Tip #2 MUST explicitly reference the provided layout placements (e.g., "Bed: back wall (centered)")
+- Tip #3 MUST explicitly reference at least one palette color name or hex
 - Output must be exactly 2–3 sentences in EXPLANATION and exactly 3 bullet tips
 `;
 
@@ -111,50 +179,77 @@ STRICT RETRY RULES:
 
   if (parsed2.ok) return parsed2.data;
 
-  // Final fallback (still varied)
-  return variedFallback({ safeRoom, safeStyle, signature, paletteNames, finalEmphasis });
+  // Final fallback (still varied + respects palette + layout)
+  return variedFallback({
+    safeRoom,
+    safeStyle,
+    signature,
+    paletteNames,
+    paletteHex,
+    finalEmphasis,
+    layoutSuggestions: safeLayoutSuggestions,
+    isEdit,
+  });
 }
 
 /* ===============================
-   HF Call
+   HF Call (chat-model fallback)
    =============================== */
 async function callHF(prompt, temperature = 0.85) {
-  try {
-    const res = await fetch(HF_CHAT_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${HF_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: HF_MODEL,
-        messages: [
-          { role: "system", content: "You output strictly the requested format. No extra text." },
-          { role: "user", content: prompt },
-        ],
-        temperature,
-        top_p: 0.9,
-        max_tokens: 320,
-      }),
-    });
+  let lastErrText = "";
 
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error("HF ERROR STATUS:", res.status, res.statusText);
-      console.error("HF ERROR BODY:", errText);
-      return "";
+  for (const model of HF_CHAT_MODELS) {
+    try {
+      const res = await fetch(HF_CHAT_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HF_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: "You output strictly the requested format. No extra text." },
+            { role: "user", content: prompt },
+          ],
+          temperature,
+          top_p: 0.9,
+          max_tokens: 380,
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        lastErrText = errText;
+
+        // ✅ Skip models that router says aren't chat-compatible
+        if (res.status === 400 && errText.includes("not a chat model")) continue;
+
+        // ✅ Skip temporary overload/rate limits and try next model
+        if (res.status === 429 || res.status === 503) continue;
+
+        console.error("HF ERROR STATUS:", res.status, res.statusText, "MODEL:", model);
+        console.error("HF ERROR BODY:", errText);
+        continue;
+      }
+
+      const data = await res.json();
+      return data?.choices?.[0]?.message?.content || "";
+    } catch (e) {
+      lastErrText = String(e?.message || e);
+      continue;
     }
-
-    const data = await res.json();
-    return data?.choices?.[0]?.message?.content || "";
-  } catch (e) {
-    console.error("HF CALL ERROR:", e?.message || e);
-    return "";
   }
+
+  // No model worked
+  if (lastErrText) {
+    console.error("HF CALL ERROR (all models failed):", lastErrText);
+  }
+  return "";
 }
 
 /* ===============================
-   Prompt Builder
+   Prompt Builder (UPDATED: palette + layout enforced)
    =============================== */
 function buildPrompt({
   imagePrompt,
@@ -162,11 +257,36 @@ function buildPrompt({
   safeRoom,
   safeStyle,
   paletteNames,
+  paletteHex,
   finalEmphasis,
   signature,
   buckets,
   bannedPhrases,
+  layoutSuggestions,
+  isEdit,
+  hasReferenceImage,
+  hasGeneratedImage,
 }) {
+  const paletteLine =
+    paletteNames.length || paletteHex.length
+      ? `${paletteNames.length ? paletteNames.join(", ") : ""}${
+          paletteHex.length ? ` | HEX: ${paletteHex.join(", ")}` : ""
+        }`.trim()
+      : "neutral tones";
+
+  const layoutLine =
+    Array.isArray(layoutSuggestions) && layoutSuggestions.length
+      ? layoutSuggestions.map((x) => `- ${x}`).join("\n")
+      : "- (no layout suggestions provided)";
+
+  const imageModeLine = isEdit
+    ? `EDIT MODE: TRUE (must treat reference image as base; do not propose moving walls/doors/windows)`
+    : `EDIT MODE: FALSE (text-to-image concept; still respect prompt + palette + layout)`;
+
+  const imagePresenceLine = `IMAGES:
+- reference_image_provided: ${hasReferenceImage ? "yes" : "no"}
+- generated_image_provided: ${hasGeneratedImage ? "yes" : "no"}`;
+
   return `
 You are a professional interior designer writing a DESIGN REPORT.
 
@@ -175,7 +295,7 @@ THIS DESIGN WAS GENERATED FROM THE FOLLOWING CONTEXT:
 ${imagePrompt || "(no image context provided)"}
 """
 
-USER REQUEST:
+USER REQUEST (HIGHEST PRIORITY):
 "${safeUser}"
 
 ROOM TYPE:
@@ -184,8 +304,14 @@ ${safeRoom}
 STYLE DIRECTION:
 ${safeStyle}
 
-COLOR PALETTE:
-${paletteNames.length ? paletteNames.join(", ") : "neutral tones"}
+COLOR PALETTE (must be reflected in tips; do not invent a new dominant hue):
+${paletteLine}
+
+AI LAYOUT PLACEMENTS (tips must respect these placements):
+${layoutLine}
+
+${imageModeLine}
+${imagePresenceLine}
 
 DECOR EMPHASIS (must shape wording + tips):
 ${finalEmphasis}
@@ -193,20 +319,21 @@ ${finalEmphasis}
 PROMPT SIGNATURE (do not repeat, only use to diversify):
 ${signature}
 
-TIP REQUIREMENTS:
+TIP REQUIREMENTS (STRICT):
 - Provide exactly 3 tips
 - Tip #1 must focus on: ${buckets[0]}
-- Tip #2 must focus on: ${buckets[1]}
-- Tip #3 must focus on: ${buckets[2]}
-- Tips must be actionable and reference concrete items and placement
+- Tip #2 must focus on: ${buckets[1]} AND must explicitly reference at least one layout placement from "AI LAYOUT PLACEMENTS"
+- Tip #3 must focus on: ${buckets[2]} AND must explicitly reference at least one palette name or hex code
+- Tips must be actionable and reference concrete items AND placement (where to put it / what to adjust)
 - Do not repeat the same verb across tips
+- Do not contradict the AI layout placements
 
 BANNED PHRASES (do not use these exact phrases):
 ${bannedPhrases.map((p) => `- ${p}`).join("\n")}
 
 FORMAT (STRICT):
 EXPLANATION:
-<2–3 sentences. Mention layout, lighting, materials, and mood. Must be specific to THIS space.>
+<2–3 sentences. Must mention: user request, palette, and layout intent.>
 
 TIPS:
 - tip one
@@ -223,7 +350,6 @@ function parseAndValidate(text, bannedPhrases) {
 
   const expMatch = text.match(/EXPLANATION:\s*([\s\S]*?)\bTIPS:\b/i);
   const tipsMatch = text.match(/\bTIPS:\s*([\s\S]*)/i);
-
   if (!expMatch || !tipsMatch) return { ok: false };
 
   const explanation = expMatch[1].trim();
@@ -233,25 +359,23 @@ function parseAndValidate(text, bannedPhrases) {
     .filter(Boolean);
 
   const tips = tipsRaw.slice(0, 3);
-
   if (!explanation || tips.length !== 3) return { ok: false };
 
-  // Must be 2–3 sentences
-  const sentenceCount = explanation.split(/[.!?]+/).map(s => s.trim()).filter(Boolean).length;
+  const sentenceCount = explanation
+    .split(/[.!?]+/)
+    .map((s) => s.trim())
+    .filter(Boolean).length;
   if (sentenceCount < 2 || sentenceCount > 3) return { ok: false };
 
-  // Ban generic phrases
   const lower = (explanation + "\n" + tips.join("\n")).toLowerCase();
   for (const p of bannedPhrases) {
     if (lower.includes(p.toLowerCase())) return { ok: false };
   }
 
-  // Ensure tips are not duplicates and not too short
   const normTips = tips.map((t) => t.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim());
   if (new Set(normTips).size !== 3) return { ok: false };
   if (tips.some((t) => t.length < 18)) return { ok: false };
 
-  // Different starting verbs (rough check)
   const starts = tips.map((t) => (t.split(" ")[0] || "").toLowerCase());
   if (new Set(starts).size < 3) return { ok: false };
 
@@ -263,30 +387,53 @@ function parseAndValidate(text, bannedPhrases) {
    =============================== */
 function stableSignature(input) {
   const hash = crypto.createHash("sha256").update(String(input)).digest("hex");
-  // mod for bucket rotation
-  const mod = parseInt(hash.slice(0, 8), 16) >>> 0;
+  const mod = (parseInt(hash.slice(0, 8), 16) >>> 0) || 0;
   return { hex: hash, mod };
 }
 
 /* ===============================
-   Varied Fallback (NOT identical each time)
+   Varied Fallback (palette + layout)
    =============================== */
-function variedFallback({ safeRoom, safeStyle, signature, paletteNames, finalEmphasis }) {
+function variedFallback({
+  safeRoom,
+  safeStyle,
+  signature,
+  paletteNames,
+  paletteHex,
+  finalEmphasis,
+  layoutSuggestions = [],
+  isEdit = false,
+}) {
   const verbs = ["Shift", "Add", "Swap", "Layer", "Move", "Anchor", "Frame", "Raise", "Group", "Trim"];
   const v1 = verbs[(signature.mod + 1) % verbs.length];
   const v2 = verbs[(signature.mod + 4) % verbs.length];
   const v3 = verbs[(signature.mod + 7) % verbs.length];
 
-  const paletteHint = paletteNames.length ? paletteNames.slice(0, 3).join(", ") : "neutral tones";
+  const paletteHint =
+    paletteNames.length
+      ? paletteNames.slice(0, 3).join(", ")
+      : paletteHex.length
+      ? paletteHex.slice(0, 3).join(", ")
+      : "neutral tones";
+
+  const layoutHint =
+    Array.isArray(layoutSuggestions) && layoutSuggestions.length
+      ? layoutSuggestions.slice(0, 2).join("; ")
+      : "the suggested furniture placements";
+
+  const editLine = isEdit
+    ? "Because this is an edit flow, the advice assumes the same room structure and furniture positions are preserved."
+    : "The advice assumes a realistic, buildable interior based on the brief.";
 
   return {
     explanation:
       `This ${safeRoom} follows a ${safeStyle.toLowerCase()} direction with decisions centered on ${finalEmphasis}. ` +
-      `The palette leans on ${paletteHint}, with lighting and material choices framed to match the user’s request.`,
+      `It prioritizes the user request while keeping ${paletteHint} as the dominant palette and aligning with ${layoutHint}. ` +
+      `${editLine}`,
     tips: [
-      `${v1} the main light source (floor lamp or ceiling fixture) closer to the primary activity zone to improve task brightness without glare.`,
-      `${v2} one tactile material (linen curtain, woven rug, or matte wood accent) near the focal wall to prevent the space from feeling flat.`,
-      `${v3} furniture spacing so the walkway stays clear; leave a consistent passage line between key pieces for smoother movement.`,
+      `${v1} a task light (desk lamp or wall sconce) toward the main activity zone, then keep ambient lighting soft so the palette reads consistently.`,
+      `${v2} one key item to match the layout placement (“${layoutHint}”) and maintain a clear walkway line between primary pieces.`,
+      `${v3} accents (curtain, rug, throw pillows) using ${paletteHint} so the image and styling do not drift into unrelated dominant colors.`,
     ],
   };
 }
