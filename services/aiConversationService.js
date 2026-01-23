@@ -117,7 +117,15 @@ export async function saveAIUserMessage(conversationId, { text, image = null }) 
   const uid = requireUid();
 
   const cleanText = cleanStr(text);
-  if (!cleanText) throw new Error("text required");
+  const cleanImage = cleanUrlOrNull(image);
+
+  // ✅ FIX: allow saving when either text OR image exists
+  if (!cleanText && !cleanImage) {
+    throw new Error("Either text or image is required");
+  }
+
+  // ✅ If only image is provided, store a stable placeholder text
+  const finalText = cleanText || "Reference image attached.";
 
   // Ensure parent exists (so rules get() succeeds)
   await setDoc(
@@ -129,14 +137,18 @@ export async function saveAIUserMessage(conversationId, { text, image = null }) 
   await addDoc(collection(db, "aiConversations", conversationId, "messages"), {
     role: "user",
     senderId: uid,
-    text: cleanText,
-    image: cleanUrlOrNull(image),
+    text: finalText,
+    image: cleanImage,
     createdAt: serverTimestamp(),
   });
 
   await setDoc(
     doc(db, "aiConversations", conversationId),
-    { lastMessage: cleanText.slice(0, 200), lastMode: "design", updatedAt: serverTimestamp() },
+    {
+      lastMessage: finalText.slice(0, 200),
+      lastMode: "design",
+      updatedAt: serverTimestamp(),
+    },
     { merge: true }
   );
 }

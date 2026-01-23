@@ -1,3 +1,4 @@
+// ScheduleModal.jsx
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
@@ -56,7 +57,7 @@ export default function ScheduleModal({
   onClose,
   consultantId,
   availability = [],
-  sessionFee = 999,
+  sessionFee = 0, // In-update mula 999 para dynamic na galing sa consultant rate
 }) {
   const router = useRouter();
   const [date, setDate] = useState(new Date());
@@ -189,13 +190,17 @@ export default function ScheduleModal({
             multiline
           />
 
-          {/* INFO BOX */}
+          {/* INFO BOX - NGAYON AY GUMAGAMIT NA NG DYNAMIC RATE */}
           <View style={styles.feeReminder}>
             <Ionicons name="information-circle" size={20} color={THEME.primary} />
-            <Text style={styles.feeDesc}>
-              A session fee of <Text style={styles.bold}>₱{sessionFee}</Text> applies. 
-              The chat remains open for <Text style={styles.bold}>12 hours</Text> after payment.
-            </Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.feeDesc}>
+                A session fee of <Text style={styles.bold}>₱{sessionFee}.00</Text> applies. 
+              </Text>
+              <Text style={styles.feeDesc}>
+                The chat remains open for <Text style={styles.bold}>12 hours</Text> after payment.
+              </Text>
+            </View>
           </View>
 
           {/* ERROR DISPLAY */}
@@ -230,7 +235,7 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(15, 23, 42, 0.6)", // Darker backdrop
+    backgroundColor: "rgba(15, 23, 42, 0.6)", 
   },
   modalBox: {
     backgroundColor: THEME.surface,
@@ -300,7 +305,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#BAE6FD",
   },
-  feeDesc: { fontSize: 13, color: "#0369A1", lineHeight: 18, flex: 1 },
+  feeDesc: { fontSize: 13, color: "#0369A1", lineHeight: 18 },
   bold: { fontWeight: "800", color: THEME.primary },
 
   errorBox: { 

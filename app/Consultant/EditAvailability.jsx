@@ -10,8 +10,9 @@ import {
   View,
   ScrollView,
   StatusBar,
-  SafeAreaView, // Idinagdag para sa Notch/Status bar space
+  SafeAreaView,
   Platform,
+  TextInput, // Idinagdag para sa rate input
 } from "react-native";
 import { Picker } from "@react-native-picker/picker";
 import { Calendar } from "react-native-calendars";
@@ -28,21 +29,25 @@ export default function EditAvailability() {
 
   const [availability, setAvailability] = useState([]);
   const [selectedDay, setSelectedDay] = useState("");
+  const [rate, setRate] = useState(""); // State para sa Consultation Fee
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const loadAvailability = async () => {
+    const loadData = async () => {
       try {
         if (!uid) return;
         const snap = await getDoc(doc(db, "consultants", uid));
         if (snap.exists()) {
-          setAvailability(snap.data().availability || []);
+          const data = snap.data();
+          setAvailability(data.availability || []);
+          // I-convert ang number sa string para sa TextInput
+          setRate(data.rate ? data.rate.toString() : "");
         }
       } catch (err) {
-        console.log("Load availability error:", err);
+        console.log("Load data error:", err);
       }
     };
-    loadAvailability();
+    loadData();
   }, []);
 
   const addDay = () => {
@@ -59,18 +64,26 @@ export default function EditAvailability() {
     setAvailability((prev) => prev.filter((d) => d !== day));
   };
 
-  const saveAvailability = async () => {
+  const saveChanges = async () => {
     if (availability.length === 0) {
       Alert.alert("Required", "Please select at least one day.");
       return;
     }
+    if (!rate || isNaN(rate)) {
+      Alert.alert("Invalid Rate", "Please enter a valid consultation fee.");
+      return;
+    }
+
     try {
       setSaving(true);
-      await updateDoc(doc(db, "consultants", uid), { availability });
-      Alert.alert("Success ✅", "Availability updated successfully.");
+      await updateDoc(doc(db, "consultants", uid), { 
+        availability,
+        rate: parseFloat(rate) // I-save bilang number sa Firestore
+      });
+      Alert.alert("Success ✅", "Profile updated successfully.");
       router.back();
     } catch (err) {
-      Alert.alert("Error", "Failed to update availability.");
+      Alert.alert("Error", "Failed to update profile.");
     } finally {
       setSaving(false);
     }
@@ -98,20 +111,16 @@ export default function EditAvailability() {
 
   return (
     <View style={styles.page}>
-      {/* Configuration para makita ang oras at battery icons */}
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
       
-      {/* SafeAreaView para sa iOS Notch at Android Top Space */}
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.headerRow}>
           <TouchableOpacity style={styles.backButton} onPress={router.back}>
             <Ionicons name="arrow-back" size={22} color="#0F3E48" />
           </TouchableOpacity>
           <View>
-            <Text style={styles.headerTitle}>Edit Availability</Text>
-            <Text style={styles.headerSubtitle}>
-              Select days you are available
-            </Text>
+            <Text style={styles.headerTitle}>Edit Consultation Details</Text>
+            <Text style={styles.headerSubtitle}>Set your rate and availability</Text>
           </View>
         </View>
       </SafeAreaView>
@@ -121,6 +130,22 @@ export default function EditAvailability() {
         contentContainerStyle={styles.scrollContent}
       >
         <View style={styles.divider} />
+
+        {/* ===== RATE SECTION ===== */}
+        <View style={styles.section}>
+          <Text style={styles.label}>Consultation Fee (PHP)</Text>
+          <View style={styles.rateInputBox}>
+            <Text style={styles.currencySymbol}>₱</Text>
+            <TextInput
+              style={styles.rateInput}
+              placeholder="e.g. 500"
+              keyboardType="numeric"
+              value={rate}
+              onChangeText={setRate}
+            />
+          </View>
+          <Text style={styles.helperText}>This is the amount users will pay per session.</Text>
+        </View>
 
         {/* ===== CALENDAR AREA ===== */}
         <View style={styles.calendarContainer}>
@@ -162,7 +187,7 @@ export default function EditAvailability() {
 
         {/* ===== SELECTED DAYS LIST ===== */}
         <View style={styles.section}>
-          <Text style={styles.label}>Your Schedule</Text>
+          <Text style={styles.label}>Active Schedule</Text>
           {availability.length === 0 ? (
             <Text style={styles.emptyText}>No days selected yet.</Text>
           ) : (
@@ -180,7 +205,7 @@ export default function EditAvailability() {
         {/* ===== SAVE BUTTON ===== */}
         <TouchableOpacity
           style={[styles.saveBtn, saving && { opacity: 0.7 }]}
-          onPress={saveAvailability}
+          onPress={saveChanges}
           disabled={saving}
         >
           <Ionicons name="save-outline" size={20} color="#fff" />
@@ -195,14 +220,14 @@ export default function EditAvailability() {
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F3F9FA" },
-  safeArea: { backgroundColor: "#FFF" }, // Para sumunod ang background ng top area
+  safeArea: { backgroundColor: "#FFF" },
   scrollContent: { padding: 16, paddingBottom: 40 },
 
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 16,
-    paddingVertical: Platform.OS === 'android' ? 15 : 10, // Dynamic padding base sa platform
+    paddingVertical: Platform.OS === 'android' ? 15 : 10,
     backgroundColor: "#FFF",
   },
   backButton: {
@@ -218,6 +243,21 @@ const styles = StyleSheet.create({
   headerSubtitle: { fontSize: 12, color: "#777", marginTop: 2 },
   divider: { height: 1, backgroundColor: "#E4E6EB", marginBottom: 20 },
 
+  // New Rate Styles
+  rateInputBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#dce3ea',
+    borderRadius: 14,
+    paddingHorizontal: 15,
+    height: 55,
+  },
+  currencySymbol: { fontSize: 18, fontWeight: '700', color: '#01579B', marginRight: 10 },
+  rateInput: { flex: 1, fontSize: 16, fontWeight: '600', color: '#0F3E48' },
+  helperText: { fontSize: 11, color: '#888', marginTop: 5, fontStyle: 'italic' },
+
   calendarContainer: {
     backgroundColor: "#fff",
     borderRadius: 16,
@@ -225,11 +265,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E1E8EA",
     marginBottom: 20,
+    marginTop: 10,
   },
 
   section: { marginBottom: 20 },
   label: { fontWeight: "700", marginBottom: 8, color: "#2c4f4f", fontSize: 14 },
-
   inputRow: { flexDirection: 'row', gap: 10 },
   pickerBox: {
     flex: 1,

@@ -1,3 +1,4 @@
+// ConsultantProfile.jsx
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -23,13 +24,12 @@ import {
 import { db } from "../../config/firebase";
 import ScheduleModal from "../components/ScheduleModal";
 
-// UPDATED THEME COLORS
 const THEME = {
-  header: "#01579B",      // Bagong Blue Color
-  icon: "#2c4f4f",        // Dark Icon Color
-  button: "#3fa796",      // Original Green Button
-  bg: "#faf9f6",          // Off-white Background
-  accentBlue: "#B3E5FC"   // Light Blue for Subtitles
+  header: "#01579B",
+  icon: "#2c4f4f",
+  button: "#3fa796",
+  bg: "#faf9f6",
+  accentBlue: "#B3E5FC"
 };
 
 export default function ConsultantProfile() {
@@ -106,7 +106,6 @@ export default function ConsultantProfile() {
 
   return (
     <View style={styles.container}>
-      {/* StatusBar adjusted for the blue header */}
       <StatusBar barStyle="light-content" backgroundColor={THEME.header} />
       
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
@@ -122,6 +121,11 @@ export default function ConsultantProfile() {
             />
             <Text style={styles.headerTitle}>{consultant.fullName}</Text>
             <Text style={styles.headerSubtitle}>{consultant.specialization}</Text>
+            
+            {/* PINALITAN: Rate display sa ilalim ng specialization */}
+            <View style={styles.priceTag}>
+              <Text style={styles.priceText}>₱{consultant.rate || "0"}.00 / session</Text>
+            </View>
           </View>
 
           <View style={styles.headerStats}>
@@ -134,6 +138,8 @@ export default function ConsultantProfile() {
         <View style={styles.content}>
           <View style={styles.card}>
             <Text style={[styles.sectionTitle, { color: THEME.header, borderLeftColor: THEME.button }]}>Expert Details</Text>
+            {/* DAGDAG: Consultation Fee Row */}
+            <InfoRow icon="cash-outline" label="Consultation Fee" value={`₱${consultant.rate || "0"}.00`} />
             <InfoRow icon="briefcase-outline" label="Type" value={consultant.consultantType} />
             <InfoRow icon="school-outline" label="Education" value={consultant.education || "Not provided"} />
             <InfoRow icon="people-outline" label="Gender" value={consultant.gender} />
@@ -187,12 +193,15 @@ export default function ConsultantProfile() {
         </TouchableOpacity>
       </View>
 
-      <ScheduleModal
-        visible={scheduleVisible}
-        onClose={() => setScheduleVisible(false)}
-        consultantId={consultant.id}
-        availability={availability}
-      />
+      {consultant && (
+  <ScheduleModal
+    visible={scheduleVisible}
+    onClose={() => setScheduleVisible(false)}
+    consultantId={consultant.id}
+    availability={availability}
+    sessionFee={consultant.rate}
+  />
+)}
     </View>
   );
 }
@@ -230,6 +239,23 @@ const styles = StyleSheet.create({
   avatar: { width: 110, height: 110, borderRadius: 30, borderWidth: 4, borderColor: "rgba(255,255,255,0.3)" },
   headerTitle: { fontSize: 24, fontWeight: "900", color: "#fff", marginTop: 12 },
   headerSubtitle: { color: THEME.accentBlue, fontSize: 15, fontWeight: "500" },
+  
+  // New Styles para sa Price display sa Header
+  priceTag: {
+    marginTop: 8,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  priceText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+
   headerStats: { flexDirection: "row", justifyContent: "space-around", width: "100%", marginTop: 25, paddingHorizontal: 20 },
   statBox: { alignItems: "center", width: 95, paddingVertical: 12, borderRadius: 18, backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
   statValue: { fontSize: 18, fontWeight: "800", color: "#fff" },

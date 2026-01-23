@@ -19,7 +19,7 @@ import ConsultantDetailsModal from "../components/ConsultantDetailsModal";
 export default function Consultantst() {
   const [consultants, setConsultants] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeFilter, setActiveFilter] = useState("all"); 
+  const [activeFilter, setActiveFilter] = useState("all");
   const [selectedConsultant, setSelectedConsultant] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
@@ -51,11 +51,22 @@ export default function Consultantst() {
     setModalVisible(true);
   };
 
+  const handleStatusUpdated = (id, status) => {
+    setConsultants((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status } : c))
+    );
+    setSelectedConsultant((prev) =>
+      prev?.id === id ? { ...prev, status } : prev
+    );
+    if (status === "accepted") {
+      setActiveFilter("accepted");
+    }
+  };
+
   return (
     <View style={styles.mainContainer}>
       <StatusBar barStyle="light-content" />
-      
-      {/* HEADER - FIXED POSITON */}
+
       <View style={styles.header}>
         <SafeAreaView>
           <Text style={styles.headerTitle}>Consultant Hub</Text>
@@ -65,7 +76,6 @@ export default function Consultantst() {
         </SafeAreaView>
       </View>
 
-      {/* FILTER TABS - FIXED POSITION */}
       <View style={styles.filterWrapper}>
         <View style={styles.filterContainer}>
           {[
@@ -94,7 +104,6 @@ export default function Consultantst() {
         </View>
       </View>
 
-      {/* CONDITIONAL CONTENT RENDERING */}
       {loading ? (
         <View style={styles.centerLoader}>
           <ActivityIndicator size="large" color="#01579B" />
@@ -104,38 +113,53 @@ export default function Consultantst() {
         <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
           {filteredConsultants.length > 0 ? (
             filteredConsultants.map((c) => (
-              <TouchableOpacity 
-                key={c.id} 
-                style={styles.card} 
+              <TouchableOpacity
+                key={c.id}
+                style={styles.card}
                 onPress={() => openModal(c)}
-                activeOpacity={0.7}
+                activeOpacity={0.8}
               >
-                <View style={[styles.statusStripe, { backgroundColor: c.status === "accepted" ? "#2ecc71" : "#f39c12" }]} />
-                
-                <View style={styles.cardContent}>
-                  <View style={styles.avatarContainer}>
-                    <Ionicons name="person-circle-outline" size={45} color="#2c4f4f" />
+                <View style={styles.cardInner}>
+                  {/* Top Section */}
+                  <View style={styles.topSection}>
+                    <View style={styles.avatarContainer}>
+                      <Ionicons name="person" size={24} color="#64748B" />
+                    </View>
+                    <View style={styles.infoContainer}>
+                      <View style={styles.nameHeader}>
+                        <Text style={styles.nameText}>{c.fullName}</Text>
+                        {c.status === "accepted" && (
+                          <Ionicons 
+                            name="checkmark-circle" 
+                            size={18} 
+                            color="#2ecc71" 
+                            style={{ marginLeft: 6 }} 
+                          />
+                        )}
+                      </View>
+                      <Text style={styles.emailText} numberOfLines={1}>{c.email}</Text>
+                    </View>
                   </View>
 
-                  <View style={styles.leftInfo}>
-                    <View style={styles.nameHeader}>
-                      <Text style={styles.nameText}>{c.fullName}</Text>
-                      {c.status === "accepted" && (
-                        <Ionicons name="checkmark-circle" size={16} color="#2ecc71" style={{ marginLeft: 5 }} />
-                      )}
-                    </View>
-                    <Text style={styles.emailText} numberOfLines={1}>{c.email}</Text>
-                    
-                    <View style={[styles.badge, { backgroundColor: c.status === "accepted" ? "#E8F5E9" : "#FFF3E0" }]}>
-                       <Text style={[styles.badgeText, { color: c.status === "accepted" ? "#2E7D32" : "#E65100" }]}>
-                         {c.status === "accepted" ? "Verified Consultant" : "Pending Review"}
-                       </Text>
-                    </View>
-                  </View>
+                  {/* Divider Line */}
+                  <View style={styles.divider} />
 
-                  <View style={styles.rightAction}>
-                    <View style={styles.iconCircle}>
-                      <Ionicons name="chevron-forward" size={18} color="#01579B" />
+                  {/* Bottom Section */}
+                  <View style={styles.bottomSection}>
+                    <View style={[
+                      styles.badge, 
+                      { backgroundColor: c.status === "accepted" ? "#E8F5E9" : "#FFF3E0" }
+                    ]}>
+                      <View style={[
+                        styles.statusDot, 
+                        { backgroundColor: c.status === "accepted" ? "#2ecc71" : "#f39c12" }
+                      ]} />
+                      <Text style={[
+                        styles.badgeText, 
+                        { color: c.status === "accepted" ? "#1B5E20" : "#E65100" }
+                      ]}>
+                        {c.status === "accepted" ? "Verified Consultant" : "Pending Review"}
+                      </Text>
                     </View>
                   </View>
                 </View>
@@ -144,7 +168,7 @@ export default function Consultantst() {
           ) : (
             <View style={styles.emptyContainer}>
               <Ionicons name="people-outline" size={60} color="#CBD5E1" />
-              <Text style={styles.emptyText}>No consultants found in this category.</Text>
+              <Text style={styles.emptyText}>No consultants found.</Text>
             </View>
           )}
         </ScrollView>
@@ -155,6 +179,7 @@ export default function Consultantst() {
           visible={modalVisible}
           onClose={() => setModalVisible(false)}
           data={selectedConsultant}
+          onStatusUpdated={handleStatusUpdated}
         />
       )}
 
@@ -167,112 +192,68 @@ const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: "#F8FAFC" },
   centerLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { marginTop: 10, color: "#64748B", fontSize: 14, fontWeight: "500" },
-  
-  header: {
-    backgroundColor: "#01579B",
-    paddingTop: 50,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-  },
+  header: { backgroundColor: "#01579B", paddingTop: 50, paddingHorizontal: 20, paddingBottom: 20 },
   headerTitle: { fontSize: 26, fontWeight: "800", color: "#FFF" },
-  headerSubtitle: { 
-    fontSize: 14, 
-    color: "rgba(255,255,255,0.7)", 
-    marginTop: 4 
-  },
+  headerSubtitle: { fontSize: 14, color: "rgba(255,255,255,0.7)", marginTop: 4 },
+  filterWrapper: { paddingHorizontal: 20, marginTop: 15, marginBottom: 5 },
+  filterContainer: { flexDirection: "row", backgroundColor: "#E2E8F0", borderRadius: 15, padding: 5 },
+  filterTab: { flex: 1, paddingVertical: 10, alignItems: "center", borderRadius: 12 },
+  activeFilterTab: { backgroundColor: "#FFF", shadowColor: "#000", shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
+  filterTabText: { color: "#64748B", fontSize: 12, fontWeight: "700" },
+  activeFilterTabText: { color: "#01579B" },
+  scrollContent: { padding: 16, paddingBottom: 120 },
 
-  filterWrapper: {
-    paddingHorizontal: 20,
-    marginTop: 15,
-    marginBottom: 5,
-  },
-  filterContainer: {
-    flexDirection: "row",
-    backgroundColor: "#E2E8F0",
-    borderRadius: 15,
-    padding: 5,
-  },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: "center",
-    borderRadius: 12,
-  },
-  activeFilterTab: {
-    backgroundColor: "#FFF",
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  filterTabText: {
-    color: "#64748B",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  activeFilterTabText: {
-    color: "#01579B",
-  },
-
-  scrollContent: { padding: 16, paddingBottom: 120 }, // Added space for BottomNav
-  
   card: {
-    backgroundColor: "#FFF",
+    backgroundColor: "#FFFFFF",
     borderRadius: 20,
-    marginBottom: 12,
-    flexDirection: 'row',
-    overflow: 'hidden',
-    shadowColor: "#000",
-    shadowOpacity: 0.04,
+    marginBottom: 16,
+    shadowColor: "#0F172A",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
     shadowRadius: 10,
-    elevation: 2,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
   },
-  statusStripe: { width: 5, height: '100%' },
-  cardContent: {
-    flex: 1,
-    flexDirection: 'row',
-    padding: 15,
-    alignItems: 'center',
-  },
+  cardInner: { padding: 16 },
+  topSection: { flexDirection: 'row', alignItems: 'center' },
   avatarContainer: {
-    marginRight: 12,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "#F8FAFC",
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
-  leftInfo: { flex: 1 },
-  nameHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
-  nameText: { fontSize: 17, fontWeight: "700", color: "#1E293B" },
-  emailText: { fontSize: 13, color: "#64748B", marginBottom: 8 },
+  infoContainer: { flex: 1, marginLeft: 14 },
+  nameHeader: { flexDirection: 'row', alignItems: 'center' },
+  nameText: { fontSize: 17, fontWeight: "700", color: "#1E293B", letterSpacing: -0.3 },
+  emailText: { fontSize: 13, color: "#64748B", marginTop: 2 },
   
+  divider: {
+    height: 1,
+    backgroundColor: "#F1F5F9",
+    marginVertical: 14,
+  },
+
+  bottomSection: { flexDirection: 'row' },
   badge: {
-    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 3,
+    paddingVertical: 6,
     borderRadius: 8,
   },
-  badgeText: { fontSize: 9, fontWeight: "800", textTransform: 'uppercase' },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 8,
+  },
+  badgeText: { fontSize: 10, fontWeight: "700", textTransform: 'uppercase', letterSpacing: 0.5 },
 
-  rightAction: {
-    paddingLeft: 10,
-    justifyContent: 'center',
-  },
-  iconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#E3F2FD',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 60,
-  },
-  emptyText: {
-    color: "#94A3B8",
-    fontSize: 14,
-    marginTop: 10,
-    textAlign: 'center',
-  },
+  emptyContainer: { alignItems: 'center', justifyContent: 'center', marginTop: 60 },
+  emptyText: { color: "#94A3B8", fontSize: 14, marginTop: 10, textAlign: 'center' },
 });

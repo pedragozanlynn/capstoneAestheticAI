@@ -2,6 +2,10 @@ import cors from "cors";
 import "dotenv/config";
 import express from "express";
 import multer from "multer";
+import fs from "fs";
+import os from "os";
+import path from "path";
+import http from "http";
 import { startAIDesignFlow } from "./index.js";
 
 const app = express();
@@ -15,7 +19,8 @@ const MAX_IMAGE_MB = 10;
 const ALLOWED_MIME = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 /* ===============================
-   MULTER (MEMORY)
+   MULTER (MEMORY) - keep as-is
+   We'll manually write to temp file.
    =============================== */
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -89,6 +94,22 @@ function resolveMode({ rawMode, hasImage, message }) {
   return "edit";
 }
 
+function extFromMime(mime = "") {
+  if (mime === "image/png") return "png";
+  if (mime === "image/webp") return "webp";
+  return "jpg";
+}
+
+function writeTempImageFromBuffer(buffer, mime) {
+  const ext = extFromMime(mime);
+  const filename = `aestheticai_${Date.now()}_${Math.random()
+    .toString(16)
+    .slice(2)}.${ext}`;
+  const tempPath = path.join(os.tmpdir(), filename);
+  fs.writeFileSync(tempPath, buffer);
+  return tempPath;
+}
+
 /* ===============================
    HEALTH CHECK
    =============================== */
@@ -102,6 +123,14 @@ app.get("/", (_, res) => {
 app.post("/ai/design", upload.single("image"), async (req, res) => {
   console.log("📩 /ai/design HIT");
 
+  // Helps prevent server crash when client aborts mid-request
+  req.on("aborted", () => console.warn("⚠️ Request aborted by client."));
+  req.on("close", () => {
+    // do not spam logs; optional
+  });
+
+  let tempImagePath = null;
+
   try {
     let { message, mode, sessionId } = req.body;
     const hasImage = Boolean(req.file);
@@ -111,7 +140,7 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
     console.log("➡ Session:", sessionId || "(new)");
     console.log("➡ Has image:", hasImage);
 
-    /* ---------- Image validation + base64 ---------- */
+    /* ---------- Image validation + TEMP PATH for detection ---------- */
     let base64Image = null;
 
     if (hasImage) {
@@ -122,23 +151,25 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
         });
       }
 
+      // ✅ Create a TEMP FILE PATH for object detection (prevents ENAMETOOLONG)
+      tempImagePath = writeTempImageFromBuffer(req.file.buffer, mime);
+
+      // ✅ Optional: base64 ONLY for UI preview (do NOT pass to detector)
+      // If you want to reduce payload, you can comment these 2 lines out.
       const base64 = req.file.buffer.toString("base64");
       base64Image = `data:${mime};base64,${base64}`;
     }
 
     /* ---------- Message rules ---------- */
-    // If no image, message is required
     if (!hasImage && (!message || typeof message !== "string" || !message.trim())) {
       return res.status(400).json({ error: "Message is required" });
     }
 
-    // If image exists but message is placeholder/empty, inject default prompt
     if (hasImage && isPlaceholderMessage(message)) {
       message = defaultPromptForImage(mode);
       console.log("🧩 Injected default prompt for image-based request");
     }
 
-    // Final message validation
     if (!message || typeof message !== "string" || !message.trim()) {
       return res.status(400).json({ error: "Message is required" });
     }
@@ -146,22 +177,23 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
     /* ---------- Resolve mode ---------- */
     const normalizedMode = resolveMode({ rawMode: mode, hasImage, message });
 
-    // ✅ IMPORTANT CHANGE:
-    // Do NOT block "edit" without image.
-    // We allow text-only customization responses; image generation is decided in orchestrator.
+    // ✅ IMPORTANT:
+    // Pass BOTH:
+    // - imagePath for object detection (short)
+    // - image base64 for any img2img model (if your flow still needs it)
     const result = await startAIDesignFlow({
       message,
       mode: normalizedMode,
-      image: base64Image, // base64 data URL (or null)
+      image: base64Image,       // keep for HF / UI if needed
+      imagePath: tempImagePath, // ✅ NEW: used for detector
       sessionId,
     });
 
     console.log("✅ AI response generated");
 
-    // Return input image too (for UI original photo display)
     return res.status(200).json({
       ...result,
-      inputImage: base64Image || null,
+      inputImage: base64Image || null, // UI original display
     });
   } catch (error) {
     console.error("❌ AI ERROR:", error?.message || error);
@@ -170,12 +202,25 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
       error: "AI processing failed",
       details: error?.message || String(error),
     });
+  } finally {
+    // ✅ Cleanup temp file
+    if (tempImagePath) {
+      try {
+        fs.unlinkSync(tempImagePath);
+      } catch {}
+    }
   }
 });
 
 /* ===============================
-   START SERVER
+   START SERVER (with longer timeouts)
    =============================== */
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+// reduce "Error: aborted" when heavy work
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 125000;
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 AI Design Server running on port ${PORT}`);
 });

@@ -13,7 +13,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import Input from "../components/Input";
 import Button from "../components/Button";
 import { Ionicons } from "@expo/vector-icons";
-import { Picker } from "@react-native-picker/picker";
 
 export default function Step1Register() {
   const router = useRouter();
@@ -24,7 +23,6 @@ export default function Step1Register() {
     address: "",
     password: "",
     confirmPassword: "",
-    consultantType: "",
     gender: "",
   });
 
@@ -58,13 +56,9 @@ export default function Step1Register() {
       !formData.address ||
       !formData.password ||
       !formData.confirmPassword ||
-      !formData.consultantType ||
       !formData.gender
     ) {
-      Alert.alert(
-        "Missing Field",
-        "Please fill in all fields, including gender."
-      );
+      Alert.alert("Missing Field", "Please fill in all fields, including gender.");
       return false;
     }
     if (!formData.email.includes("@")) {
@@ -72,10 +66,7 @@ export default function Step1Register() {
       return false;
     }
     if (formData.password.length < 8) {
-      Alert.alert(
-        "Invalid Password",
-        "Password must be at least 8 characters long."
-      );
+      Alert.alert("Invalid Password", "Password must be at least 8 characters long.");
       return false;
     }
     if (formData.password !== formData.confirmPassword) {
@@ -110,10 +101,8 @@ export default function Step1Register() {
           <Ionicons name="arrow-back" size={26} color="#FFFFFF" />
         </TouchableOpacity>
         <View style={styles.headerTextContainer}>
-          <Text style={styles.headerTitle}>Consultant Registration</Text>
-          <Text style={styles.headerSubtitle}>
-            Step 1 – Personal Information
-          </Text>
+          <Text style={styles.headerTitle}>Registration</Text>
+          <Text style={styles.headerSubtitle}>Step 1 – Personal Information</Text>
         </View>
       </View>
 
@@ -197,20 +186,6 @@ export default function Step1Register() {
           </TouchableOpacity>
         </View>
 
-        {/* ✅ CONSULTANT TYPE DROPDOWN (ONLY CHANGE) */}
-        <Text style={styles.label}>Consultant Type</Text>
-        <View style={styles.pickerContainer}>
-          <Picker
-            selectedValue={formData.consultantType}
-            onValueChange={(v) =>
-              handleInputChange("consultantType", v)
-            }
-          >
-            <Picker.Item label="Professional" value="Professional" />
-            <Picker.Item label="Fresh Graduate" value="Fresh Graduate" />
-          </Picker>
-        </View>
-
         <Button title="Next" onPress={handleNext} style={styles.next} />
       </View>
     </ScrollView>
@@ -287,15 +262,6 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontWeight: "700",
     color: "#555",
-  },
-
-  /* DROPDOWN */
-  pickerContainer: {
-    borderWidth: 1,
-    borderColor: "#dce3ea",
-    borderRadius: 14,
-    backgroundColor: "#fff",
-    marginBottom: 14,
   },
 
   next: { marginTop: 20, marginBottom: 20 },

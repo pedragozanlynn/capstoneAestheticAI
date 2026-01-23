@@ -1,16 +1,4 @@
 // orchestrateChat.js (controller)
-// ✅ Updated: integrates OBJECT DETECTION from image -> accurate layoutSuggestions + detected objects positions
-// ✅ Updated: supports BOTH detector output shapes:
-//    A) { image:{width,height}, objects:[{label,score,bbox:{x,y,w,h}}] }  (pixel bbox)
-//    B) { boxes:[{label,x,y,w,h,score|confidence}] }                     (normalized bbox 0..1)
-// ✅ Updated: passes detections into generateLayout(room, detections)
-// ✅ Updated: uses detected needs to prioritize furniture list (overrideNeeds) IF your matcher supports it
-// ✅ Still guarantees furniture links always
-//
-// IMPORTANT:
-// - Your objectDetector.js currently exports detectFurnitureObjectsFromImage + normalizeDetectedNeeds.
-// - This orchestrator imports detectRoomObjects; so we provide a small wrapper name here:
-//   detectRoomObjects(imagePath) -> calls detectFurnitureObjectsFromImage(imagePath) and returns a unified format.
 
 import crypto from "crypto";
 import { getColorPalette } from "../design-engine/colorEngine.js";
@@ -42,43 +30,117 @@ function normalizeMessage(message = "") {
     .trim();
 }
 
+/**
+ * ✅ UPDATED: include ALL spaceClassifier room types + PH/Taglish synonyms
+ * (so re-classification triggers instead of reusing previous session)
+ */
 function mentionsNewSpace(message = "") {
-  return /\b(bedroom|living\s*room|office|workspace|coffee\s*shop|cafe|restaurant|kitchen|studio|bathroom|dining|retail|salon|spa|hotel)\b/i.test(
-    message
+  const re = new RegExp(
+    String.raw`\b(` +
+      [
+        // Residential
+        "bedroom","tulugan","kwarto","silid","nursery",
+        "living\\s*room","livingroom","sala","family\\s*room","tv\\s*room","media\\s*room",
+        "kitchen","kusina","dirty\\s*kitchen","pantry",
+        "dining\\s*room","dining\\s*area","kainan",
+        "bathroom","toilet","cr","banyo","palikuran",
+        "home\\s*office","office","workspace","study\\s*room","desk",
+        "kids\\s*playroom","playroom","toy\\s*room",
+        "walk[\\s-]*in\\s*closet","closet\\s*room","wardrobe\\s*room","damitan",
+        "laundry\\s*room","laundry","labahan","utility\\s*room",
+        "storage\\s*room","storeroom","storage","bodega",
+        "service\\s*area","utility\\s*area","service\\s*kitchen",
+        "maids\\s*room","maid'?s\\s*room","helper\\s*room",
+        "entryway","foyer","entrance","mudroom",
+        "hallway","corridor","passage",
+        "stairs","staircase","hagdan","stairs\\s*area",
+        "balcony","balkonahe","terrace","terasa","lanai","veranda","beranda",
+        "patio",
+        "roof\\s*deck","roof\\s*top","rooftop","roof\\s*terrace",
+        "garden","yard","bakuran","landscape",
+        "garage","carport","garahe",
+        "studio\\s*apartment","studio\\s*unit","studio",
+
+        // Commercial (small biz)
+        "sari[\\s-]*sari\\s*store","sari\\s*sari","tindahan","corner\\s*store","mini\\s*store",
+        "retail\\s*store","clothing\\s*store","convenience\\s*store","boutique","retail","shop","store",
+        "bakery","panaderya","bakeshop","bread\\s*shop",
+        "milktea","milk\\s*tea\\s*shop","milktea\\s*shop",
+        "coffee\\s*shop","cafe","espresso\\s*bar",
+        "restaurant","bistro","diner","canteen","karinderya",
+        "computer\\s*shop","internet\\s*cafe","comshop","net\\s*cafe","pisonet",
+        "printing\\s*shop","print\\s*shop","xerox","tarpaulin","printing\\s*services","photocopy",
+        "laundry\\s*shop","laundromat","wash\\s*and\\s*dry","wash\\s*dry\\s*fold",
+        "pharmacy","drugstore","botika",
+      ].join("|") +
+      String.raw`)\b`,
+    "i"
   );
+
+  return re.test(String(message || ""));
 }
 
-/** ✅ ensure snake_case always */
 function toSnakeRoomType(t = "") {
   return String(t || "").toLowerCase().trim().replace(/\s+/g, "_");
 }
 
 /**
- * ✅ SINGLE SOURCE OF TRUTH: Resolve final roomType used by ALL modules.
+ * ✅ UPDATED: heuristic fallback now covers ALL spaceClassifier room types.
+ * - Prioritize outdoor spaces (balcony/patio/roof_deck/garden) BEFORE bedroom tokens
+ * - Add commercial small-business room types
+ * - Keep everything else unchanged
  */
 function resolveFinalRoomType({ rawMessage = "", classified, previousSession } = {}) {
   const msg = String(rawMessage || "").toLowerCase();
   const rt = classified?.roomType;
 
-  // 1) classifier result
   if (rt && rt !== "unknown" && rt !== "generic") return toSnakeRoomType(rt);
 
-  // 2) keep previous session if user did not mention a new space
   const userMentionsSpace = mentionsNewSpace(msg);
   const prevRoomType = previousSession?.room?.type || previousSession?.space?.roomType;
   if (!userMentionsSpace && prevRoomType && prevRoomType !== "unknown" && prevRoomType !== "generic") {
     return toSnakeRoomType(prevRoomType);
   }
 
-  // 3) heuristic rescue
-  if (/\b(living\s*room|livingroom|sofa|couch|tv\s*console|tv\s*stand|coffee\s*table|sectional)\b/i.test(msg)) {
+  // ✅ Outdoor / exterior first (prevents "balcony" drifting into bedroom)
+  if (/\b(roof\s*deck|rooftop|roof\s*top|roof\s*terrace|rooftop\s*terrace)\b/i.test(msg)) return "roof_deck";
+  if (/\b(balcony|balkonahe|veranda|beranda|lanai|terrace|terasa)\b/i.test(msg)) return "balcony";
+  if (/\b(patio)\b/i.test(msg)) return "patio";
+  if (/\b(garden|yard|bakuran|landscape)\b/i.test(msg)) return "garden";
+  if (/\b(garage|carport|garahe)\b/i.test(msg)) return "garage";
+
+  // ✅ Residential
+  if (/\b(living\s*room|livingroom|sala|family\s*room|tv\s*room|media\s*room|sofa|couch|tv\s*console|tv\s*stand|coffee\s*table|sectional)\b/i.test(msg)) {
     return "living_room";
   }
-  if (/\b(kitchen|sink|stove|cooktop|range|countertop|island|backsplash)\b/i.test(msg)) return "kitchen";
-  if (/\b(dining\s*room|dining\s*area|dining\s*table)\b/i.test(msg)) return "dining_room";
-  if (/\b(bedroom|bed|wardrobe|nightstand|dresser)\b/i.test(msg)) return "bedroom";
-  if (/\b(bathroom|toilet|cr|shower|vanity)\b/i.test(msg)) return "bathroom";
-  if (/\b(home\s*office|office|workspace|desk)\b/i.test(msg)) return "home_office";
+  if (/\b(kitchen|kusina|dirty\s*kitchen|sink|stove|cooktop|range|countertop|island|backsplash|fridge|refrigerator)\b/i.test(msg)) return "kitchen";
+  if (/\b(pantry|walk[\s-]*in\s*pantry)\b/i.test(msg)) return "pantry";
+  if (/\b(dining\s*room|dining\s*area|dining\s*table|kainan)\b/i.test(msg)) return "dining_room";
+  if (/\b(bathroom|toilet|cr|shower|vanity|banyo|palikuran)\b/i.test(msg)) return "bathroom";
+  if (/\b(home\s*office|office|workspace|study\s*room|desk)\b/i.test(msg)) return "home_office";
+  if (/\b(kids\s*playroom|playroom|toy\s*room|play\s*mat)\b/i.test(msg)) return "kids_playroom";
+  if (/\b(walk[\s-]*in\s*closet|closet\s*room|wardrobe\s*room|damitan)\b/i.test(msg)) return "walk_in_closet";
+  if (/\b(laundry\s*room|laundry|labahan|washer|dryer|utility\s*room)\b/i.test(msg)) return "laundry_room";
+  if (/\b(storage\s*room|storeroom|storage|bodega|boxes|shelves\s*storage)\b/i.test(msg)) return "storage_room";
+  if (/\b(service\s*area|utility\s*area|service\s*kitchen)\b/i.test(msg)) return "service_area";
+  if (/\b(maids\s*room|maid'?s\s*room|helper\s*room)\b/i.test(msg)) return "maids_room";
+  if (/\b(entryway|foyer|entrance|mudroom)\b/i.test(msg)) return "entryway";
+  if (/\b(hallway|corridor|passage)\b/i.test(msg)) return "hallway";
+  if (/\b(stairs|staircase|hagdan|stairs\s*area|stair\s*landing)\b/i.test(msg)) return "stairs_area";
+  if (/\b(studio\s*apartment|studio\s*unit|one\s*room\s*apartment|studio)\b/i.test(msg)) return "studio_apartment";
+  if (/\b(bedroom|bed|wardrobe|nightstand|dresser|tulugan|kwarto|silid)\b/i.test(msg)) return "bedroom";
+
+  // ✅ Commercial (Small business)
+  if (/\b(sari[\s-]*sari\s*store|sari\s*sari|tindahan|corner\s*store|mini\s*store)\b/i.test(msg)) return "sari_sari_store";
+  if (/\b(retail\s*store|clothing\s*store|convenience\s*store|boutique|retail)\b/i.test(msg)) return "retail_store";
+  if (/\b(bakery|panaderya|bakeshop|bread\s*shop)\b/i.test(msg)) return "bakery";
+  if (/\b(milktea|milk\s*tea\s*shop|milktea\s*shop)\b/i.test(msg)) return "milktea_shop";
+  if (/\b(coffee\s*shop|cafe|espresso\s*bar)\b/i.test(msg)) return "coffee_shop";
+  if (/\b(restaurant|bistro|diner|canteen|karinderya)\b/i.test(msg)) return "restaurant";
+  if (/\b(computer\s*shop|internet\s*cafe|comshop|net\s*cafe|pisonet)\b/i.test(msg)) return "computer_shop";
+  if (/\b(printing\s*shop|print\s*shop|xerox|tarpaulin|printing\s*services|photocopy)\b/i.test(msg)) return "printing_shop";
+  if (/\b(laundry\s*shop|laundromat|wash\s*and\s*dry|wash\s*dry\s*fold)\b/i.test(msg)) return "laundry_shop";
+  if (/\b(pharmacy|drugstore|botika)\b/i.test(msg)) return "pharmacy";
 
   return "unknown";
 }
@@ -121,20 +183,20 @@ function looksLikeEditRequest(message = "") {
 }
 
 /* ===============================
+   ✅ OPTIONAL: detect explicit "new design/from scratch" (classification only)
+   =============================== */
+function looksLikeNewDesignRequest(message = "") {
+  const t = String(message || "").toLowerCase();
+  return /(from scratch|new design|start over|bagong design|ibang part|ibang bahagi|other part|other parts|gawa ulit|ulit|panibago)/i.test(t);
+}
+
+/* ===============================
    ✅ OBJECT DETECTOR WRAPPER
-   - Keep your existing detectFurnitureObjectsFromImage()
-   - Provide a unified result that layoutGenerator can consume
+   ✅ IMPORTANT: imagePath MUST be a local file path
    =============================== */
 async function detectRoomObjects(imagePath) {
   const res = await detectFurnitureObjectsFromImage(imagePath);
 
-  // If your python currently returns ONLY objects list:
-  // { objects:["sofa","bed"], raw:[], conf:{} }
-  // we still return it, but layoutGenerator will fallback to procedural
-  // unless you later extend detect.py to return boxes.
-
-  // If later detect.py returns boxes, pass them through.
-  // Support common field names (boxes, detections).
   const boxes =
     (Array.isArray(res?.boxes) && res.boxes) ||
     (Array.isArray(res?.detections) && res.detections) ||
@@ -145,8 +207,6 @@ async function detectRoomObjects(imagePath) {
       ? res.image
       : null;
 
-  // Normalize objects as structured list if only strings exist
-  // objectsStructured: [{label,score,bbox?}]
   const objectsStructured = Array.isArray(res?.objects)
     ? res.objects
         .map((o) => {
@@ -158,19 +218,15 @@ async function detectRoomObjects(imagePath) {
 
   return {
     image,
-    boxes: boxes || undefined,       // normalized preferred
-    objects: objectsStructured,       // may include bbox if your python provides it
+    boxes: boxes || undefined,
+    objects: objectsStructured,
     raw: res?.raw || [],
     conf: res?.conf || {},
     error: res?.error,
   };
 }
 
-/* ===============================
-   OBJECT DETECTION -> NEEDS (for furniture)
-   =============================== */
 function extractDetectedNeeds(detectionResult) {
-  // Prefer boxes labels if present, otherwise use objects labels
   const boxLabels = Array.isArray(detectionResult?.boxes)
     ? detectionResult.boxes.map((b) => b?.label).filter(Boolean)
     : [];
@@ -180,7 +236,6 @@ function extractDetectedNeeds(detectionResult) {
     : [];
 
   const needs = normalizeDetectedNeeds([...boxLabels, ...objLabels]);
-  // dedupe preserve order
   const seen = new Set();
   const uniq = [];
   for (const n of needs) {
@@ -190,6 +245,75 @@ function extractDetectedNeeds(detectionResult) {
     uniq.push(n);
   }
   return uniq;
+}
+
+/* ===============================
+   ✅ NEW: infer roomType from detections (classification fix only)
+   =============================== */
+function inferRoomTypeFromDetections(detectionResult) {
+  const labels = [];
+
+  const boxes = Array.isArray(detectionResult?.boxes) ? detectionResult.boxes : [];
+  for (const b of boxes) {
+    const l = String(b?.label || "").toLowerCase().trim();
+    if (l) labels.push(l);
+  }
+
+  const objs = Array.isArray(detectionResult?.objects) ? detectionResult.objects : [];
+  for (const o of objs) {
+    const l = String(o?.label || "").toLowerCase().trim();
+    if (l) labels.push(l);
+  }
+
+  if (!labels.length) return null;
+
+  // scoring map (minimal, extend as your detector labels evolve)
+  const RULES = [
+    { room: "bathroom", keys: ["toilet", "wc", "bidet", "shower", "bathtub", "sink", "vanity"] },
+    { room: "kitchen", keys: ["stove", "cooktop", "oven", "range", "rangehood", "sink", "fridge", "refrigerator", "cabinet", "kitchen"] },
+    { room: "bedroom", keys: ["bed", "pillow", "wardrobe", "closet", "nightstand", "headboard"] },
+    { room: "living_room", keys: ["sofa", "couch", "tv", "television", "coffee table", "console", "media console", "living room"] },
+    { room: "dining_room", keys: ["dining table", "dining chair", "table set"] },
+    { room: "home_office", keys: ["desk", "monitor", "laptop", "office chair", "keyboard"] },
+    { room: "laundry_room", keys: ["washing machine", "washer", "dryer", "laundry"] },
+
+    // outdoor-ish
+    { room: "balcony", keys: ["railing", "balustrade", "outdoor", "patio chair", "outdoor chair", "planter", "plants", "terrace"] },
+
+    // small biz (generic cues)
+    { room: "retail_store", keys: ["display rack", "shelves", "checkout", "cashier", "counter", "products"] },
+  ];
+
+  const scores = new Map();
+  for (const rule of RULES) scores.set(rule.room, 0);
+
+  for (const l of labels) {
+    for (const rule of RULES) {
+      for (const k of rule.keys) {
+        if (l.includes(k)) {
+          scores.set(rule.room, (scores.get(rule.room) || 0) + 1);
+        }
+      }
+    }
+  }
+
+  const sorted = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+  const best = sorted[0];
+  const second = sorted[1];
+
+  if (!best || best[1] <= 0) return null;
+
+  const separation = second ? best[1] - second[1] : best[1];
+  const confidence = Math.max(0.45, Math.min(0.9, 0.45 + best[1] * 0.08 + separation * 0.05));
+
+  // require at least mild evidence
+  if (best[1] < 2) return null;
+
+  return {
+    roomType: best[0],
+    confidence,
+    scores: Object.fromEntries(scores),
+  };
 }
 
 /* ===============================
@@ -286,11 +410,20 @@ function hardGuaranteeFurnitureLinks(furniture = [], roomType = "interior") {
     .filter((f) => f?.name && f?.links?.shopee && f?.links?.lazada && f?.links?.ikea && f?.links?.marketplace);
 }
 
+/* ===============================
+   ✅ MAIN ORCHESTRATOR
+   =============================== */
 export async function orchestrateChat({
   sessionId,
   message,
   mode = "generate",
+
+  // ✅ image = base64 (img2img)
   image = null,
+
+  // ✅ imagePath = local temp file path (python detect)
+  imagePath = null,
+
   isEdit: forcedEdit = null,
 } = {}) {
   const resolvedSessionId = sessionId || crypto.randomUUID();
@@ -324,11 +457,47 @@ export async function orchestrateChat({
 
   const currentSpaceType = spaceResult?.spaceType || "residential";
 
-  const finalRoomType = resolveFinalRoomType({
+  // ✅ Resolve roomType (text-based first)
+  let finalRoomType = resolveFinalRoomType({
     rawMessage,
     classified: spaceResult,
     previousSession,
   });
+
+  /* ===============================
+     ✅ NEW: EARLY image-based room inference
+     - fixes: "ibang part ng bahay" but still becomes living_room
+     - fixes: placeholder message + photo uses previous session roomType
+     =============================== */
+  let detectionResult = null;
+  let detectedNeeds = [];
+  let inferredFromImage = null;
+
+  const shouldTryImageInference =
+    !!imagePath &&
+    (
+      finalRoomType === "unknown" ||
+      isPlaceholderMessage(rawMessage) ||
+      looksLikeNewDesignRequest(rawMessage)
+    );
+
+  if (shouldTryImageInference) {
+    try {
+      detectionResult = await detectRoomObjects(imagePath);
+      detectedNeeds = extractDetectedNeeds(detectionResult);
+
+      inferredFromImage = inferRoomTypeFromDetections(detectionResult);
+
+      if (inferredFromImage?.roomType && inferredFromImage?.confidence >= 0.55) {
+        finalRoomType = toSnakeRoomType(inferredFromImage.roomType);
+      }
+    } catch (e) {
+      console.warn("Early image inference failed:", e?.message || e);
+      detectionResult = null;
+      detectedNeeds = [];
+      inferredFromImage = null;
+    }
+  }
 
   if (finalRoomType === "unknown") {
     return {
@@ -338,8 +507,12 @@ export async function orchestrateChat({
         intent,
         space: currentSpaceType,
         message:
-          "I couldn’t confirm the room type. Are you designing a living room, bedroom, kitchen, dining room, or home office?",
-        debug: { classifier: spaceResult, finalRoomType },
+          "I couldn’t confirm the room type. Please specify: bedroom, living room, kitchen, dining room, bathroom, home office, balcony/terrace, patio, roof deck, garden, laundry room, storage room, or a small business (sari-sari, retail, cafe, milktea, bakery, etc.).",
+        debug: {
+          classifier: spaceResult,
+          finalRoomType,
+          inferredFromImage,
+        },
       },
     };
   }
@@ -397,16 +570,12 @@ export async function orchestrateChat({
   const palette = activeSession?.palette || (await getColorPalette(style, rawMessage));
 
   /* ===============================
-     7) ✅ Object detection (only if image path is available on server)
-     NOTE: Your image param MUST be a local file path.
-     If it's a URL or base64, you must save it first.
+     7) ✅ Object detection uses imagePath ONLY
+     (reuse early detection if already done)
      =============================== */
-  let detectionResult = null;
-  let detectedNeeds = [];
-
-  if (image) {
+  if (!detectionResult && imagePath) {
     try {
-      detectionResult = await detectRoomObjects(image);
+      detectionResult = await detectRoomObjects(imagePath);
       detectedNeeds = extractDetectedNeeds(detectionResult);
     } catch (e) {
       console.warn("Object detection failed:", e?.message || e);
@@ -417,15 +586,12 @@ export async function orchestrateChat({
 
   /* ===============================
      8) Layout + suggestions
-     - Pass detections into generateLayout(room, detections)
-     - layoutGenerator will use boxes/bbox if available, else procedural fallback
      =============================== */
   const layoutObj =
     typeof generateLayout === "function" ? generateLayout(room, detectionResult || null) : null;
 
   const layout = layoutObj || { summary: "", zones: [], placements: [], items: [] };
 
-  // ✅ Use placements to form layoutSuggestions (human-readable and accurate)
   const layoutSuggestions =
     Array.isArray(layout?.placements) && layout.placements.length > 0
       ? layout.placements
@@ -435,7 +601,6 @@ export async function orchestrateChat({
 
   /* ===============================
      9) Furniture matching + sourcing
-     - If you add overrideNeeds support in furnitureMatcher, pass detectedNeeds
      =============================== */
   let furniture = [];
   try {
@@ -444,8 +609,7 @@ export async function orchestrateChat({
       style,
       palette,
       layoutSuggestions,
-      // ✅ enable this only if you implemented it in furnitureMatcher:
-      // overrideNeeds: detectedNeeds,
+      // overrideNeeds: detectedNeeds, // enable only if you implemented it
     });
     furniture = Array.isArray(out) ? out : [];
   } catch (e) {
@@ -472,8 +636,11 @@ export async function orchestrateChat({
 
   /* ===============================
      11) init image handling
+     ✅ initImage must be base64 (image), NOT imagePath
      =============================== */
   const initImage = isEdit ? image || activeSession?.lastImage || null : null;
+
+  // for UI compare: prefer base64 image or lastImage
   const inputImage = image || activeSession?.lastImage || null;
 
   /* ===============================
@@ -560,7 +727,6 @@ export async function orchestrateChat({
       furnitureMatches: furniture,
       furniture,
 
-      // Optional debug
       detections: detectionResult,
       detectedNeeds,
 
@@ -571,6 +737,7 @@ export async function orchestrateChat({
       debug: {
         classifier: spaceResult,
         finalRoomType: room.type,
+        inferredFromImage,
         layoutItemsCount: Array.isArray(layout?.items) ? layout.items.length : 0,
         furnitureCount: furniture.length,
         detectedObjectsCount: Array.isArray(detectionResult?.objects) ? detectionResult.objects.length : 0,

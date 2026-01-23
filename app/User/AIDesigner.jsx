@@ -66,7 +66,7 @@ export default function AIDesigner() {
     });
   };
 
-  // ✅ CHAT HISTORY (same push format) + ✅ NEW: source param
+  // ✅ OPEN EXISTING CHAT (Resume)
   const openChatHistory = (chat) => {
     router.push({
       pathname: "/User/AIDesignerChat",
@@ -74,7 +74,8 @@ export default function AIDesigner() {
         tab: "design",
         chatId: chat.id,
         sessionId: chat.sessionId || "",
-        source: chat.source || "root", // ✅ NEW
+        source: chat.source || "root", // ✅ important for correct Firestore path
+        title: chat.title || "Aesthetic AI", // ✅ show title in header
       },
     });
   };
@@ -93,7 +94,7 @@ export default function AIDesigner() {
     return unsub;
   }, [auth]);
 
-  // Convert snapshot -> list rows (parent doc only) + ✅ NEW: source
+  // Convert snapshot -> list rows (parent doc only) + include source
   const mapDocs = (snap, source) => {
     return snap.docs.map((d) => {
       const data = d.data() || {};
@@ -114,7 +115,7 @@ export default function AIDesigner() {
         // internal: tells us if we need to enrich from /messages
         _needsEnrich: !lastMessage || !data.updatedAt,
 
-        // ✅ NEW: tells chat screen where to read
+        // ✅ tells chat screen where to read messages
         source, // "root" | "user"
       };
     });
@@ -133,18 +134,18 @@ export default function AIDesigner() {
     } catch {}
   };
 
-  // Attach message listener to fill missing lastMessage/date/title from subcollection
-  const ensureMessageListener = ({ basePath, chatId }) => {
-    const key = `${basePath}::${chatId}`;
+  // ✅ FIX: Attach message listener using EACH chat's own source
+  const ensureMessageListener = ({ source, chatId }) => {
+    const src = source === "user" ? "user" : "root";
+    const key = `${src}::${chatId}`;
     if (messageUnsubsRef.current.has(key)) return;
 
-    // messages path:
-    // - basePath = "aiConversations" -> aiConversations/{chatId}/messages
-    // - basePath = `users/${uid}/aiConversations` -> users/{uid}/aiConversations/{chatId}/messages
+    if (!uid) return; // safety
+
     const messagesCol =
-      basePath === "aiConversations"
-        ? collection(db, "aiConversations", chatId, "messages")
-        : collection(db, "users", uid, "aiConversations", chatId, "messages");
+      src === "user"
+        ? collection(db, "users", uid, "aiConversations", chatId, "messages")
+        : collection(db, "aiConversations", chatId, "messages");
 
     const mq = query(messagesCol, orderBy("createdAt", "desc"), limit(1));
 
@@ -159,17 +160,14 @@ export default function AIDesigner() {
           "";
         const createdAt = m.createdAt || m.timestamp || null;
 
-        // Update ONLY the row that needs enriching
         setChatSummaries((prev) =>
           prev.map((c) => {
             if (c.id !== chatId) return c;
 
             const nextLast = c.lastMessage || text;
             const nextDate =
-              c.date ||
-              formatChatDate(createdAt || c.updatedAt || c.createdAt);
+              c.date || formatChatDate(createdAt || c.updatedAt || c.createdAt);
 
-            // Keep existing title, but if it's default and message has a "title" field, allow it
             const maybeTitle = safeString(m.title);
             const nextTitle =
               c.title === "Aesthetic AI" && maybeTitle ? maybeTitle : c.title;
@@ -185,7 +183,6 @@ export default function AIDesigner() {
         );
       },
       (err) => {
-        // If messages path doesn't exist or permission blocked, just stop trying
         console.warn("Message enrich snapshot error:", err?.message || String(err));
       }
     );
@@ -195,7 +192,6 @@ export default function AIDesigner() {
 
   // Attach main listener (root path by default)
   const attachMainListener = ({ useFallback }) => {
-    // basePath determines where conversations live
     const basePath = useFallback ? `users/${uid}/aiConversations` : "aiConversations";
 
     const conversationsCol =
@@ -203,7 +199,6 @@ export default function AIDesigner() {
         ? collection(db, "aiConversations")
         : collection(db, "users", uid, "aiConversations");
 
-    // Try updatedAt first, then createdAt
     const qUpdated = query(
       conversationsCol,
       where("userId", "==", uid),
@@ -222,17 +217,13 @@ export default function AIDesigner() {
       onSnapshot(
         q,
         (snap) => {
-          // ✅ NEW: pass source
           const rows = mapDocs(snap, useFallback ? "user" : "root");
-
           setChatSummaries(rows);
           setLoadingChats(false);
 
-          // If we got 0 rows on root, try fallback once
+          // If root returned empty, try fallback once
           if (!useFallback && !usedFallbackRef.current && rows.length === 0) {
             usedFallbackRef.current = true;
-
-            // switch to fallback location
             try {
               unsubMainRef.current?.();
             } catch {}
@@ -257,7 +248,6 @@ export default function AIDesigner() {
         }
       );
 
-    // Use updatedAt query first
     return attach(qUpdated, "updatedAt");
   };
 
@@ -284,7 +274,6 @@ export default function AIDesigner() {
     }
 
     setLoadingChats(true);
-
     unsubMainRef.current = attachMainListener({ useFallback: false });
 
     return () => {
@@ -298,19 +287,16 @@ export default function AIDesigner() {
     };
   }, [uid, authReady]);
 
-  // Enrich rows that lack lastMessage/updatedAt by listening to /messages
+  // ✅ FIX: Enrich using each chat's own source (not usedFallbackRef)
   useEffect(() => {
     if (!uid) return;
     if (!chatSummaries?.length) return;
 
-    // Determine which base path is active (if fallback already used, we might be on users/{uid}/...)
-    // We infer it: if fallback was used, basePath is users/{uid}/aiConversations; else aiConversations.
-    const basePath = usedFallbackRef.current ? `users/${uid}/aiConversations` : "aiConversations";
-
     chatSummaries.forEach((c) => {
       if (!c?._needsEnrich) return;
+
       ensureMessageListener({
-        basePath: basePath === "aiConversations" ? "aiConversations" : basePath,
+        source: c.source === "user" ? "user" : "root",
         chatId: c.id,
       });
     });
@@ -323,11 +309,7 @@ export default function AIDesigner() {
 
   return (
     <View style={styles.page}>
-      <StatusBar
-        barStyle="dark-content"
-        backgroundColor="#F8FAFC"
-        translucent={false}
-      />
+      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={false} />
       <SafeAreaView style={styles.safeTop} />
 
       <ScrollView
@@ -339,24 +321,16 @@ export default function AIDesigner() {
           <Text style={styles.sectionHint}>Create a new design session</Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.primaryCard}
-          onPress={openChatScreen}
-          activeOpacity={0.92}
-        >
+        <TouchableOpacity style={styles.primaryCard} onPress={openChatScreen} activeOpacity={0.92}>
           <View style={styles.primaryCardTop}>
             <View style={styles.primaryIconWrap}>
-              <Image
-                source={require("../../assets/design.png")}
-                style={styles.primaryIcon}
-              />
+              <Image source={require("../../assets/design.png")} style={styles.primaryIcon} />
             </View>
 
             <View style={styles.primaryTextWrap}>
               <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
               <Text style={styles.primaryDesc} numberOfLines={2}>
-                Generate layouts, refine styles, and modify furniture using a
-                conversational interface.
+                Generate layouts, refine styles, and modify furniture using a conversational interface.
               </Text>
             </View>
           </View>
@@ -383,9 +357,7 @@ export default function AIDesigner() {
         <View style={styles.historyHeaderRow}>
           <View>
             <Text style={styles.historyTitle}>Recent Chats</Text>
-            <Text style={styles.historySubtitle}>
-              Resume your previous design sessions
-            </Text>
+            <Text style={styles.historySubtitle}>Resume your previous design sessions</Text>
           </View>
         </View>
 
@@ -402,16 +374,12 @@ export default function AIDesigner() {
         ) : !uid ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>Sign in required</Text>
-            <Text style={styles.emptySubtitle}>
-              Please sign in to view your chat history.
-            </Text>
+            <Text style={styles.emptySubtitle}>Please sign in to view your chat history.</Text>
           </View>
         ) : historyList.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>No recent chats</Text>
-            <Text style={styles.emptySubtitle}>
-              Start a new session to see it appear here.
-            </Text>
+            <Text style={styles.emptySubtitle}>Start a new session to see it appear here.</Text>
           </View>
         ) : (
           <View style={styles.historyList}>
@@ -498,12 +466,7 @@ const styles = StyleSheet.create({
   primaryIcon: { width: 30, height: 30, resizeMode: "contain" },
   primaryTextWrap: { flex: 1 },
   primaryTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
-  primaryDesc: {
-    fontSize: 12,
-    color: "#64748B",
-    marginTop: 4,
-    lineHeight: 16,
-  },
+  primaryDesc: { fontSize: 12, color: "#64748B", marginTop: 4, lineHeight: 16 },
 
   primaryCardBottom: {
     marginTop: 14,
@@ -538,12 +501,7 @@ const styles = StyleSheet.create({
 
   historyHeaderRow: { marginTop: 26, marginBottom: 12 },
   historyTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
-  historySubtitle: {
-    fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 3,
-    fontWeight: "700",
-  },
+  historySubtitle: { fontSize: 12, color: "#94A3B8", marginTop: 3, fontWeight: "700" },
 
   historyList: { gap: 12 },
   historyItem: {
@@ -584,12 +542,7 @@ const styles = StyleSheet.create({
   historyItemSnippet: { fontSize: 12, color: "#64748B" },
 
   loadingWrap: { paddingVertical: 18, alignItems: "center" },
-  loadingText: {
-    marginTop: 8,
-    fontSize: 12,
-    color: "#64748B",
-    fontWeight: "700",
-  },
+  loadingText: { marginTop: 8, fontSize: 12, color: "#64748B", fontWeight: "700" },
 
   emptyWrap: {
     paddingVertical: 18,
@@ -600,11 +553,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   emptyTitle: { fontSize: 13, fontWeight: "900", color: "#0F3E48" },
-  emptySubtitle: {
-    marginTop: 6,
-    fontSize: 12,
-    color: "#64748B",
-    fontWeight: "700",
-    lineHeight: 16,
-  },
+  emptySubtitle: { marginTop: 6, fontSize: 12, color: "#64748B", fontWeight: "700", lineHeight: 16 },
 });

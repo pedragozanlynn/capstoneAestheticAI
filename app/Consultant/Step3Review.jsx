@@ -11,7 +11,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { auth, db } from "../../config/firebase";
 import Button from "../components/Button";
@@ -23,7 +23,6 @@ export default function Step3Review() {
   const step2 = data.step2 || {};
   const [loading, setLoading] = useState(false);
 
-  // Variable para sa Dark Teal color
   const iconColor = "#0F3E48";
 
   const handleSubmit = async () => {
@@ -40,20 +39,30 @@ export default function Step3Review() {
       const user = userCredential.user;
       await updateProfile(user, { displayName: data.fullName });
 
+      // ✅ UPDATED: remove consultantType + portfolioURL
+      // ✅ UPDATED: save idFrontUrl, idBackUrl, selfieUrl
       await setDoc(doc(db, "consultants", user.uid), {
         fullName: data.fullName,
         email: data.email,
         address: data.address,
         gender: data.gender,
-        consultantType: data.consultantType,
-        specialization: step2.specialization,
-        education: step2.education,
+
+        specialization: step2.specialization || "",
+        education: step2.education || "",
+
+        // optional fields (kept if you still want them)
         experience: step2.experience || "",
         licenseNumber: step2.licenseNumber || "",
-        availability: step2.availability,
-        portfolioURL: step2.portfolioLink || null,
+
+        availability: step2.availability || [],
+
+        // ✅ NEW uploads
+        idFrontUrl: step2.idFrontUrl || null,
+        idBackUrl: step2.idBackUrl || null,
+        selfieUrl: step2.selfieUrl || null,
+
         submittedAt: serverTimestamp(),
-        status: "pending"
+        status: "pending",
       });
 
       Alert.alert("Submitted ✅", "Your registration is pending admin approval.");
@@ -63,6 +72,15 @@ export default function Step3Review() {
       Alert.alert("Error", error.message || "Something went wrong.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const openLink = async (url) => {
+    if (!url) return;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert("Error", "Unable to open file link.");
     }
   };
 
@@ -77,7 +95,7 @@ export default function Step3Review() {
           <Ionicons name="arrow-back" size={26} color="#FFFFFF" />
         </TouchableOpacity>
         <View style={styles.headerTextContainer}>
-          <Text style={styles.headerTitle}>Consultant Registration</Text>
+          <Text style={styles.headerTitle}>Registration</Text>
           <Text style={styles.headerSubtitle}>Step 3 – Review Information</Text>
         </View>
       </View>
@@ -86,60 +104,74 @@ export default function Step3Review() {
         {/* Personal Info */}
         <View style={styles.card}>
           <Text style={styles.section}>Personal Information</Text>
+
           <View style={styles.infoRow}>
-            <Ionicons name="person" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons name="person" size={20} color={iconColor} style={styles.icon} />
             <Text style={styles.label}>Full Name</Text>
-            <Text style={styles.value}>{data.fullName}</Text>
+            <Text style={styles.value}>{data.fullName || "-"}</Text>
           </View>
+
           <View style={styles.infoRow}>
-            <Ionicons name="mail" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons name="mail" size={20} color={iconColor} style={styles.icon} />
             <Text style={styles.label}>Email</Text>
-            <Text style={styles.value}>{data.email}</Text>
+            <Text style={styles.value}>{data.email || "-"}</Text>
           </View>
+
           <View style={styles.infoRow}>
-            <Ionicons name="home" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons name="home" size={20} color={iconColor} style={styles.icon} />
             <Text style={styles.label}>Address</Text>
-            <Text style={styles.value}>{data.address}</Text>
+            <Text style={styles.value}>{data.address || "-"}</Text>
           </View>
+
           <View style={styles.infoRow}>
-            <Ionicons name="male-female" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons
+              name="male-female"
+              size={20}
+              color={iconColor}
+              style={styles.icon}
+            />
             <Text style={styles.label}>Gender</Text>
-            <Text style={styles.value}>{data.gender}</Text>
+            <Text style={styles.value}>{data.gender || "-"}</Text>
           </View>
         </View>
 
-        {/* Consultant Details */}
+        {/* Details */}
         <View style={styles.card}>
-          <Text style={styles.section}>Consultant Details</Text>
+          <Text style={styles.section}>Details</Text>
+
           <View style={styles.infoRow}>
-            <Ionicons name="briefcase" size={20} color={iconColor} style={styles.icon}/>
-            <Text style={styles.label}>Type</Text>
-            <Text style={styles.value}>{data.consultantType}</Text>
-          </View>
-          <View style={styles.infoRow}>
-            <Ionicons name="construct" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons
+              name="construct"
+              size={20}
+              color={iconColor}
+              style={styles.icon}
+            />
             <Text style={styles.label}>Specialization</Text>
-            <Text style={styles.value}>{step2.specialization}</Text>
+            <Text style={styles.value}>{step2.specialization || "-"}</Text>
           </View>
+
           <View style={styles.infoRow}>
-            <Ionicons name="school" size={20} color={iconColor} style={styles.icon}/>
+            <Ionicons name="school" size={20} color={iconColor} style={styles.icon} />
             <Text style={styles.label}>Education</Text>
-            <Text style={styles.value}>{step2.education}</Text>
+            <Text style={styles.value}>{step2.education || "-"}</Text>
           </View>
-          {data.consultantType === "Professional" && (
-            <>
-              <View style={styles.infoRow}>
-                <Ionicons name="time" size={20} color={iconColor} style={styles.icon}/>
-                <Text style={styles.label}>Experience</Text>
-                <Text style={styles.value}>{step2.experience} years</Text>
-              </View>
-              <View style={styles.infoRow}>
-                <Ionicons name="card" size={20} color={iconColor} style={styles.icon}/>
-                <Text style={styles.label}>License Number</Text>
-                <Text style={styles.value}>{step2.licenseNumber}</Text>
-              </View>
-            </>
-          )}
+
+          {/* Optional fields (no longer tied to consultantType) */}
+          <View style={styles.infoRow}>
+            <Ionicons name="time" size={20} color={iconColor} style={styles.icon} />
+            <Text style={styles.label}>Experience</Text>
+            <Text style={styles.value}>
+              {step2.experience ? `${step2.experience} years` : "Not specified"}
+            </Text>
+          </View>
+
+          <View style={styles.infoRow}>
+            <Ionicons name="card" size={20} color={iconColor} style={styles.icon} />
+            <Text style={styles.label}>License Number</Text>
+            <Text style={styles.value}>
+              {step2.licenseNumber ? step2.licenseNumber : "Not specified"}
+            </Text>
+          </View>
         </View>
 
         {/* Availability */}
@@ -148,7 +180,12 @@ export default function Step3Review() {
           {step2.availability && step2.availability.length > 0 ? (
             step2.availability.map((day, i) => (
               <View key={i} style={styles.infoRow}>
-                <Ionicons name="calendar" size={20} color={iconColor} style={styles.icon}/>
+                <Ionicons
+                  name="calendar"
+                  size={20}
+                  color={iconColor}
+                  style={styles.icon}
+                />
                 <Text style={styles.label}>Day</Text>
                 <Text style={styles.value}>{day}</Text>
               </View>
@@ -158,24 +195,60 @@ export default function Step3Review() {
           )}
         </View>
 
+        {/* ✅ NEW: Verification Uploads */}
         <View style={styles.card}>
-          <Text style={styles.section}>Portfolio</Text>
-          {step2.portfolioLink ? (
-            <TouchableOpacity style={styles.portfolioButton} onPress={() => Linking.openURL(step2.portfolioLink)}>
-              <Ionicons name="document-text" size={22} color="#fff" style={{ marginRight: 8 }}/>
-              <Text style={styles.portfolioButtonText}>Open Portfolio File</Text>
+          <Text style={styles.section}>Verification</Text>
+
+          {/* ID FRONT */}
+          <View style={styles.infoRow}>
+            <Ionicons name="card-outline" size={20} color={iconColor} style={styles.icon} />
+            <Text style={styles.label}>Valid ID (Front)</Text>
+            <Text style={styles.value}>{step2.idFrontUrl ? "Uploaded" : "Missing"}</Text>
+          </View>
+          {step2.idFrontUrl ? (
+            <TouchableOpacity
+              style={styles.fileButton}
+              onPress={() => openLink(step2.idFrontUrl)}
+            >
+              <Ionicons name="open-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.fileButtonText}>Open Front ID</Text>
             </TouchableOpacity>
-          ) : (
-            <Text style={styles.value}>No portfolio file uploaded</Text>
-          )}
+          ) : null}
+
+          {/* ID BACK */}
+          <View style={[styles.infoRow, { marginTop: 10 }]}>
+            <Ionicons name="card-outline" size={20} color={iconColor} style={styles.icon} />
+            <Text style={styles.label}>Valid ID (Back)</Text>
+            <Text style={styles.value}>{step2.idBackUrl ? "Uploaded" : "Missing"}</Text>
+          </View>
+          {step2.idBackUrl ? (
+            <TouchableOpacity
+              style={styles.fileButton}
+              onPress={() => openLink(step2.idBackUrl)}
+            >
+              <Ionicons name="open-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.fileButtonText}>Open Back ID</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {/* SELFIE */}
+          <View style={[styles.infoRow, { marginTop: 10 }]}>
+            <Ionicons name="camera-outline" size={20} color={iconColor} style={styles.icon} />
+            <Text style={styles.label}>Selfie</Text>
+            <Text style={styles.value}>{step2.selfieUrl ? "Uploaded" : "Missing"}</Text>
+          </View>
+          {step2.selfieUrl ? (
+            <TouchableOpacity
+              style={styles.fileButton}
+              onPress={() => openLink(step2.selfieUrl)}
+            >
+              <Ionicons name="open-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.fileButtonText}>Open Selfie</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
 
-        <Button
-          title="Submit"
-          type="primary"
-          onPress={handleSubmit}
-          loading={loading}
-        />
+        <Button title="Submit" type="primary" onPress={handleSubmit} loading={loading} />
       </View>
     </ScrollView>
   );
@@ -260,14 +333,16 @@ const styles = StyleSheet.create({
   },
   icon: { marginRight: 8 },
   label: { fontSize: 14, color: "#666", flex: 1 },
-  value: { 
-    fontSize: 14, 
-    color: "#4A4A4A", 
-    fontWeight: "400", 
-    flex: 1, 
-    textAlign: "right" 
+  value: {
+    fontSize: 14,
+    color: "#4A4A4A",
+    fontWeight: "400",
+    flex: 1,
+    textAlign: "right",
   },
-  portfolioButton: {
+
+  // ✅ for file open buttons (ID/selfie)
+  fileButton: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#0F3E48",
@@ -280,7 +355,7 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
-  portfolioButtonText: {
+  fileButtonText: {
     color: "#fff",
     fontWeight: "600",
     fontSize: 14,

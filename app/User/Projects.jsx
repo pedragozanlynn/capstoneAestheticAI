@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -11,63 +11,168 @@ import {
   TouchableOpacity,
   View,
   StatusBar,
-  SafeAreaView,
-  Platform
+  Platform,
 } from "react-native";
 import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
+
+// ✅ Firebase
+import { getAuth } from "firebase/auth";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
+import { db } from "../../config/firebase";
+
+const safeStr = (v) => (v == null ? "" : String(v).trim());
+
+const toISODate = (ts) => {
+  try {
+    if (!ts) return "";
+    const d = typeof ts?.toDate === "function" ? ts.toDate() : new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toISOString().split("T")[0];
+  } catch {
+    return "";
+  }
+};
 
 export default function Project() {
   const router = useRouter();
   const subType = useSubscriptionType();
   const [projects, setProjects] = useState([]);
 
+  const auth = getAuth();
+
+  // Keep latest cleanup for Firestore listener
+  const cleanupRef = useRef(null);
+
+  const setFallbackProjects = () => {
+    setProjects([
+      {
+        id: "static-1",
+        title: "Modern Living Room",
+        image: require("../../assets/livingroom.jpg"),
+        date: "2025-12-20",
+        tag: "Living Room",
+
+        // extra fields (safe defaults)
+        prompt: "",
+        inputImage: "",
+        mode: "design",
+        conversationId: "",
+      },
+    ]);
+  };
+
   /* ================= LOAD PROJECTS ================= */
-  const loadProjects = async () => {
+  const loadProjects = () => {
+    const uid = auth?.currentUser?.uid;
+
+    // cleanup previous listener if any
     try {
-      const keys = await AsyncStorage.getAllKeys();
-      const projectKeys = keys.filter((k) =>
-        k.startsWith("aestheticai:project-image:")
-      );
+      cleanupRef.current?.();
+    } catch {}
+    cleanupRef.current = null;
 
-      const items = await AsyncStorage.multiGet(projectKeys);
-
-      const parsed = items.map(([key, value]) => {
-        const data = JSON.parse(value || "{}");
-        return {
-          id: key,
-          title: data.title || "Untitled Project",
-          image: data.image,
-          date: data.date || new Date().toISOString().split("T")[0],
-          tag: data.tag || "Room",
-        };
-      });
-
-      if (parsed.length === 0) {
-        setProjects([
-          {
-            id: "static-1",
-            title: "Modern Living Room",
-            image: require("../../assets/livingroom.jpg"),
-            date: "2025-12-20",
-            tag: "Living Room",
-          },
-        ]);
-      } else {
-        setProjects(parsed);
-      }
-    } catch (err) {
-      console.log("Error loading projects:", err);
+    // ✅ Not logged in → static fallback (unchanged behavior)
+    if (!uid) {
+      setFallbackProjects();
+      cleanupRef.current = () => {};
+      return;
     }
+
+    // ✅ Firestore listener (projects per user)
+    const qy = query(
+      collection(db, "projects"),
+      where("uid", "==", uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsub = onSnapshot(
+      qy,
+      (snap) => {
+        const parsed = snap.docs.map((d) => {
+          const data = d.data() || {};
+
+          const createdAtDate = toISODate(data?.createdAt);
+          const date =
+            createdAtDate ||
+            safeStr(data?.date) ||
+            new Date().toISOString().split("T")[0];
+
+          const image = data?.image ?? null; // can be string url
+          const inputImage = data?.inputImage ?? null; // optional original url
+          const conversationId = data?.conversationId ?? data?.chatId ?? null; // support both keys
+          const mode = safeStr(data?.mode) || "design";
+
+          // Prefer a clean title:
+          const prompt = safeStr(data?.prompt);
+          const title = prompt || safeStr(data?.title) || "Untitled Project";
+
+          return {
+            id: d.id,
+            title,
+            prompt, // ✅ keep prompt for passing / display
+            image, // ✅ AI result image url
+            inputImage, // ✅ original uploaded ref (if saved)
+            conversationId: safeStr(conversationId),
+            mode,
+            date,
+            tag: safeStr(data?.tag) || "Room",
+          };
+        });
+
+        if (parsed.length === 0) {
+          // ✅ keep existing fallback
+          setFallbackProjects();
+        } else {
+          setProjects(parsed);
+        }
+      },
+      (err) => {
+        console.log("Error loading projects:", err?.message || err);
+        setFallbackProjects();
+      }
+    );
+
+    cleanupRef.current = () => unsub();
   };
 
   useEffect(() => {
+    // ✅ reload when auth becomes available (prevents “stuck on fallback”)
+    const unsubAuth = auth.onAuthStateChanged(() => {
+      loadProjects();
+    });
+
+    // initial load attempt
     loadProjects();
+
+    return () => {
+      try {
+        unsubAuth?.();
+      } catch {}
+      try {
+        cleanupRef.current?.();
+      } catch {}
+      cleanupRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ================= ACTIONS ================= */
   const openVisualization = (project) => {
-    router.push(`/User/RoomVisualization?id=${project.id}`);
+    // Keep your existing visualization route
+    // (RoomVisualization will fetch the project by id)
+    router.push({
+      pathname: "/User/RoomVisualization",
+      params: { id: project.id },
+    });
   };
 
   const handleDeleteProject = (projectId) => {
@@ -81,10 +186,19 @@ export default function Project() {
           style: "destructive",
           onPress: async () => {
             try {
-              await AsyncStorage.removeItem(projectId);
-              loadProjects();
+              // ✅ Legacy AsyncStorage fallback delete
+              if (String(projectId).startsWith("aestheticai:project-image:")) {
+                await AsyncStorage.removeItem(projectId);
+                loadProjects();
+                return;
+              }
+
+              // ✅ Firestore delete
+              if (projectId && projectId !== "static-1") {
+                await deleteDoc(doc(db, "projects", projectId));
+              }
             } catch (e) {
-              console.log("Delete error:", e);
+              console.log("Delete error:", e?.message || e);
             }
           },
         },
@@ -96,7 +210,7 @@ export default function Project() {
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
 
-      {/* 🟦 HEADER (Kinuha sa AIDesigner) */}
+      {/* 🟦 HEADER */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>AI Design Gallery</Text>
         <Text style={styles.headerSubtitle}>
@@ -110,7 +224,9 @@ export default function Project() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.sectionLabel}>Your Projects ({projects.length})</Text>
+        <Text style={styles.sectionLabel}>
+          Your Projects ({projects.length})
+        </Text>
 
         {projects.length > 0 ? (
           <View style={styles.grid}>
@@ -124,7 +240,7 @@ export default function Project() {
               >
                 <Image
                   source={
-                    typeof project.image === "string"
+                    typeof project.image === "string" && project.image
                       ? { uri: project.image }
                       : project.image
                   }
@@ -136,11 +252,17 @@ export default function Project() {
                   <View style={styles.badge}>
                     <Text style={styles.badgeText}>{project.tag}</Text>
                   </View>
+
                   <Text style={styles.projectTitle} numberOfLines={1}>
                     {project.title}
                   </Text>
+
                   <View style={styles.dateRow}>
-                    <Ionicons name="calendar-outline" size={12} color="#94A3B8" />
+                    <Ionicons
+                      name="calendar-outline"
+                      size={12}
+                      color="#94A3B8"
+                    />
                     <Text style={styles.projectDate}>{project.date}</Text>
                   </View>
                 </View>
@@ -163,47 +285,47 @@ export default function Project() {
 }
 
 const styles = StyleSheet.create({
-  page: { 
-    flex: 1, 
-    backgroundColor: "#F8FAFC" // Consistent Background
+  page: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
   },
 
-  /* ===== HEADER (EXACTLY FROM AIDESIGNER) ===== */
+  /* ===== HEADER ===== */
   header: {
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingTop: Platform.OS === "ios" ? 60 : 40,
     paddingHorizontal: 25,
     paddingBottom: 20,
-    backgroundColor: "#FFF", // White Header
+    backgroundColor: "#FFF",
   },
-  headerTitle: { 
-    fontSize: 26, 
-    fontWeight: "900", 
-    color: "#0F3E48" 
+  headerTitle: {
+    fontSize: 26,
+    fontWeight: "900",
+    color: "#0F3E48",
   },
-  headerSubtitle: { 
-    fontSize: 14, 
-    color: "#64748B", 
-    marginTop: 4 
+  headerSubtitle: {
+    fontSize: 14,
+    color: "#64748B",
+    marginTop: 4,
   },
 
   /* ===== CONTENT ===== */
   container: { flex: 1 },
-  scrollContent: { 
-    paddingHorizontal: 25, 
-    paddingBottom: 120 
+  scrollContent: {
+    paddingHorizontal: 25,
+    paddingBottom: 120,
   },
 
-  sectionLabel: { 
-    fontSize: 12, 
-    fontWeight: "800", 
-    color: "#94A3B8", 
-    textTransform: "uppercase", 
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#94A3B8",
+    textTransform: "uppercase",
     letterSpacing: 1,
     marginTop: 25,
-    marginBottom: 15
+    marginBottom: 15,
   },
 
-  /* ===== GRID & CARDS ===== */
+  /* ===== GRID ===== */
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -234,14 +356,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
-    alignSelf: 'flex-start',
+    alignSelf: "flex-start",
     marginBottom: 6,
   },
   badgeText: {
     fontSize: 10,
     fontWeight: "800",
     color: "#0F3E48",
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
   },
   projectTitle: {
     fontSize: 15,
@@ -249,8 +371,8 @@ const styles = StyleSheet.create({
     color: "#1E293B",
   },
   dateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 4,
     marginTop: 4,
   },
@@ -259,7 +381,7 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
   },
 
-  /* ===== EMPTY STATE ===== */
+  /* ===== EMPTY ===== */
   emptyWrap: {
     alignItems: "center",
     marginTop: 80,

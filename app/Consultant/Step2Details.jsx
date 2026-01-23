@@ -13,9 +13,19 @@ import {
   View,
 } from "react-native";
 
-import { pickFile, uploadToSupabase } from "../../services/fileUploadService";
+// ✅ NEW: camera selfie
+import * as ImagePicker from "expo-image-picker";
+
+// ✅ UPDATED: connect to fileUploadService (portfolio removed)
+import {
+  pickFile,
+  uploadValidIdFront,
+  uploadValidIdBack,
+  uploadSelfie as uploadSelfieToSupabase,
+} from "../../services/fileUploadService";
+
 import Button from "../components/Button";
-import Input from "../components/Input"; // ✅ INPUT COMPONENT
+import Input from "../components/Input";
 
 // session cache
 let sessionFormData = null;
@@ -28,28 +38,133 @@ export default function Step2Details() {
   const [formData, setFormData] = useState({
     specialization: "",
     education: "",
-    experience: "",
-    licenseNumber: "",
-    portfolioLink: "",
+    experience: "", // (kept optional)
+    licenseNumber: "", // (kept optional)
+
+    // ✅ Valid ID + Selfie uploads
+    idFrontUrl: "",
+    idBackUrl: "",
+    selfieUrl: "",
+
     availability: [],
     day: "",
   });
 
-  /* ===================== LOGIC (UNCHANGED) ===================== */
+  /* ===================== UPLOAD HELPERS ===================== */
 
-  const uploadPortfolio = async () => {
+  const normalizePickedFile = (picked) => {
     try {
-      const picked = await pickFile();
-      if (!picked) return;
+      if (!picked) return null;
 
-      const uploaded = await uploadToSupabase(picked, "portfolio-files");
-      if (!uploaded)
-        return Alert.alert("Upload Failed", "Could not upload portfolio file.");
+      if (picked?.assets && Array.isArray(picked.assets) && picked.assets[0]) {
+        const a = picked.assets[0];
+        return {
+          uri: a.uri,
+          name: a.fileName || a.filename || `upload_${Date.now()}.jpg`,
+          mimeType: a.mimeType || a.type || "image/jpeg",
+          size: a.fileSize || a.size,
+        };
+      }
 
-      handleInputChange("portfolioLink", uploaded.fileUrl);
-      Alert.alert("Success", "Portfolio uploaded successfully!");
+      if (Array.isArray(picked) && picked[0]) {
+        const a = picked[0];
+        return {
+          uri: a.uri,
+          name: a.name || a.fileName || `upload_${Date.now()}`,
+          mimeType: a.mimeType || a.type || "application/octet-stream",
+          size: a.size,
+        };
+      }
+
+      return {
+        uri: picked.uri,
+        name: picked.name || picked.fileName || `upload_${Date.now()}`,
+        mimeType: picked.mimeType || picked.type || "application/octet-stream",
+        size: picked.size,
+      };
     } catch (e) {
+      console.log("❌ normalizePickedFile error:", e?.message || e);
+      return null;
+    }
+  };
+
+  /* ===================== LOGIC ===================== */
+
+  const handleInputChange = (field, value) => {
+    const next = { ...formData, [field]: value };
+    setFormData(next);
+    sessionFormData = next;
+    AsyncStorage.setItem("step2Data", JSON.stringify(next));
+  };
+
+  // ✅ upload ID uses dedicated upload functions (unchanged behavior)
+  const uploadId = async (side) => {
+    try {
+      const pickedRaw = await pickFile();
+      const picked = normalizePickedFile(pickedRaw);
+      if (!picked?.uri) return;
+
+      const uploaded =
+        side === "front"
+          ? await uploadValidIdFront(picked)
+          : await uploadValidIdBack(picked);
+
+      if (!uploaded || !uploaded.fileUrl) {
+        return Alert.alert("Upload Failed", "Could not upload your ID file.");
+      }
+
+      if (side === "front") {
+        handleInputChange("idFrontUrl", uploaded.fileUrl);
+      } else {
+        handleInputChange("idBackUrl", uploaded.fileUrl);
+      }
+
+      Alert.alert("Success", `Valid ID (${side}) uploaded successfully!`);
+    } catch (e) {
+      console.log("❌ uploadId error:", e?.message || e);
       Alert.alert("Error", "Something went wrong while uploading.");
+    }
+  };
+
+  // ✅ UPDATED: selfie must be captured on-the-spot using camera (NOT gallery)
+  const handleUploadSelfie = async () => {
+    try {
+      // 1) Ask camera permission
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (perm.status !== "granted") {
+        return Alert.alert(
+          "Camera Permission Needed",
+          "Please allow camera access to take a selfie."
+        );
+      }
+
+      // 2) Open camera
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: false,
+        quality: 0.9,
+        cameraType: ImagePicker.CameraType.front,
+      });
+
+      // user cancelled
+      if (result.canceled) return;
+
+      // 3) Normalize into your uploader input
+      const picked = normalizePickedFile(result);
+      if (!picked?.uri) {
+        return Alert.alert("Error", "Could not read captured selfie.");
+      }
+
+      // 4) Upload to Supabase using your existing service
+      const uploaded = await uploadSelfieToSupabase(picked);
+      if (!uploaded || !uploaded.fileUrl) {
+        return Alert.alert("Upload Failed", "Could not upload selfie photo.");
+      }
+
+      handleInputChange("selfieUrl", uploaded.fileUrl);
+      Alert.alert("Success", "Selfie captured and uploaded successfully!");
+    } catch (e) {
+      console.log("❌ handleUploadSelfie error:", e?.message || e);
+      Alert.alert("Error", e?.message || "Something went wrong while uploading.");
     }
   };
 
@@ -83,18 +198,17 @@ export default function Step2Details() {
     };
 
     init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params?.data]);
 
-  const handleInputChange = (field, value) => {
-    const next = { ...formData, [field]: value };
-    setFormData(next);
-    sessionFormData = next;
-    AsyncStorage.setItem("step2Data", JSON.stringify(next));
-  };
-
   const addAvailability = () => {
-    if (!formData.day)
+    if (!formData.day) {
       return Alert.alert("Missing Field", "Please select a day.");
+    }
+
+    if (formData.availability.includes(formData.day)) {
+      return Alert.alert("Already Added", "That day is already in your list.");
+    }
 
     const next = {
       ...formData,
@@ -124,8 +238,22 @@ export default function Step2Details() {
   };
 
   const handleNext = async () => {
-    if (!formData.specialization || !formData.education) {
+    if (!formData.education || !formData.specialization) {
       return Alert.alert("Missing Field", "Please fill required fields.");
+    }
+
+    if (!formData.idFrontUrl || !formData.idBackUrl) {
+      return Alert.alert(
+        "Missing Valid ID",
+        "Please upload both Front and Back of your Valid ID."
+      );
+    }
+
+    if (!formData.selfieUrl) {
+      return Alert.alert(
+        "Missing Selfie",
+        "Please take your selfie photo for verification."
+      );
     }
 
     const step1Data = params?.data ? JSON.parse(params.data) : {};
@@ -134,10 +262,6 @@ export default function Step2Details() {
       params: { data: JSON.stringify({ ...step1Data, step2: formData }) },
     });
   };
-
-  const consultantType = params?.data
-    ? JSON.parse(params.data).consultantType || ""
-    : "";
 
   /* ===================== UI ===================== */
 
@@ -155,20 +279,13 @@ export default function Step2Details() {
         </TouchableOpacity>
 
         <View style={styles.headerText}>
-          <Text style={styles.headerTitle}>Consultant Registration</Text>
-          <Text style={styles.headerSubtitle}>Step 2 • Consultant Details</Text>
+          <Text style={styles.headerTitle}>Registration</Text>
+          <Text style={styles.headerSubtitle}>Step 2 • Details</Text>
         </View>
       </View>
 
       {/* CARD */}
       <View style={styles.card}>
-        <Text style={styles.sub}>
-          Consultant Type:{" "}
-          {consultantType === "Professional"
-            ? "Professional"
-            : "Fresh Graduate"}
-        </Text>
-
         {/* EDUCATION */}
         <View style={styles.pickerBox}>
           <Picker
@@ -176,56 +293,54 @@ export default function Step2Details() {
             onValueChange={(v) => handleInputChange("education", v)}
           >
             <Picker.Item label="Select degree" value="" />
-     <Picker.Item label="Bachelor of Science in Architecture" value="BS Architecture" />
-    <Picker.Item label="Bachelor of Science in Civil Engineering" value="BSCE" />
-<    Picker.Item label="Bachelor of Interior Design" value="Interior Design" />
+            <Picker.Item
+              label="Bachelor of Science in Architecture"
+              value="BS Architecture"
+            />
+            <Picker.Item
+              label="Bachelor of Science in Civil Engineering"
+              value="BSCE"
+            />
+            <Picker.Item
+              label="Bachelor of Interior Design"
+              value="Interior Design"
+            />
           </Picker>
         </View>
-               {/* SPECIALIZATION */}
-<View style={styles.pickerBox}>
-  <Picker
-    selectedValue={formData.specialization}
-    onValueChange={(v) => handleInputChange("specialization", v)}
-  >
-    <Picker.Item label="Select specialization" value="" />
 
-    {/* Architecture */}
-    <Picker.Item label="Architectural Design" value="Architectural Design" />
-    <Picker.Item label="Residential Planning" value="Residential Planning" />
-    <Picker.Item label="Sustainable Architecture" value="Sustainable Architecture" />
+        {/* SPECIALIZATION */}
+        <View style={styles.pickerBox}>
+          <Picker
+            selectedValue={formData.specialization}
+            onValueChange={(v) => handleInputChange("specialization", v)}
+          >
+            <Picker.Item label="Select specialization" value="" />
+            <Picker.Item label="Architectural Design" value="Architectural Design" />
+            <Picker.Item label="Residential Planning" value="Residential Planning" />
+            <Picker.Item label="Sustainable Architecture" value="Sustainable Architecture" />
+            <Picker.Item label="Structural Engineering" value="Structural Engineering" />
+            <Picker.Item label="Construction Engineering" value="Construction Engineering" />
+            <Picker.Item label="Geotechnical Engineering" value="Geotechnical Engineering" />
+            <Picker.Item label="Residential Interior Design" value="Residential Interior Design" />
+            <Picker.Item label="Lighting Design" value="Lighting Design" />
+            <Picker.Item label="Furniture Design" value="Furniture Design" />
+          </Picker>
+        </View>
 
-    {/* Civil Engineering */}
-    <Picker.Item label="Structural Engineering" value="Structural Engineering" />
-    <Picker.Item label="Construction Engineering" value="Construction Engineering" />
-    <Picker.Item label="Geotechnical Engineering" value="Geotechnical Engineering" />
-
-    {/* Interior Design */}
-    <Picker.Item label="Residential Interior Design" value="Residential Interior Design" />
-    <Picker.Item label="Lighting Design" value="Lighting Design" />
-    <Picker.Item label="Furniture Design" value="Furniture Design" />
-  </Picker>
-</View>
-
-
-        {/* PROFESSIONAL ONLY */}
-        {consultantType === "Professional" && (
-          <>
-            <Input
-              label="Experience (Years)"
-              keyboardType="numeric"
-              value={formData.experience}
-              onChangeText={(v) => handleInputChange("experience", v)}
-              placeholder="e.g. 3"
-            />
-
-            <Input
-              label="License Number"
-              value={formData.licenseNumber}
-              onChangeText={(v) => handleInputChange("licenseNumber", v)}
-              placeholder="Enter license number"
-            />
-          </>
-        )}
+        {/* OPTIONAL */}
+        <Input
+          label="Experience (Years) (Optional)"
+          keyboardType="numeric"
+          value={formData.experience}
+          onChangeText={(v) => handleInputChange("experience", v)}
+          placeholder="e.g. 3"
+        />
+        <Input
+          label="License Number (Optional)"
+          value={formData.licenseNumber}
+          onChangeText={(v) => handleInputChange("licenseNumber", v)}
+          placeholder="Enter license number"
+        />
 
         {/* AVAILABILITY */}
         <View style={styles.pickerBox}>
@@ -234,11 +349,9 @@ export default function Step2Details() {
             onValueChange={(v) => handleInputChange("day", v)}
           >
             <Picker.Item label="Select availability" value="" />
-            {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday","Sunday"].map(
-              (d) => (
-                <Picker.Item key={d} label={d} value={d} />
-              )
-            )}
+            {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map((d) => (
+              <Picker.Item key={d} label={d} value={d} />
+            ))}
           </Picker>
         </View>
 
@@ -258,35 +371,67 @@ export default function Step2Details() {
           </View>
         ))}
 
-        {/* PORTFOLIO CARD */}
-        <TouchableOpacity style={styles.uploadCard} onPress={uploadPortfolio}>
+        {/* VALID ID FRONT */}
+        <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("front")}>
           <Ionicons
-            name={
-              formData.portfolioLink
-                ? "checkmark-circle"
-                : "cloud-upload"
-            }
+            name={formData.idFrontUrl ? "checkmark-circle" : "card-outline"}
             size={30}
-            color={formData.portfolioLink ? "#2ECC71" : "#0F3E48"}
+            color={formData.idFrontUrl ? "#2ECC71" : "#0F3E48"}
           />
           <Text style={styles.uploadTitle}>
-            {formData.portfolioLink
-              ? "Portfolio Uploaded"
-              : "Upload Portfolio"}
+            {formData.idFrontUrl ? "Valid ID (Front) Uploaded" : "Upload Valid ID (Front)"}
           </Text>
-          <Text style={styles.uploadHint}>PDF, DOC, JPG supported</Text>
+          <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
         </TouchableOpacity>
 
-        {formData.portfolioLink && (
+        {formData.idFrontUrl && (
           <View style={styles.uploadSuccess}>
             <Ionicons name="link-outline" size={16} color="#2ECC71" />
-            <Text style={styles.successText}>
-              File attached successfully
-            </Text>
+            <Text style={styles.successText}>Front ID attached</Text>
           </View>
         )}
 
-        {/* NEXT BUTTON */}
+        {/* VALID ID BACK */}
+        <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("back")}>
+          <Ionicons
+            name={formData.idBackUrl ? "checkmark-circle" : "card-outline"}
+            size={30}
+            color={formData.idBackUrl ? "#2ECC71" : "#0F3E48"}
+          />
+          <Text style={styles.uploadTitle}>
+            {formData.idBackUrl ? "Valid ID (Back) Uploaded" : "Upload Valid ID (Back)"}
+          </Text>
+          <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
+        </TouchableOpacity>
+
+        {formData.idBackUrl && (
+          <View style={styles.uploadSuccess}>
+            <Ionicons name="link-outline" size={16} color="#2ECC71" />
+            <Text style={styles.successText}>Back ID attached</Text>
+          </View>
+        )}
+
+        {/* SELFIE (CAMERA ONLY) */}
+        <TouchableOpacity style={styles.uploadCard} onPress={handleUploadSelfie}>
+          <Ionicons
+            name={formData.selfieUrl ? "checkmark-circle" : "camera-outline"}
+            size={30}
+            color={formData.selfieUrl ? "#2ECC71" : "#0F3E48"}
+          />
+          <Text style={styles.uploadTitle}>
+            {formData.selfieUrl ? "Selfie Uploaded" : "Take Selfie Photo"}
+          </Text>
+          <Text style={styles.uploadHint}>Camera will open (no gallery)</Text>
+        </TouchableOpacity>
+
+        {formData.selfieUrl && (
+          <View style={styles.uploadSuccess}>
+            <Ionicons name="link-outline" size={16} color="#2ECC71" />
+            <Text style={styles.successText}>Selfie attached</Text>
+          </View>
+        )}
+
+        {/* NEXT */}
         <Button title="Next" onPress={handleNext} style={styles.nextBtn} />
       </View>
     </ScrollView>
@@ -317,17 +462,8 @@ const styles = StyleSheet.create({
     width: "100%",
   },
 
-  headerTitle: {
-    fontSize: 26,
-    fontWeight: "800",
-    color: "#fff",
-  },
-
-  headerSubtitle: {
-    fontSize: 14,
-    color: "#f5f5f5",
-    marginTop: 6,
-  },
+  headerTitle: { fontSize: 26, fontWeight: "800", color: "#fff" },
+  headerSubtitle: { fontSize: 14, color: "#f5f5f5", marginTop: 6 },
 
   card: {
     marginTop: -85,
@@ -336,8 +472,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 40,
     borderTopRightRadius: 40,
   },
-
-  sub: { color: "#666", marginBottom: 20 },
 
   pickerBox: {
     borderWidth: 1,
@@ -369,20 +503,13 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     marginBottom: 10,
-  
-    // Subtle iOS-like shadow
     shadowColor: "#000",
     shadowOpacity: 0.05,
     shadowRadius: 6,
     elevation: 2,
   },
-  
-  avail: {
-    fontSize: 15,
-    color: "#912f56",
-   fontWeight: "500",
-  },
-  
+
+  avail: { fontSize: 15, color: "#912f56", fontWeight: "500" },
 
   uploadCard: {
     borderWidth: 1.2,
@@ -399,19 +526,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: "#0F3E48",
+    textAlign: "center",
+    paddingHorizontal: 10,
   },
 
-  uploadHint: {
-    marginTop: 4,
-    fontSize: 12,
-    color: "#6B8C8C",
-  },
+  uploadHint: { marginTop: 4, fontSize: 12, color: "#6B8C8C" },
 
-  uploadSuccess: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 16,
-  },
+  uploadSuccess: { flexDirection: "row", alignItems: "center", marginBottom: 16 },
 
   successText: {
     marginLeft: 6,
@@ -420,7 +541,5 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  nextBtn: {
-    marginTop: 10,
-  },
+  nextBtn: { marginTop: 10 },
 });

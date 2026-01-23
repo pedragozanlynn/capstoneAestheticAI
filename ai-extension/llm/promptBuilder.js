@@ -1,3 +1,20 @@
+// buildInteriorPrompt.js
+// ✅ UPDATED to integrate with your classifier output (spaceType + room.type = roomType snake_case)
+// ✅ FIX: balcony vs bedroom drift
+// ✅ FIX: living_room TV becomes REQUIRED only when user/layout mentions TV/console
+// ✅ FIX: "terrace/lanai/roof deck" normalization → balcony/roof_deck
+// ✅ NEW FIX (KIDS ROOM BUG):
+//    - if user asks "kids/child/children" + roomKey === bedroom -> treat as kids_bedroom
+//    - enforce kids-scale bed + desk + toy storage
+//    - strong negatives to prevent adult/master bedroom drift
+// ✅ NEW FIX (MISSING HOUSE PARTS SUPPORT):
+//    - adds service_area + maids_room catalogs + routing aliases + negatives
+//    - adds PH/Taglish aliases (kwarto/sala/kusina/etc.) to avoid drift
+// ✅ Keeps your strict layout + palette logic intact (no unrelated UI/style changes)
+
+/**
+ * buildInteriorPrompt({ room, style, palette, userMessage, previousPrompt, isEdit, spaceType, layoutSuggestions, forceFixedCamera })
+ */
 export function buildInteriorPrompt({
   room,
   style,
@@ -5,13 +22,15 @@ export function buildInteriorPrompt({
   userMessage,
   previousPrompt,
   isEdit = false,
+
+  // ✅ from classifier/orchestrator: "residential" | "commercial"
   spaceType,
 
-  // ✅ NEW: pass these from orchestrator
+  // ✅ from orchestrator
   layoutSuggestions = [],
   forceFixedCamera = true,
 }) {
-  const safeMessage = (userMessage || "").trim();
+  const safeMessage = String(userMessage || "").trim();
 
   const paletteNames = Array.isArray(palette?.colors)
     ? palette.colors.map((c) => c?.name).filter(Boolean)
@@ -20,6 +39,12 @@ export function buildInteriorPrompt({
   const paletteHexes = Array.isArray(palette?.colors)
     ? palette.colors.map((c) => c?.hex).filter(Boolean)
     : [];
+
+  // ✅ NEW: kids intent detector (minimal)
+  const lcMsg = safeMessage.toLowerCase();
+  const isKidsIntent = /\b(kids|kid|child|children|pang\s*bata|pambata|for\s*kids|for\s*child)\b/i.test(
+    lcMsg
+  );
 
   const baseQuality = `
 photorealistic interior photograph,
@@ -46,7 +71,6 @@ ABSOLUTE LOCK:
 - Do NOT redesign the room
 `.trim();
 
-  // ✅ Make layout suggestions "strict rules" so SDXL follows better
   const hasLayout = Array.isArray(layoutSuggestions) && layoutSuggestions.length > 0;
 
   const strictLayoutBlock = hasLayout
@@ -68,21 +92,29 @@ STRICT COLOR PALETTE (MUST FOLLOW):
 - Avoid random colors outside the palette.
 
 PALETTE HEX:
-${paletteHexes.length ? paletteHexes.slice(0, 8).map((h) => `- ${String(h).toUpperCase()}`).join("\n") : "- (no hex provided)"}
+${
+  paletteHexes.length
+    ? paletteHexes
+        .slice(0, 8)
+        .map((h) => `- ${String(h).toUpperCase()}`)
+        .join("\n")
+    : "- (no hex provided)"
+}
 
 PALETTE NAMES:
-${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n") : "- neutral tones"}
+${
+  paletteNames.length
+    ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n")
+    : "- neutral tones"
+}
 `.trim()
       : "";
 
   /* ===============================
-     ✅ FIX: Room signals
-     spaceType = residential/commercial, NOT room type
+     ✅ Signals (aligned to classifier)
      =============================== */
-  const roomType = room?.type || "generic_interior";
-  const category = room?.category || spaceType || "residential";
-  const useCase = room?.useCase || "general";
-  const mood = room?.mood || style?.mood || "neutral";
+  const roomTypeRaw = room?.type || "unknown";
+  const normalizedSpaceType = normalizeSpaceType(spaceType);
 
   const width = room?.width ?? 4;
   const length = room?.length ?? 4;
@@ -93,49 +125,61 @@ ${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n"
   const windowSide = room?.windowSide || (hasWindow ? "left" : "none");
   const lighting = room?.lighting || (hasWindow ? "ambient + natural" : "ambient");
 
-  const lightingLine = hasWindow
-    ? `Natural light from ${windowSide} side window + ${lighting}`
-    : `No direct window light; rely on ${lighting}`;
-
   const constraints = room?.constraints || "no special constraints";
+  const useCase =
+    room?.useCase || (normalizedSpaceType === "commercial" ? "small business" : "general");
+  const mood = room?.mood || style?.mood || "neutral";
 
   const materialsLine = room?.materialNotes
     ? room.materialNotes
     : `Mix of ${style?.materials?.join(", ") || "light wood, linen fabric, matte metal"}; avoid glossy plastic`;
 
   /* ===============================
-     ✅ MASTER INTERIOR OBJECT CATALOG
-     (Used to force objects to appear)
+     ✅ OBJECT CATALOG (Home + Small Business only)
      =============================== */
   const OBJECT_CATALOG = {
+    // Residential
     living_room: [
       "sofa or sectional",
       "coffee table",
-      "tv console / media console",
-      "television (visible)",
-      "area rug",
+      "tv console / media console (optional unless user requested TV)",
+      "television (visible) (optional unless user requested TV)",
+      "area rug (optional)",
       "side table (optional)",
       "accent chair (optional)",
       "floor lamp or table lamp (optional)",
       "wall art (optional)",
       "indoor plants (optional)",
     ],
+
+    // ✅ NEW: kids bedroom (prevents adult/master bedroom drift)
+    kids_bedroom: [
+      "child-sized bed or bunk bed (NOT king/queen)",
+      "kids desk + chair",
+      "toy storage (bins/shelves)",
+      "wardrobe / closet (optional)",
+      "soft area rug (optional)",
+      "kid-friendly lighting (optional)",
+      "playful but controlled accents (optional)",
+    ],
+
     bedroom: [
       "bed",
-      "headboard (optional)",
       "nightstand",
       "wardrobe / closet",
       "dresser (optional)",
       "area rug (optional)",
       "desk + chair (optional)",
     ],
+
     home_office: [
       "desk",
       "office chair",
-      "bookshelf / storage cabinet (optional)",
+      "storage (shelves or cabinet)",
       "task lamp (optional)",
       "area rug (optional)",
     ],
+
     kitchen: [
       "base cabinets",
       "countertop",
@@ -147,6 +191,9 @@ ${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n"
       "kitchen island (optional)",
       "bar stools (optional if island)",
     ],
+
+    pantry: ["pantry shelving", "organized food storage", "storage containers (optional)"],
+
     dining_room: [
       "dining table",
       "dining chairs",
@@ -154,62 +201,156 @@ ${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n"
       "area rug (optional)",
       "sideboard / buffet (optional)",
     ],
-    bathroom: [
-      "vanity",
-      "mirror",
-      "toilet",
-      "shower area or bathtub",
-      "storage shelves (optional)",
+
+    bathroom: ["vanity", "mirror", "toilet", "shower area or bathtub", "storage shelves (optional)"],
+
+    laundry_room: ["washer", "dryer (optional)", "counter/folding area", "storage shelves", "laundry basket (optional)"],
+
+    walk_in_closet: ["closet system (shelves + hanging rods)", "shoe storage", "full-length mirror (optional)", "bench (optional)"],
+
+    kids_playroom: ["kids storage (bins/shelves)", "play mat (optional)", "kids table + chair (optional)", "toys (optional)"],
+
+    storage_room: ["storage shelves", "stackable bins/boxes", "clear floor pathway"],
+
+    // ✅ NEW: Service Area (utility)
+    service_area: [
+      "utility counter or work surface",
+      "storage shelves/cabinets",
+      "cleaning tools storage (optional)",
+      "clear walkway",
     ],
-    cafe: [
-      "service counter",
-      "tables",
-      "chairs",
-      "pendant lighting (optional)",
-      "indoor plants (optional)",
+
+    // ✅ NEW: Maids/Helper room
+    maids_room: [
+      "single bed (or bunk bed if shared)",
+      "small wardrobe or storage cabinet",
+      "small side table (optional)",
+      "simple lighting",
     ],
-    retail_store: [
-      "display racks",
-      "display shelves",
-      "cashier counter",
-      "display table (optional)",
-    ],
-    generic_interior: [
-      "primary seating",
-      "side table",
-      "storage",
-      "area rug (optional)",
-      "lighting fixture",
-    ],
+
+    entryway: ["shoe storage (rack/cabinet)", "bench (optional)", "console table (optional)", "mirror (optional)"],
+
+    hallway: ["hallway lighting", "wall decor (optional)", "runner rug (optional)"],
+
+    stairs_area: ["staircase", "handrail/railing", "stair lighting"],
+
+    // ✅ Outdoor
+    balcony: ["outdoor seating", "outdoor side table (optional)", "plants (optional)", "railings/guardrail (visible)"],
+    patio: ["outdoor seating", "outdoor side table (optional)", "plants (optional)", "outdoor flooring (visible)"],
+    roof_deck: ["outdoor seating", "deck surface", "plants (optional)", "shade element (optional)", "railings/guardrail (visible)"],
+    garden: ["landscaping/greenery", "pathway (optional)", "outdoor seating (optional)"],
+    garage: ["parking bay", "tool/storage wall (optional)", "shelving (optional)"],
+    studio_apartment: ["sleeping zone (bed or sofa bed)", "compact seating", "compact dining/work surface (optional)", "storage"],
+    residential_generic: ["primary seating", "storage", "lighting fixture", "area rug (optional)", "side table (optional)"],
+
+    // Small business (commercial)
+    sari_sari_store: ["service counter", "display shelves", "product display (organized)", "signage area (optional, no readable text)"],
+    retail_store: ["display racks", "display shelves", "checkout counter", "feature display table (optional)", "fitting area (optional if clothing store)"],
+    bakery: ["display case", "service counter", "menu board area (optional, no readable text)", "packaging/ordering zone"],
+    milktea_shop: ["order counter", "prep bar (behind counter)", "menu board area (optional, no readable text)", "seating (optional depending on size)"],
+    coffee_shop: ["order counter", "espresso/prep bar (behind counter)", "seating (tables + chairs)", "menu board area (optional, no readable text)"],
+    restaurant: ["tables", "chairs/booths", "service counter (optional)", "simple service circulation path"],
+    computer_shop: ["computer stations (rows)", "chairs", "cashier counter (optional)", "cable management / clean wiring look"],
+    printing_shop: ["service counter", "work table", "printer/copier zone", "display shelves (optional)"],
+    laundry_shop: ["washing machines", "folding counter", "waiting bench (optional)", "service counter (optional)"],
+    pharmacy: ["service counter", "medicine display shelves (behind counter)", "customer waiting space (small)", "storage (optional)"],
+    commercial_generic: ["customer area", "display/storage", "clear circulation", "service counter (optional)"],
+
+    generic_interior: ["primary seating", "storage", "lighting fixture", "area rug (optional)", "side table (optional)"],
   };
 
+  /* ===============================
+     ✅ Room normalization (classifier-aligned)
+     =============================== */
   const ROOM_ALIASES = {
+    // Residential legacy
     living: "living_room",
-    living_room: "living_room",
-    bedroom: "bedroom",
-    home_office: "home_office",
+    livingroom: "living_room",
     office: "home_office",
-    kitchen: "kitchen",
-    dining: "dining_room",
-    dining_room: "dining_room",
-    bathroom: "bathroom",
-    cafe: "cafe",
-    coffee_shop: "cafe",
-    retail: "retail_store",
-    retail_store: "retail_store",
+    study: "home_office",
+
+    // ✅ PH/Taglish room aliases (prevents drift)
+    tulugan: "bedroom",
+    kwarto: "bedroom",
+    silid: "bedroom",
+    sala: "living_room",
+    kusina: "kitchen",
+    kainan: "dining_room",
+    banyo: "bathroom",
+    palikuran: "bathroom",
+    labahan: "laundry_room",
+    bodega: "storage_room",
+    damitan: "walk_in_closet",
+    hagdan: "stairs_area",
+    garahe: "garage",
+    bakuran: "garden",
+
+    // ✅ Service/Maid aliases
+    "service area": "service_area",
+    "utility area": "service_area",
+    "service kitchen": "service_area",
+    "maids room": "maids_room",
+    "maid's room": "maids_room",
+    "helper room": "maids_room",
+    "house helper room": "maids_room",
+
+    // ✅ Outdoor synonyms → correct buckets
+    terrace: "balcony",
+    lanai: "balcony",
+    veranda: "balcony",
+    rooftop: "roof_deck",
+    "roof top": "roof_deck",
+
+    // Small business legacy
+    cafe: "coffee_shop",
+    coffee: "coffee_shop",
     store: "retail_store",
+
+    // Generic
     generic: "generic_interior",
+    unknown: "unknown",
   };
 
   function normalizeRoomKey(t) {
-    const k = String(t || "generic_interior").toLowerCase().trim();
-    return ROOM_ALIASES[k] || k || "generic_interior";
+    const k = String(t || "unknown").toLowerCase().trim();
+    const aliased = ROOM_ALIASES[k] || k;
+
+    if (!aliased || aliased === "unknown") {
+      return normalizedSpaceType === "commercial" ? "commercial_generic" : "residential_generic";
+    }
+
+    if (!OBJECT_CATALOG[aliased]) {
+      return normalizedSpaceType === "commercial" ? "commercial_generic" : "residential_generic";
+    }
+
+    return aliased;
   }
 
-  const roomKey = normalizeRoomKey(roomType);
+  let roomKey = normalizeRoomKey(roomTypeRaw);
 
-  // If user explicitly mentions certain objects, prioritize them as required
+  // ✅ NEW: If classifier says bedroom but user asked kids room, use kids_bedroom catalog
+  if (roomKey === "bedroom" && isKidsIntent) {
+    roomKey = "kids_bedroom";
+  }
+
+  // ✅ Detect outdoor so we can prevent bed/wardrobe drift
+  const isOutdoorRoom =
+    roomKey === "balcony" || roomKey === "patio" || roomKey === "roof_deck" || roomKey === "garden";
+
+  /* ===============================
+     ✅ Lighting line (outdoor-aware)
+     =============================== */
+  const lightingLine = isOutdoorRoom
+    ? `Outdoor natural light, realistic sky bounce; ${lighting || "daylight"}`
+    : hasWindow
+    ? `Natural light from ${windowSide} side window + ${lighting}`
+    : `No direct window light; rely on ${lighting}`;
+
+  /* ===============================
+     ✅ Required objects extraction
+     =============================== */
   const OBJECT_KEYWORDS = [
+    // Residential
     { keys: ["tv console", "media console", "tv stand"], obj: "tv console / media console" },
     { keys: ["tv", "television"], obj: "television (visible)" },
     { keys: ["rug", "area rug"], obj: "area rug" },
@@ -219,37 +360,85 @@ ${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n"
     { keys: ["bed"], obj: "bed" },
     { keys: ["nightstand"], obj: "nightstand" },
     { keys: ["desk"], obj: "desk" },
-    { keys: ["chair"], obj: "chair" },
     { keys: ["sink"], obj: "sink" },
     { keys: ["stove", "cooktop", "range"], obj: "cooktop / stove" },
-    { keys: ["island"], obj: "kitchen island" },
+    { keys: ["island"], obj: "kitchen island (optional)" },
     { keys: ["dining table"], obj: "dining table" },
     { keys: ["toilet"], obj: "toilet" },
-    { keys: ["shower"], obj: "shower area" },
-    { keys: ["bathtub", "tub"], obj: "bathtub" },
-    { keys: ["counter"], obj: "service counter" },
-    { keys: ["rack", "racks"], obj: "display racks" },
+    { keys: ["shower", "bathtub", "tub"], obj: "shower area or bathtub" },
+    { keys: ["washer"], obj: "washer" },
+
+    // ✅ NEW: service/maid keywords
+    { keys: ["service area", "utility area", "service kitchen"], obj: "utility counter or work surface" },
+    { keys: ["cleaning", "mop", "walis", "linis"], obj: "cleaning tools storage (optional)" },
+    { keys: ["maid", "helper", "house helper"], obj: "single bed (or bunk bed if shared)" },
+
+    // ✅ NEW: kids hints -> push kids objects
+    { keys: ["kids", "kid", "child", "children", "pambata", "pang bata"], obj: "toy storage (bins/shelves)" },
+    { keys: ["bunk", "bunk bed"], obj: "child-sized bed or bunk bed (NOT king/queen)" },
+    { keys: ["study", "desk"], obj: "kids desk + chair" },
+
+    // Outdoor
+    { keys: ["balcony", "balkonahe", "terrace", "lanai", "veranda"], obj: "railings/guardrail (visible)" },
+    { keys: ["outdoor chair", "outdoor seating"], obj: "outdoor seating" },
+    { keys: ["plants", "planters"], obj: "plants (optional)" },
+
+    // Small business
+    { keys: ["counter", "cashier", "checkout"], obj: "service counter" },
     { keys: ["shelves", "shelf"], obj: "display shelves" },
-    { keys: ["cashier"], obj: "cashier counter" },
+    { keys: ["rack", "racks"], obj: "display racks" },
+    { keys: ["display case"], obj: "display case" },
+    { keys: ["machines", "washing machine"], obj: "washing machines" },
+    { keys: ["computer", "pcs", "stations"], obj: "computer stations (rows)" },
+    { keys: ["printer", "copier", "xerox"], obj: "printer/copier zone" },
+    { keys: ["menu"], obj: "menu board area (optional, no readable text)" },
   ];
 
-  function extractRequiredObjects({ userText = "", layoutList = [], roomKey = "generic_interior" }) {
+  function extractRequiredObjects({ userText = "", layoutList = [], roomKeyLocal = "generic_interior" }) {
     const src = `${userText}\n${layoutList.join("\n")}`.toLowerCase();
     const required = new Set();
 
-    // Baseline required objects by room
-    const baseline = OBJECT_CATALOG[roomKey] || OBJECT_CATALOG.generic_interior;
-    baseline.forEach((o) => required.add(o));
+    const baseline = OBJECT_CATALOG[roomKeyLocal] || OBJECT_CATALOG.generic_interior;
 
-    // User-specified / layout-specified objects become strictly required
-    for (const rule of OBJECT_KEYWORDS) {
-      if (rule.keys.some((k) => src.includes(k))) required.add(rule.obj);
+    // ✅ For living room: keep TV items optional unless explicitly requested
+    if (roomKeyLocal === "living_room") {
+      for (const o of baseline) {
+        if (String(o).toLowerCase().includes("television") || String(o).toLowerCase().includes("tv console")) continue;
+        required.add(o);
+      }
+    } else {
+      baseline.forEach((o) => required.add(o));
     }
 
-    // If living room layout indicates tv console, strongly enforce TV + rug visibility
-    if (roomKey === "living_room" && src.includes("tv console")) {
+    for (const rule of OBJECT_KEYWORDS) {
+      if (rule.keys.some((k) => src.includes(String(k).toLowerCase()))) required.add(rule.obj);
+    }
+
+    // ✅ Only enforce TV if user asked for it
+    const userWantsTV =
+      src.includes("tv") ||
+      src.includes("television") ||
+      src.includes("tv console") ||
+      src.includes("media console");
+
+    if (roomKeyLocal === "living_room" && userWantsTV) {
+      required.add("tv console / media console");
       required.add("television (visible)");
-      required.add("area rug");
+    }
+
+    // ✅ Outdoor rooms: explicitly disallow indoor bedroom core objects via "required"
+    if (roomKeyLocal === "balcony" || roomKeyLocal === "patio" || roomKeyLocal === "roof_deck") {
+      required.delete("bed");
+      required.delete("nightstand");
+      required.delete("wardrobe / closet");
+    }
+
+    // ✅ Kids bedroom: remove adult bedroom drift if any leaked
+    if (roomKeyLocal === "kids_bedroom") {
+      required.delete("bed");
+      required.add("child-sized bed or bunk bed (NOT king/queen)");
+      required.add("kids desk + chair");
+      required.add("toy storage (bins/shelves)");
     }
 
     return Array.from(required);
@@ -258,7 +447,7 @@ ${paletteNames.length ? paletteNames.slice(0, 12).map((n) => `- ${n}`).join("\n"
   const requiredObjects = extractRequiredObjects({
     userText: safeMessage,
     layoutList: layoutSuggestions,
-    roomKey,
+    roomKeyLocal: roomKey,
   });
 
   const requiredObjectsBlock = requiredObjects.length
@@ -268,36 +457,70 @@ ${requiredObjects.map((o) => `- ${o}`).join("\n")}
 
 VISIBILITY RULES:
 - Use wide framing that shows all required objects clearly.
-- Do not crop out the tv console, rug, and main furniture.
-- Keep objects unobstructed (no blocking furniture in front of tv console).
+- Keep objects unobstructed and realistically spaced.
 `.trim()
     : "";
 
-  // Room-specific negatives to reduce wrong-room drift
+  /* ===============================
+     ✅ Negative constraints (space + room)
+     =============================== */
+  const spaceDriftNegatives =
+    normalizedSpaceType === "commercial"
+      ? "no bed, no wardrobe, no home living-room TV staging, no residential kitchen-only scene"
+      : "no cashier counter, no retail racks, no checkout counter, no store-like product displays";
+
+  const outdoorNegatives = isOutdoorRoom
+    ? "no bed, no wardrobe, no indoor bedroom scene, no indoor ceiling fixtures, no closed-room walls; must read as outdoor/semI-outdoor space"
+    : "";
+
+  // ✅ kids bedroom negatives (strong)
+  const kidsBedroomNegatives =
+    roomKey === "kids_bedroom"
+      ? "no king-size bed, no queen-size bed, no hotel-style master bedroom headboard, no luxury adult bedroom staging, no dark moody master suite look; must read clearly as a child/teen room"
+      : "";
+
+  const roomSpecificNegatives =
+    roomKey === "living_room"
+      ? "no bed, no wardrobe, no kitchen island, no sink, no retail racks, no cashier counter"
+      : roomKey === "bedroom"
+      ? "no living-room tv console + sofa composition, no kitchen island, no retail racks, no cashier counter"
+      : roomKey === "kids_bedroom"
+      ? "no master-bedroom staging, no hotel headboard, no king bed; include kids-scale bed + study + toy storage"
+      : roomKey === "kitchen"
+      ? "no bed, no wardrobe, no living-room tv console + sofa composition, no retail racks"
+      : roomKey === "bathroom"
+      ? "no sofa, no tv console, no kitchen island, no retail racks"
+      : roomKey === "service_area"
+      ? "no sofa living-room staging, no tv console focus, no full bedroom suite; must read as a utility/service area"
+      : roomKey === "maids_room"
+      ? "no luxury master-bedroom staging, no king/queen bed dominance, no hotel headboard; must read as simple helper/maid room"
+      : roomKey === "balcony" || roomKey === "patio" || roomKey === "roof_deck"
+      ? "no bed, no wardrobe, no indoor walls, no indoor bedroom staging; include railing/guardrail and outdoor light"
+      : roomKey === "sari_sari_store"
+      ? "no bed, no sofa-living-room staging, no wardrobe, no home dining setup"
+      : roomKey === "retail_store"
+      ? "no bed, no sofa-living-room staging, no home kitchen-only scene"
+      : roomKey === "coffee_shop" || roomKey === "milktea_shop" || roomKey === "bakery"
+      ? "no bed, no wardrobe, no home living-room TV staging, no readable text on menu boards"
+      : "no unintended room type changes";
+
   const negativeBlock = `
 NEGATIVE CONSTRAINTS:
-- no text, no watermark, no labels
-- no empty room, no missing key furniture
-- ${
-    roomKey === "living_room"
-      ? "no bed, no wardrobe, no kitchen island, no sink, no bar stools"
-      : roomKey === "bedroom"
-      ? "no living-room tv console + sofa composition, no kitchen island, no dining setup"
-      : roomKey === "kitchen"
-      ? "no bed, no wardrobe, no living-room tv console + sofa composition"
-      : roomKey === "bathroom"
-      ? "no sofa, no tv console, no kitchen island"
-      : "no unintended room type changes"
-  }
+- no text, no watermark, no labels, no readable signage
+- no empty scene, no missing key furniture
+- ${spaceDriftNegatives}
+- ${roomSpecificNegatives}
+${kidsBedroomNegatives ? `- ${kidsBedroomNegatives}` : ""}
+${outdoorNegatives ? `- ${outdoorNegatives}` : ""}
 `.trim();
 
   const furnitureList =
     Array.isArray(room?.furniture) && room.furniture.length
       ? room.furniture.join(", ")
-      : inferFurnitureDefaults(roomKey);
+      : inferFurnitureDefaults(roomKey, normalizedSpaceType);
 
   /* ===============================
-     Camera: fixed when layout is important
+     Camera preset (outdoor-aware)
      =============================== */
   const signature = stableHash(safeMessage);
 
@@ -318,7 +541,9 @@ NEGATIVE CONSTRAINTS:
       ? {
           angle: "eye-level",
           lens: "24–28mm wide-angle",
-          framing: "wide corner-to-corner view showing the whole layout clearly",
+          framing: isOutdoorRoom
+            ? "wide view showing outdoor railing/guardrail + seating clearly"
+            : "wide corner-to-corner view showing the whole layout clearly",
           height: "1.5m",
         }
       : pickCameraPreset(emphasis);
@@ -374,6 +599,9 @@ EDIT GOAL:
 - Only change: style, materials, finishes, color, lighting, decor
 - No new architecture, no new room
 
+SPACE TYPE:
+${normalizedSpaceType}
+
 ROOM TYPE:
 ${roomKey}
 
@@ -395,8 +623,8 @@ ${baseQuality}
 PHOTOREALISTIC INTERIOR PHOTOGRAPH.
 
 SPACE:
-- Type: ${roomKey}
-- Category: ${category}
+- Space type: ${normalizedSpaceType}
+- Room type: ${roomKey}
 - Use case: ${useCase}
 
 STYLE DIRECTION:
@@ -451,64 +679,30 @@ ${baseQuality}
    Helpers
    =============================== */
 
+function normalizeSpaceType(spaceType) {
+  const s = String(spaceType || "").toLowerCase().trim();
+  return s === "commercial" ? "commercial" : "residential";
+}
+
 function stableHash(str) {
   let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  const s = String(str || "");
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
   }
   return hash;
 }
 
 function pickCameraPreset(emphasis) {
   const presets = {
-    "light flow": {
-      angle: "eye-level",
-      lens: "24–28mm wide-angle",
-      framing: "toward window wall",
-      height: "1.5m",
-    },
-    "material contrast": {
-      angle: "eye-level",
-      lens: "28–35mm",
-      framing: "focus on texture-rich zone",
-      height: "1.5m",
-    },
-    "spatial openness": {
-      angle: "eye-level",
-      lens: "20–24mm wide-angle",
-      framing: "wide corner-to-corner view",
-      height: "1.55m",
-    },
-    "furniture proportion": {
-      angle: "eye-level",
-      lens: "28–35mm",
-      framing: "balanced full-room view",
-      height: "1.5m",
-    },
-    "mood and atmosphere": {
-      angle: "eye-level",
-      lens: "28mm",
-      framing: "warm vignette composition",
-      height: "1.45m",
-    },
-    "storage efficiency": {
-      angle: "eye-level",
-      lens: "24–28mm",
-      framing: "storage wall + main zone",
-      height: "1.5m",
-    },
-    "circulation/walkway clarity": {
-      angle: "eye-level",
-      lens: "24mm",
-      framing: "shows clear pathways",
-      height: "1.55m",
-    },
-    "accent layering": {
-      angle: "eye-level",
-      lens: "28–35mm",
-      framing: "accent corner + main furniture",
-      height: "1.5m",
-    },
+    "light flow": { angle: "eye-level", lens: "24–28mm wide-angle", framing: "toward window wall", height: "1.5m" },
+    "material contrast": { angle: "eye-level", lens: "28–35mm", framing: "focus on texture-rich zone", height: "1.5m" },
+    "spatial openness": { angle: "eye-level", lens: "20–24mm wide-angle", framing: "wide corner-to-corner view", height: "1.55m" },
+    "furniture proportion": { angle: "eye-level", lens: "28–35mm", framing: "balanced full-room view", height: "1.5m" },
+    "mood and atmosphere": { angle: "eye-level", lens: "28mm", framing: "warm vignette composition", height: "1.45m" },
+    "storage efficiency": { angle: "eye-level", lens: "24–28mm", framing: "storage wall + main zone", height: "1.5m" },
+    "circulation/walkway clarity": { angle: "eye-level", lens: "24mm", framing: "shows clear pathways", height: "1.55m" },
+    "accent layering": { angle: "eye-level", lens: "28–35mm", framing: "accent corner + main furniture", height: "1.5m" },
   };
 
   return presets[emphasis] || {
@@ -519,14 +713,47 @@ function pickCameraPreset(emphasis) {
   };
 }
 
-function inferFurnitureDefaults(roomKey) {
-  const t = (roomKey || "").toLowerCase();
+function inferFurnitureDefaults(roomKey, spaceType) {
+  const t = String(roomKey || "").toLowerCase();
+
+  // ✅ Outdoor first (prevents bedroom defaults)
+  if (t === "balcony") return "outdoor seating, small outdoor table, plants, railing";
+  if (t === "patio") return "outdoor seating, outdoor flooring, plants";
+  if (t === "roof_deck") return "outdoor seating, deck surface, optional shade, railing";
+  if (t === "garden") return "landscaping/greenery, optional pathway, optional outdoor seating";
+
+  // ✅ kids bedroom defaults
+  if (t === "kids_bedroom") return "child-sized bed or bunk bed, kids desk and chair, toy storage, optional wardrobe";
+
+  // ✅ NEW: service area defaults
+  if (t === "service_area") return "utility counter/work surface, storage shelves/cabinets, cleaning tools storage, clear walkway";
+
+  // ✅ NEW: maids room defaults
+  if (t === "maids_room") return "single bed (or bunk), small wardrobe/storage cabinet, simple side table, simple lighting";
+
+  // Residential defaults
   if (t.includes("bedroom")) return "bed, nightstand, wardrobe";
-  if (t.includes("living")) return "sofa, coffee table, tv console, area rug, television";
+  if (t.includes("living")) return "sofa, coffee table, optional tv console, optional area rug";
   if (t.includes("kitchen")) return "base cabinets, countertop, sink, cooktop";
+  if (t.includes("pantry")) return "pantry shelves, storage containers";
   if (t.includes("bathroom")) return "vanity, mirror, toilet, shower zone";
-  if (t.includes("office")) return "desk, chair, shelves";
-  if (t.includes("cafe")) return "service counter, tables, chairs";
-  if (t.includes("retail")) return "display shelves, racks, cashier counter";
-  return "primary seating, side table, storage";
+  if (t.includes("home_office")) return "desk, chair, shelves";
+  if (t.includes("laundry")) return "washer, folding counter, storage shelves";
+  if (t.includes("closet")) return "closet shelves, hanging rods, shoe storage";
+
+  // Small business defaults
+  if (t.includes("sari_sari")) return "service counter, display shelves, product display";
+  if (t.includes("retail")) return "display racks, display shelves, checkout counter";
+  if (t.includes("bakery")) return "display case, service counter";
+  if (t.includes("milktea")) return "order counter, prep bar, optional seating";
+  if (t.includes("coffee_shop")) return "order counter, espresso/prep bar, tables and chairs";
+  if (t.includes("restaurant")) return "tables, chairs/booths, clear circulation";
+  if (t.includes("computer_shop")) return "computer stations, chairs, clean wiring";
+  if (t.includes("printing_shop")) return "service counter, work table, printer/copier zone";
+  if (t.includes("laundry_shop")) return "washing machines, folding counter, optional waiting bench";
+  if (t.includes("pharmacy")) return "service counter, display shelves (behind counter)";
+
+  // Generic by space type
+  if (spaceType === "commercial") return "customer area, display/storage, service counter (optional)";
+  return "primary seating, storage, lighting fixture";
 }

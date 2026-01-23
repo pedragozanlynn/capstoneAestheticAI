@@ -1,7 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  limit,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Dimensions,
@@ -47,7 +55,10 @@ const DESIGN_INSPIRATIONS = [
 export default function Home() {
   const router = useRouter();
   const [profile, setProfile] = useState(null);
+
+  // ✅ Keep your existing state name "rooms" to minimize changes
   const [rooms, setRooms] = useState([]);
+
   const [tipOfTheDay, setTipOfTheDay] = useState(null);
   const subType = useSubscriptionType();
 
@@ -78,16 +89,94 @@ export default function Home() {
     }
   };
 
-  const fetchRooms = () => {
-    setRooms([
-      {
-        id: "1",
-        name: "Modern Living",
-        image: require("../../assets/livingroom.jpg"),
-      },
-      { id: "2", name: "Cozy Bedroom", image: require("../../assets/carousel2.jpg") },
-      { id: "3", name: "Sleek Office", image: require("../../assets/carousel3.png") },
-    ]);
+  // ✅ Helpers: normalize project fields safely without forcing schema changes
+  const pickTitle = (data = {}) =>
+    data?.prompt ||
+    data?.title ||
+    data?.projectTitle ||
+    data?.roomTitle ||
+    data?.name ||
+    data?.roomName ||
+    data?.chatTitle ||
+    "Untitled Project";
+
+  const pickImageUrl = (data = {}) =>
+    data?.image || // ✅ IMPORTANT: your Projects screen uses `image`
+    data?.imageUrl ||
+    data?.thumbnailUrl ||
+    data?.previewUrl ||
+    data?.resultImageUrl ||
+    data?.outputUrl ||
+    data?.renderUrl ||
+    data?.finalImageUrl ||
+    data?.designImageUrl ||
+    data?.finalUrl ||
+    data?.resultUrl ||
+    null;
+
+  const toMillisSafe = (ts) => {
+    try {
+      if (!ts) return 0;
+      if (typeof ts?.toMillis === "function") return ts.toMillis();
+      const d = new Date(ts);
+      const ms = d.getTime();
+      return Number.isNaN(ms) ? 0 : ms;
+    } catch {
+      return 0;
+    }
+  };
+
+  // ✅ UPDATED: Fetch real recent projects from Firestore (projects collection)
+  // ✅ Uses SAME source logic as your Projects screen:
+  //    - collection: "projects"
+  //    - filter: where("uid","==",currentUser.uid)
+  //    - realtime: onSnapshot
+  // ✅ No orderBy() to avoid createdAt/index issues; client-side sort if createdAt exists.
+  const subscribeRecentProjects = () => {
+    try {
+      const user = auth.currentUser;
+      if (!user?.uid) return () => {};
+      const uid = user.uid;
+
+      const q = query(
+        collection(db, "projects"),
+        where("uid", "==", uid),
+        limit(20)
+      );
+
+      const unsub = onSnapshot(
+        q,
+        (snapshot) => {
+          const list = snapshot.docs
+            .map((d) => {
+              const data = d.data() || {};
+              return {
+                id: d.id,
+
+                // ✅ normalized fields for Home UI
+                name: pickTitle(data),
+                imageUrl: pickImageUrl(data),
+
+                // ✅ keep original project fields for RoomVisualization use
+                ...data,
+              };
+            })
+            .sort((a, b) => toMillisSafe(b.createdAt) - toMillisSafe(a.createdAt))
+            .slice(0, 10);
+
+          setRooms(list);
+        },
+        (err) => {
+          console.log("Recent projects listener error:", err);
+          setRooms([]);
+        }
+      );
+
+      return unsub;
+    } catch (err) {
+      console.log("subscribeRecentProjects error:", err);
+      return () => {};
+    }
   };
 
   const loadTipOfTheDay = async () => {
@@ -108,7 +197,8 @@ export default function Home() {
 
   useEffect(() => {
     const interval = setInterval(() => {
-      carouselIndex.current = (carouselIndex.current + 1) % carouselImages.length;
+      carouselIndex.current =
+        (carouselIndex.current + 1) % carouselImages.length;
       scrollRef.current?.scrollTo({
         x: carouselIndex.current * width,
         animated: true,
@@ -119,10 +209,64 @@ export default function Home() {
 
   useEffect(() => {
     loadProfile();
-    fetchRooms();
     loadTipOfTheDay();
+
+    // ✅ Subscribe to Firestore recent projects
+    let unsub = () => {};
+
+    // In case auth isn't ready yet, re-subscribe once user is available
+    const trySubscribe = () => {
+      try {
+        const u = auth.currentUser;
+        if (u?.uid) {
+          unsub = subscribeRecentProjects();
+        }
+      } catch {}
+    };
+
+    trySubscribe();
+
+    // If your auth can be late, listen once:
+    const authUnsub =
+      typeof auth?.onAuthStateChanged === "function"
+        ? auth.onAuthStateChanged(() => {
+            // cleanup old listener then resubscribe
+            try {
+              unsub?.();
+            } catch {}
+            unsub = subscribeRecentProjects();
+          })
+        : null;
+
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+      try {
+        authUnsub?.();
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ✅ open project visualization
+  const openProject = (project) => {
+    try {
+      // ✅ Keep same navigation style you requested
+      // RoomVisualization can either:
+      // 1) read by id (recommended) OR
+      // 2) parse project JSON for instant display
+      router.push({
+        pathname: "/User/RoomVisualization",
+        params: {
+          id: String(project?.id || ""), // ✅ consistent with your Projects screen
+          project: JSON.stringify(project || {}),
+        },
+      });
+    } catch (e) {
+      console.log("openProject error:", e);
+    }
+  };
 
   return (
     <View style={styles.page}>
@@ -151,7 +295,6 @@ export default function Home() {
               <View style={styles.nameRow}>
                 <Text style={styles.userName}>{profile?.name || "Guest"}</Text>
 
-                {/* ✅ Badge optional only */}
                 {isPremium && (
                   <View style={styles.premiumBadge}>
                     <Ionicons name="diamond" size={12} color="#FFF" />
@@ -197,8 +340,8 @@ export default function Home() {
               label="Consult"
               desc="Pro Advice"
               color="#7C3AED"
-              onPress={() => router.push("/User/Consultants")} 
-              />
+              onPress={() => router.push("/User/Consultants")}
+            />
           </View>
         </View>
 
@@ -231,10 +374,24 @@ export default function Home() {
             contentContainerStyle={styles.projectList}
           >
             {rooms.map((room) => (
-              <TouchableOpacity key={room.id} style={styles.projectCard}>
-                <Image source={room.image} style={styles.projectImg} />
+              <TouchableOpacity
+                key={room.id}
+                style={styles.projectCard}
+                activeOpacity={0.85}
+                onPress={() => openProject(room)}
+              >
+                <Image
+                  source={
+                    room.imageUrl
+                      ? { uri: room.imageUrl }
+                      : require("../../assets/livingroom.jpg")
+                  }
+                  style={styles.projectImg}
+                />
                 <View style={styles.projectInfo}>
-                  <Text style={styles.projectName}>{room.name}</Text>
+                  <Text style={styles.projectName} numberOfLines={1}>
+                    {room.name}
+                  </Text>
                   <Ionicons
                     name="chevron-forward-circle"
                     size={20}
@@ -403,7 +560,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   tipBadgeText: { color: "#FFF", fontSize: 9, fontWeight: "900" },
-  tipTitle: { fontSize: 16, fontWeight: "800", color: "#0F3E48", marginBottom: 6 },
+  tipTitle: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#0F3E48",
+    marginBottom: 6,
+  },
   tipContent: { fontSize: 13, color: "#64748B", lineHeight: 20 },
 
   projectsSection: { marginBottom: 100 },
@@ -417,6 +579,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 18, fontWeight: "900", color: "#0F3E48" },
   seeAll: { color: "#01579B", fontWeight: "700", fontSize: 13 },
   projectList: { paddingLeft: 25 },
+
   projectCard: {
     width: CARD_WIDTH,
     backgroundColor: "#FFF",
@@ -435,5 +598,5 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
-  projectName: { fontWeight: "800", color: "#1E293B" },
+  projectName: { fontWeight: "800", color: "#1E293B", flex: 1, marginRight: 10 },
 });

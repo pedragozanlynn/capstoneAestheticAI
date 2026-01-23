@@ -63,9 +63,7 @@ export default function BottomNavbar({
       friction: 4,
       useNativeDriver: true,
     }).start(() => {
-      if (role === "user" && tab.name === "Consultants" && subType !== "Premium") {
-        return router.push("/User/UpgradeInfo");
-      }
+      // INALIS ANG UPGRADE REDIRECT DITO
       router.push(tab.routePath);
     });
   };
@@ -76,7 +74,6 @@ export default function BottomNavbar({
         {tabs.map((tab, index) => {
           const isActive = pathname?.toLowerCase() === tab.routePath?.toLowerCase();
           
-          // PINANATILI ANG ORIHINAL NA MGA KULAY
           const activeColor = "#008080"; 
           const inactiveColor = "#0F3E48";
 
@@ -92,7 +89,6 @@ export default function BottomNavbar({
                   { transform: [{ scale: scaleAnim[index] }] },
                 ]}
               >
-                {/* Visual Active Indicator (Maliit na bar sa taas ng active icon) */}
                 {isActive && <View style={[styles.activeIndicator, { backgroundColor: activeColor }]} />}
                 
                 <Ionicons
@@ -114,7 +110,7 @@ export default function BottomNavbar({
                   {tab.name}
                 </Text>
 
-                {tab.name === "Consultation" &&
+                {tab.name === "Consultants" &&
                   consultationNotifications > 0 &&
                   role === "user" && (
                     <View style={styles.badge}>
@@ -135,7 +131,7 @@ export default function BottomNavbar({
 const styles = StyleSheet.create({
   wrapper: {
     position: "absolute",
-    bottom: 10, // Floating effect
+    bottom: 10,
     width: width,
     alignItems: "center",
   },
@@ -143,11 +139,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-around",
     alignItems: "center",
-    width: width - 20, // Mas manipis ng konti para sa aesthetic curve
+    width: width - 20,
     height: 70,
     backgroundColor: "#FFFFFF",
     borderRadius: 22,
-    // Refined Shadow
     shadowColor: "#000",
     shadowOpacity: 0.15,
     shadowOffset: { width: 0, height: 8 },
