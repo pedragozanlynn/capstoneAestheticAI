@@ -10,6 +10,7 @@ import {
   StatusBar,
   SafeAreaView,
   ActivityIndicator,
+  Alert,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import useSubscriptionType from "../../services/useSubscriptionType";
@@ -17,7 +18,14 @@ import BottomNavbar from "../components/BottomNav";
 
 // ✅ Firebase
 import { getAuth } from "firebase/auth";
-import { collection, limit, onSnapshot, orderBy, query, where } from "firebase/firestore";
+import {
+  collection,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  where,
+} from "firebase/firestore";
 import { getApp } from "firebase/app";
 import { db } from "../../config/firebase";
 
@@ -74,11 +82,45 @@ export default function AIDesigner() {
         tab: "design",
         chatId: chat.id,
         sessionId: chat.sessionId || "",
-        source: chat.source || "root", // ✅ important for correct Firestore path
-        title: chat.title || "Aesthetic AI", // ✅ show title in header
+        source: chat.source || "root",
+        title: chat.title || "Aesthetic AI",
       },
     });
   };
+
+  // ✅ Alert when project is saved (via params.saved)
+  useEffect(() => {
+    const sub = (event) => {
+      const saved =
+        event?.data?.state?.routes?.[event?.data?.state?.index]?.params?.saved;
+
+      if (!saved) return;
+
+      Alert.alert(
+        "Saved",
+        typeof saved === "string" && saved !== "1" && saved !== "true"
+          ? `Project saved: ${saved}`
+          : "Project saved successfully."
+      );
+
+      try {
+        router.setParams({ saved: undefined });
+      } catch {}
+    };
+
+    let unsub;
+    try {
+      unsub = router?.addListener?.("state", sub);
+    } catch {
+      unsub = null;
+    }
+
+    return () => {
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, [router]);
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((u) => {
@@ -94,7 +136,6 @@ export default function AIDesigner() {
     return unsub;
   }, [auth]);
 
-  // Convert snapshot -> list rows (parent doc only) + include source
   const mapDocs = (snap, source) => {
     return snap.docs.map((d) => {
       const data = d.data() || {};
@@ -108,20 +149,13 @@ export default function AIDesigner() {
         date: formatChatDate(data.updatedAt || data.createdAt),
         updatedAt: data.updatedAt || null,
         createdAt: data.createdAt || null,
-
-        // ✅ must exist to resume reliably
         sessionId: data.sessionId || null,
-
-        // internal: tells us if we need to enrich from /messages
         _needsEnrich: !lastMessage || !data.updatedAt,
-
-        // ✅ tells chat screen where to read messages
-        source, // "root" | "user"
+        source,
       };
     });
   };
 
-  // Cleanup per-chat message listeners
   const clearMessageListeners = () => {
     try {
       const map = messageUnsubsRef.current;
@@ -134,13 +168,12 @@ export default function AIDesigner() {
     } catch {}
   };
 
-  // ✅ FIX: Attach message listener using EACH chat's own source
   const ensureMessageListener = ({ source, chatId }) => {
     const src = source === "user" ? "user" : "root";
     const key = `${src}::${chatId}`;
     if (messageUnsubsRef.current.has(key)) return;
 
-    if (!uid) return; // safety
+    if (!uid) return;
 
     const messagesCol =
       src === "user"
@@ -183,16 +216,20 @@ export default function AIDesigner() {
         );
       },
       (err) => {
-        console.warn("Message enrich snapshot error:", err?.message || String(err));
+        console.warn(
+          "Message enrich snapshot error:",
+          err?.message || String(err)
+        );
       }
     );
 
     messageUnsubsRef.current.set(key, unsub);
   };
 
-  // Attach main listener (root path by default)
   const attachMainListener = ({ useFallback }) => {
-    const basePath = useFallback ? `users/${uid}/aiConversations` : "aiConversations";
+    const basePath = useFallback
+      ? `users/${uid}/aiConversations`
+      : "aiConversations";
 
     const conversationsCol =
       basePath === "aiConversations"
@@ -221,7 +258,6 @@ export default function AIDesigner() {
           setChatSummaries(rows);
           setLoadingChats(false);
 
-          // If root returned empty, try fallback once
           if (!useFallback && !usedFallbackRef.current && rows.length === 0) {
             usedFallbackRef.current = true;
             try {
@@ -234,7 +270,6 @@ export default function AIDesigner() {
           const msg = err?.message || String(err);
           console.warn(`Recent chats realtime error (${tag}):`, msg);
 
-          // fallback if updatedAt index/field missing
           if (tag === "updatedAt") {
             try {
               unsubMainRef.current?.();
@@ -252,7 +287,6 @@ export default function AIDesigner() {
   };
 
   useEffect(() => {
-    // cleanup old listeners
     if (unsubMainRef.current) {
       try {
         unsubMainRef.current();
@@ -287,7 +321,6 @@ export default function AIDesigner() {
     };
   }, [uid, authReady]);
 
-  // ✅ FIX: Enrich using each chat's own source (not usedFallbackRef)
   useEffect(() => {
     if (!uid) return;
     if (!chatSummaries?.length) return;
@@ -309,7 +342,12 @@ export default function AIDesigner() {
 
   return (
     <View style={styles.page}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={false} />
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#F8FAFC"
+        translucent={false}
+      />
+
       <SafeAreaView style={styles.safeTop} />
 
       <ScrollView
@@ -321,16 +359,24 @@ export default function AIDesigner() {
           <Text style={styles.sectionHint}>Create a new design session</Text>
         </View>
 
-        <TouchableOpacity style={styles.primaryCard} onPress={openChatScreen} activeOpacity={0.92}>
+        <TouchableOpacity
+          style={styles.primaryCard}
+          onPress={openChatScreen}
+          activeOpacity={0.92}
+        >
           <View style={styles.primaryCardTop}>
             <View style={styles.primaryIconWrap}>
-              <Image source={require("../../assets/design.png")} style={styles.primaryIcon} />
+              <Image
+                source={require("../../assets/design.png")}
+                style={styles.primaryIcon}
+              />
             </View>
 
             <View style={styles.primaryTextWrap}>
               <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
               <Text style={styles.primaryDesc} numberOfLines={2}>
-                Generate layouts, refine styles, and modify furniture using a conversational interface.
+                Generate layouts, refine styles, and modify furniture using a
+                conversational interface.
               </Text>
             </View>
           </View>
@@ -342,7 +388,11 @@ export default function AIDesigner() {
                 <Text style={styles.miniPillText}>Image-based</Text>
               </View>
               <View style={styles.miniPill}>
-                <Ionicons name="chatbubble-ellipses" size={14} color="#0F3E48" />
+                <Ionicons
+                  name="chatbubble-ellipses"
+                  size={14}
+                  color="#0F3E48"
+                />
                 <Text style={styles.miniPillText}>Prompt-driven</Text>
               </View>
             </View>
@@ -357,7 +407,9 @@ export default function AIDesigner() {
         <View style={styles.historyHeaderRow}>
           <View>
             <Text style={styles.historyTitle}>Recent Chats</Text>
-            <Text style={styles.historySubtitle}>Resume your previous design sessions</Text>
+            <Text style={styles.historySubtitle}>
+              Resume your previous design sessions
+            </Text>
           </View>
         </View>
 
@@ -374,12 +426,16 @@ export default function AIDesigner() {
         ) : !uid ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>Sign in required</Text>
-            <Text style={styles.emptySubtitle}>Please sign in to view your chat history.</Text>
+            <Text style={styles.emptySubtitle}>
+              Please sign in to view your chat history.
+            </Text>
           </View>
         ) : historyList.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>No recent chats</Text>
-            <Text style={styles.emptySubtitle}>Start a new session to see it appear here.</Text>
+            <Text style={styles.emptySubtitle}>
+              Start a new session to see it appear here.
+            </Text>
           </View>
         ) : (
           <View style={styles.historyList}>
@@ -414,23 +470,38 @@ export default function AIDesigner() {
         )}
       </ScrollView>
 
-      <BottomNavbar subType={subType} />
+      {/* ✅ Footer lifted up */}
+      <SafeAreaView style={styles.safeBottom}>
+        <View style={styles.footerLift}>
+          <BottomNavbar subType={subType} />
+        </View>
+      </SafeAreaView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
+
   safeTop: { backgroundColor: "#F8FAFC" },
+  safeBottom: { backgroundColor: "#F8FAFC" },
 
   container: { flex: 1 },
-  scrollContent: { paddingHorizontal: 22, paddingBottom: 110 },
+
+  // keep content clear above the lifted footer
+  scrollContent: { paddingHorizontal: 22, paddingBottom: 150 },
+
+  // ✅ how much to lift the footer upward
+  footerLift: {
+    paddingBottom: 14, // increase this if you want it higher
+  },
 
   sectionHeadRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-end",
     marginTop: 60,
+    paddingBottom: 20,
   },
   sectionHint: {
     fontSize: 12,
@@ -501,7 +572,12 @@ const styles = StyleSheet.create({
 
   historyHeaderRow: { marginTop: 26, marginBottom: 12 },
   historyTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
-  historySubtitle: { fontSize: 12, color: "#94A3B8", marginTop: 3, fontWeight: "700" },
+  historySubtitle: {
+    fontSize: 12,
+    color: "#94A3B8",
+    marginTop: 3,
+    fontWeight: "700",
+  },
 
   historyList: { gap: 12 },
   historyItem: {
@@ -553,5 +629,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   emptyTitle: { fontSize: 13, fontWeight: "900", color: "#0F3E48" },
-  emptySubtitle: { marginTop: 6, fontSize: 12, color: "#64748B", fontWeight: "700", lineHeight: 16 },
+  emptySubtitle: {
+    marginTop: 6,
+    fontSize: 12,
+    color: "#64748B",
+    fontWeight: "700",
+    lineHeight: 16,
+  },
 });

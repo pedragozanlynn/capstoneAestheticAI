@@ -1,11 +1,13 @@
 import { useRouter } from "expo-router";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   Timestamp,
   updateDoc,
+  serverTimestamp,
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -66,6 +68,39 @@ export default function Subscription() {
     return p.status === activeFilter;
   });
 
+  // ✅ NEW: helper to create a notification doc
+  const notifyUserSubscription = async ({ userId, approved, payment }) => {
+    if (!userId) return;
+
+    const title = approved ? "Subscription Approved" : "Subscription Rejected";
+    const type = approved ? "subscription_accepted" : "subscription_rejected";
+
+    // Optional: use details if present
+    const amount =
+      payment?.amount != null ? `₱${Number(payment.amount).toFixed?.(2) || payment.amount}` : "";
+    const ref = payment?.reference_number ? `Ref: ${payment.reference_number}` : "";
+    const message = approved
+      ? `Your Premium subscription is now active. ${amount ? `(${amount})` : ""} ${ref ? `• ${ref}` : ""}`.trim()
+      : `Your subscription request was rejected. ${ref ? `(${ref})` : ""}`.trim();
+
+    try {
+      await addDoc(collection(db, "notifications"), {
+        userId,
+        title,
+        message,
+        type,
+        read: false,
+        createdAt: serverTimestamp(),
+        // ✅ optional meta (your Notifications modal already reads these if present)
+        amount: payment?.amount ?? null,
+        sessionFee: payment?.amount ?? null, // if you want it to show under cash line
+      });
+    } catch (e) {
+      console.log("❌ notifyUserSubscription failed:", e?.message || e);
+      // Do not block approval if notification fails
+    }
+  };
+
   const handleApprove = async (payment) => {
     Alert.alert(
       "Approve Payment",
@@ -77,13 +112,18 @@ export default function Subscription() {
           onPress: async () => {
             setActionLoading(true);
             try {
+              if (!payment?.user_id) {
+                Alert.alert("Error", "Missing user ID for this payment.");
+                return;
+              }
+
               const userRef = doc(db, "users", payment.user_id);
               const now = Timestamp.now();
               const expiresAt = Timestamp.fromMillis(
                 Date.now() + 30 * 24 * 60 * 60 * 1000
               );
 
-              // ✅ CHANGE ONLY: set users/{uid}.isPro = true on approval
+              // ✅ set users/{uid}.isPro = true on approval
               await updateDoc(userRef, {
                 subscription_type: "Premium",
                 subscribed_at: now,
@@ -95,15 +135,79 @@ export default function Subscription() {
                 // optional helpers (safe even if unused)
                 proStatus: "active",
                 proActivatedAt: now,
+                subscription_status: "approved",
+                subscription_updated_at: now,
               });
 
               const paymentRef = doc(db, "subscription_payments", payment.id);
               await updateDoc(paymentRef, { status: "Approved" });
 
+              // ✅ NEW: push notification to user
+              await notifyUserSubscription({
+                userId: payment.user_id,
+                approved: true,
+                payment,
+              });
+
               Alert.alert("Success", "Subscription upgraded!");
               await fetchPayments();
             } catch (error) {
+              console.log("❌ approve error:", error?.message || error);
               Alert.alert("Error", "Failed to approve payment.");
+            } finally {
+              setActionLoading(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ✅ OPTIONAL: Add Reject handler (so you also notify on reject)
+  // If you already have a reject action elsewhere, copy the notifyUserSubscription call there.
+  const handleReject = async (payment) => {
+    Alert.alert(
+      "Reject Payment",
+      "Are you sure you want to reject this subscription?",
+      [
+        { text: "Cancel" },
+        {
+          text: "Reject",
+          style: "destructive",
+          onPress: async () => {
+            setActionLoading(true);
+            try {
+              if (!payment?.user_id) {
+                Alert.alert("Error", "Missing user ID for this payment.");
+                return;
+              }
+
+              const userRef = doc(db, "users", payment.user_id);
+
+              // Keep user as Free / not Pro
+              await updateDoc(userRef, {
+                subscription_type: "Free",
+                isPro: false,
+                proStatus: "inactive",
+                subscription_status: "rejected",
+                subscription_updated_at: Timestamp.now(),
+              });
+
+              const paymentRef = doc(db, "subscription_payments", payment.id);
+              await updateDoc(paymentRef, { status: "Rejected" });
+
+              // ✅ NEW: push notification to user
+              await notifyUserSubscription({
+                userId: payment.user_id,
+                approved: false,
+                payment,
+              });
+
+              Alert.alert("Done", "Subscription request rejected.");
+              await fetchPayments();
+            } catch (e) {
+              console.log("❌ reject error:", e?.message || e);
+              Alert.alert("Error", "Failed to reject payment.");
             } finally {
               setActionLoading(false);
             }
@@ -128,7 +232,7 @@ export default function Subscription() {
 
       <View style={styles.filterWrapper}>
         <View style={styles.filterContainer}>
-          {["All", "Pending", "Approved"].map((tab) => (
+          {["All", "Pending", "Approved", "Rejected"].map((tab) => (
             <TouchableOpacity
               key={tab}
               onPress={() => setActiveFilter(tab)}
@@ -177,7 +281,11 @@ export default function Subscription() {
                     styles.statusBadge,
                     {
                       backgroundColor:
-                        item.status === "Approved" ? "#E8F5E9" : "#FFF3E0",
+                        item.status === "Approved"
+                          ? "#E8F5E9"
+                          : item.status === "Rejected"
+                          ? "#FEE2E2"
+                          : "#FFF3E0",
                     },
                   ]}
                 >
@@ -186,7 +294,11 @@ export default function Subscription() {
                       styles.statusText,
                       {
                         color:
-                          item.status === "Approved" ? "#2E7D32" : "#EF6C00",
+                          item.status === "Approved"
+                            ? "#2E7D32"
+                            : item.status === "Rejected"
+                            ? "#DC2626"
+                            : "#EF6C00",
                       },
                     ]}
                   >
@@ -207,17 +319,37 @@ export default function Subscription() {
               </View>
 
               {item.status === "Pending" && (
-                <TouchableOpacity
-                  style={[styles.approveBtn, actionLoading && { opacity: 0.7 }]}
-                  onPress={() => handleApprove(item)}
-                  disabled={actionLoading}
-                >
-                  {actionLoading ? (
-                    <ActivityIndicator color="#FFF" size="small" />
-                  ) : (
-                    <Text style={styles.approveText}>Approve Subscription</Text>
-                  )}
-                </TouchableOpacity>
+                <View style={{ gap: 10 }}>
+                  <TouchableOpacity
+                    style={[
+                      styles.approveBtn,
+                      actionLoading && { opacity: 0.7 },
+                    ]}
+                    onPress={() => handleApprove(item)}
+                    disabled={actionLoading}
+                  >
+                    {actionLoading ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={styles.approveText}>Approve Subscription</Text>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.rejectBtn,
+                      actionLoading && { opacity: 0.7 },
+                    ]}
+                    onPress={() => handleReject(item)}
+                    disabled={actionLoading}
+                  >
+                    {actionLoading ? (
+                      <ActivityIndicator color="#FFF" size="small" />
+                    ) : (
+                      <Text style={styles.rejectText}>Reject Subscription</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
           )}
@@ -304,6 +436,7 @@ const styles = StyleSheet.create({
   },
   value: { fontSize: 14, color: "#1E293B", fontWeight: "600" },
   amountValue: { fontSize: 16, fontWeight: "800", color: "#01579B" },
+
   approveBtn: {
     backgroundColor: "#01579B",
     paddingVertical: 12,
@@ -313,6 +446,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   approveText: { color: "#FFF", fontWeight: "700" },
+
+  // ✅ NEW reject button style (minimal, does not affect other UI)
+  rejectBtn: {
+    backgroundColor: "#DC2626",
+    paddingVertical: 12,
+    borderRadius: 12,
+    alignItems: "center",
+    minHeight: 45,
+    justifyContent: "center",
+  },
+  rejectText: { color: "#FFF", fontWeight: "700" },
+
   centerLoader: {
     flex: 1,
     justifyContent: "center",

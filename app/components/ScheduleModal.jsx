@@ -51,6 +51,15 @@ const combineDateAndTime = (date, time) => {
   return d;
 };
 
+const isSameDay = (a, b) => {
+  if (!a || !b) return false;
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+};
+
 /* ---------------- COMPONENT ---------------- */
 export default function ScheduleModal({
   visible,
@@ -75,6 +84,15 @@ export default function ScheduleModal({
 
   /* ---------------- VALIDATION ---------------- */
   useEffect(() => {
+    // ✅ NEW: If date is today, time must not be earlier than current time
+    // Example: now = 5:50 PM, selected = 4:30 PM => error
+    const now = new Date();
+    const selectedDateTime = combineDateAndTime(date, startTime);
+    if (isSameDay(date, now) && selectedDateTime < now) {
+      setErrorMsg("Selected time must be later than the current time.");
+      return;
+    }
+
     if (!availability.length) {
       setErrorMsg("Consultant has no available schedule.");
       return;
@@ -119,7 +137,9 @@ export default function ScheduleModal({
     const appointmentAt = combineDateAndTime(date, startTime);
     onClose();
     router.push(
-      `/User/BookConsultation?consultantId=${consultantId}&appointmentAt=${appointmentAt.toISOString()}&notes=${encodeURIComponent(notes)}&fee=${sessionFee}`
+      `/User/BookConsultation?consultantId=${consultantId}&appointmentAt=${appointmentAt.toISOString()}&notes=${encodeURIComponent(
+        notes
+      )}&fee=${sessionFee}`
     );
   };
 
@@ -136,7 +156,10 @@ export default function ScheduleModal({
           </View>
 
           {/* DATE PICKER */}
-          <TouchableOpacity style={styles.input} onPress={() => setShowDatePicker(true)}>
+          <TouchableOpacity
+            style={styles.input}
+            onPress={() => setShowDatePicker(true)}
+          >
             <View style={styles.iconCircle}>
               <Ionicons name="calendar" size={18} color={THEME.primary} />
             </View>
@@ -159,7 +182,10 @@ export default function ScheduleModal({
           )}
 
           {/* TIME PICKER */}
-          <TouchableOpacity style={styles.input} onPress={() => setShowStartPicker(true)}>
+          <TouchableOpacity
+            style={styles.input}
+            onPress={() => setShowStartPicker(true)}
+          >
             <View style={styles.iconCircle}>
               <Ionicons name="time" size={18} color={THEME.primary} />
             </View>
@@ -192,13 +218,19 @@ export default function ScheduleModal({
 
           {/* INFO BOX - NGAYON AY GUMAGAMIT NA NG DYNAMIC RATE */}
           <View style={styles.feeReminder}>
-            <Ionicons name="information-circle" size={20} color={THEME.primary} />
+            <Ionicons
+              name="information-circle"
+              size={20}
+              color={THEME.primary}
+            />
             <View style={{ flex: 1 }}>
               <Text style={styles.feeDesc}>
-                A session fee of <Text style={styles.bold}>₱{sessionFee}.00</Text> applies. 
+                A session fee of{" "}
+                <Text style={styles.bold}>₱{sessionFee}.00</Text> applies.
               </Text>
               <Text style={styles.feeDesc}>
-                The chat remains open for <Text style={styles.bold}>12 hours</Text> after payment.
+                The chat remains open for <Text style={styles.bold}>12 hours</Text>{" "}
+                after payment.
               </Text>
             </View>
           </View>
@@ -235,7 +267,7 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(15, 23, 42, 0.6)", 
+    backgroundColor: "rgba(15, 23, 42, 0.6)",
   },
   modalBox: {
     backgroundColor: THEME.surface,
@@ -253,7 +285,7 @@ const styles = StyleSheet.create({
     height: 5,
     backgroundColor: "#E2E8F0",
     borderRadius: 10,
-    alignSelf: 'center',
+    alignSelf: "center",
     marginBottom: 20,
   },
   header: { marginBottom: 20 },
@@ -275,11 +307,16 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 12,
     backgroundColor: "#DBEAFE",
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: "center",
+    alignItems: "center",
     marginRight: 12,
   },
-  label: { fontSize: 11, color: THEME.textGray, fontWeight: "700", textTransform: 'uppercase' },
+  label: {
+    fontSize: 11,
+    color: THEME.textGray,
+    fontWeight: "700",
+    textTransform: "uppercase",
+  },
   inputText: { fontSize: 15, fontWeight: "600", color: THEME.textDark },
 
   textArea: {
@@ -290,7 +327,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     fontSize: 15,
     color: THEME.textDark,
-    textAlignVertical: 'top',
+    textAlignVertical: "top",
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
@@ -308,10 +345,10 @@ const styles = StyleSheet.create({
   feeDesc: { fontSize: 13, color: "#0369A1", lineHeight: 18 },
   bold: { fontWeight: "800", color: THEME.primary },
 
-  errorBox: { 
-    flexDirection: "row", 
-    alignItems: "center", 
-    gap: 8, 
+  errorBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
     marginBottom: 15,
     backgroundColor: "#FEF2F2",
     padding: 10,

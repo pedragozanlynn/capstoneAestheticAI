@@ -12,7 +12,7 @@ import {
   updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -44,21 +44,23 @@ const parseLegacyDateTime = (dateStr, timeStr) => {
 
 // -----------------------------
 // ✅ STATUS LOGIC (12 HOURS)
+// ✅ FIX: If declined/rejected/cancelled => never show as ongoing/upcoming
 // -----------------------------
 const getStatus = (item) => {
-  if (item.status === "cancelled") return "cancelled";
-  if (item.status === "completed") return "past";
+  const s = String(item?.status || "").toLowerCase();
+
+  // ✅ hard-excludes
+  if (s === "cancelled") return "cancelled";
+  if (s === "declined" || s === "rejected") return "cancelled"; // treat as cancelled tab
+  if (s === "completed") return "past";
 
   const start =
-    item.appointmentAt?.toDate?.() ||
-    parseLegacyDateTime(item.date, item.time);
+    item?.appointmentAt?.toDate?.() || parseLegacyDateTime(item?.date, item?.time);
 
   if (!start) return "upcoming";
 
   const now = new Date();
-  const twelveHoursLater = new Date(
-    start.getTime() + 12 * 60 * 60 * 1000
-  );
+  const twelveHoursLater = new Date(start.getTime() + 12 * 60 * 60 * 1000);
 
   if (now < start) return "upcoming";
   if (now >= start && now <= twelveHoursLater) return "ongoing";
@@ -68,6 +70,12 @@ const getStatus = (item) => {
 
 // -----------------------------
 // 📱 MAIN SCREEN
+// ✅ UPDATED (Validations + messages + safer guards)
+// - Validate userUid exists
+// - Validate required appointment fields before payment check & PaymentModal
+// - Validate chatRoomId + consultantId before open chat
+// - User-friendly Alert messages (no repeated spam)
+// ❗ No other UI/layout/logic changes
 // -----------------------------
 export default function Consultations() {
   const [consultations, setConsultations] = useState([]);
@@ -79,52 +87,107 @@ export default function Consultations() {
 
   const router = useRouter();
 
+  // ✅ prevent repeated alerts
+  const didWarnNoUserRef = useRef(false);
+  const didWarnLoadFailRef = useRef(false);
+
+  const safeStr = (v) => String(v ?? "").trim();
+  const isNonEmpty = (v) => safeStr(v).length > 0;
+
+  const validateAppointment = (item) => {
+    if (!item?.id) return "Missing appointment id.";
+    if (!isNonEmpty(item?.userId)) return "Missing userId for this appointment.";
+    if (!isNonEmpty(item?.consultantId)) return "Missing consultantId for this appointment.";
+    return "";
+  };
+
+  const getAppointmentStart = (item) =>
+    item?.appointmentAt?.toDate?.() || parseLegacyDateTime(item?.date, item?.time);
+
   // -----------------------------
   // 🔥 LOAD APPOINTMENTS
   // -----------------------------
   useEffect(() => {
     let unsub;
+
     const load = async () => {
-      const userId = await AsyncStorage.getItem("userUid");
-      if (!userId) return;
+      try {
+        const userId = await AsyncStorage.getItem("userUid");
 
-      const q = query(
-        collection(db, "appointments"),
-        where("userId", "==", userId)
-      );
+        if (!userId) {
+          setConsultations([]);
+          setConsultantMap({});
+          if (!didWarnNoUserRef.current) {
+            didWarnNoUserRef.current = true;
+            Alert.alert("Session Required", "Please sign in again to view your consultations.");
+          }
+          return;
+        }
 
-      unsub = onSnapshot(q, async (snap) => {
-        const items = snap.docs
-          .map((d) => {
-            const data = d.data();
-            const sortTime =
-              data.appointmentAt?.toDate?.() ||
-              parseLegacyDateTime(data.date, data.time);
-
-            return {
-              id: d.id,
-              ...data,
-              computedStatus: getStatus(data),
-              _sortTime: sortTime,
-            };
-          })
-          .sort((a, b) => b._sortTime - a._sortTime);
-
-        setConsultations(items);
-
-        const map = {};
-        await Promise.all(
-          items.map(async (i) => {
-            if (i.consultantId && !map[i.consultantId]) {
-              const s = await getDoc(
-                doc(db, "consultants", i.consultantId)
-              );
-              if (s.exists()) map[i.consultantId] = s.data().fullName;
-            }
-          })
+        const q = query(
+          collection(db, "appointments"),
+          where("userId", "==", userId)
         );
-        setConsultantMap(map);
-      });
+
+        unsub = onSnapshot(
+          q,
+          async (snap) => {
+            const items = snap.docs
+              .map((d) => {
+                const data = d.data() || {};
+                const sortTime =
+                  data.appointmentAt?.toDate?.() ||
+                  parseLegacyDateTime(data.date, data.time);
+
+                return {
+                  id: d.id,
+                  ...data,
+                  computedStatus: getStatus(data),
+                  _sortTime: sortTime || new Date(0),
+                };
+              })
+              .sort(
+                (a, b) =>
+                  (b._sortTime?.getTime?.() || 0) - (a._sortTime?.getTime?.() || 0)
+              );
+
+            setConsultations(items);
+
+            // build consultant name map
+            const map = {};
+            await Promise.all(
+              items.map(async (i) => {
+                if (i.consultantId && !map[i.consultantId]) {
+                  try {
+                    const s = await getDoc(doc(db, "consultants", i.consultantId));
+                    if (s.exists()) {
+                      map[i.consultantId] = s.data()?.fullName || "Consultant";
+                    }
+                  } catch (e) {
+                    console.log("Consultant fetch failed:", e?.message || e);
+                  }
+                }
+              })
+            );
+            setConsultantMap(map);
+          },
+          (err) => {
+            console.log("Appointments snapshot error:", err?.message || err);
+            setConsultations([]);
+            if (!didWarnLoadFailRef.current) {
+              didWarnLoadFailRef.current = true;
+              Alert.alert("Error", "Failed to load consultations. Please try again.");
+            }
+          }
+        );
+      } catch (e) {
+        console.log("Load consultations crash:", e?.message || e);
+        setConsultations([]);
+        if (!didWarnLoadFailRef.current) {
+          didWarnLoadFailRef.current = true;
+          Alert.alert("Error", "Failed to load consultations. Please try again.");
+        }
+      }
     };
 
     load();
@@ -136,6 +199,12 @@ export default function Consultations() {
   // -----------------------------
   const checkPayment = async (item) => {
     try {
+      const err = validateAppointment(item);
+      if (err) {
+        console.log("Validation failed (checkPayment):", err, item);
+        return false;
+      }
+
       const q = query(
         collection(db, "payments"),
         where("userId", "==", item.userId),
@@ -145,67 +214,110 @@ export default function Consultations() {
       );
       const snap = await getDocs(q);
       return !snap.empty;
-    } catch {
+    } catch (e) {
+      console.log("checkPayment error:", e?.message || e);
       return false;
     }
   };
 
   const handleCancel = async (id) => {
-    Alert.alert("Cancel Appointment", "Are you sure?", [
+    if (!id) {
+      Alert.alert("Error", "Invalid appointment.");
+      return;
+    }
+
+    Alert.alert("Cancel Appointment", "Are you sure you want to cancel this appointment?", [
       { text: "No", style: "cancel" },
       {
         text: "Yes",
+        style: "destructive",
         onPress: async () => {
-          await updateDoc(doc(db, "appointments", id), {
-            status: "cancelled",
-            cancelledAt: serverTimestamp(),
-            cancelledBy: "user",
-          });
+          try {
+            await updateDoc(doc(db, "appointments", id), {
+              status: "cancelled",
+              cancelledAt: serverTimestamp(),
+              cancelledBy: "user",
+            });
+            Alert.alert("Cancelled", "Appointment cancelled successfully.");
+          } catch (e) {
+            console.log("Cancel error:", e?.message || e);
+            Alert.alert("Error", "Failed to cancel appointment. Please try again.");
+          }
         },
       },
     ]);
   };
 
   const openChat = async (item) => {
-    if (!item.chatRoomId) {
-      Alert.alert("Chat not available", "Chat room is not ready yet.");
-      return;
-    }
+    try {
+      // ✅ block if declined/rejected/cancelled
+      const s = String(item?.status || "").toLowerCase();
+      if (s === "declined" || s === "rejected" || s === "cancelled") {
+        Alert.alert("Session not available", "This appointment is not active.");
+        return;
+      }
 
-    const hasPaid = await checkPayment(item);
+      // ✅ validate minimal appointment fields
+      const err = validateAppointment(item);
+      if (err) {
+        Alert.alert("Chat not available", "This appointment is missing required details.");
+        return;
+      }
 
-    if (!hasPaid) {
-      setCurrentPaymentData({
-        ...item,
-        roomId: item.chatRoomId,
-        appointmentId: item.id,
-        appointmentDate:
-          item.date ||
-          item.appointmentAt?.toDate()?.toLocaleDateString(),
-        appointmentTime:
-          item.time ||
-          item.appointmentAt?.toDate()?.toLocaleTimeString(),
+      // ✅ validate chat room exists
+      if (!isNonEmpty(item.chatRoomId)) {
+        Alert.alert("Chat not available", "Chat room is not ready yet.");
+        return;
+      }
+
+      // ✅ validate schedule exists before payment modal
+      const start = getAppointmentStart(item);
+      if (!start) {
+        Alert.alert("Missing schedule", "This booking has no schedule yet.");
+        return;
+      }
+
+      const hasPaid = await checkPayment(item);
+
+      if (!hasPaid) {
+        // ✅ make sure PaymentModal gets consistent fields
+        setCurrentPaymentData({
+          ...item,
+          roomId: item.chatRoomId,
+          appointmentId: item.id,
+          appointmentAt: item.appointmentAt || null,
+          appointmentDate:
+            item.date || start.toLocaleDateString?.() || "",
+          appointmentTime:
+            item.time || start.toLocaleTimeString?.() || "",
+        });
+        setPaymentModalVisible(true);
+        return;
+      }
+
+      router.push({
+        pathname: "/User/ChatRoom",
+        params: {
+          roomId: item.chatRoomId,
+          consultantId: item.consultantId,
+          appointmentId: item.id,
+        },
       });
-      setPaymentModalVisible(true);
-      return;
+    } catch (e) {
+      console.log("openChat error:", e?.message || e);
+      Alert.alert("Error", "Something went wrong. Please try again.");
     }
-
-    router.push({
-      pathname: "/User/ChatRoom",
-      params: {
-        roomId: item.chatRoomId,
-        consultantId: item.consultantId,
-        appointmentId: item.id,
-      },
-    });
   };
 
-  const filtered = consultations.filter(
-    (c) => c.computedStatus === activeTab
+  // ✅ IMPORTANT: if declined/rejected, force it into "cancelled" tab via getStatus()
+  const filtered = useMemo(
+    () => consultations.filter((c) => c.computedStatus === activeTab),
+    [consultations, activeTab]
   );
 
   const renderItem = ({ item }) => {
     const status = item.computedStatus;
+
     const statusColors = {
       ongoing: { bg: "#E8F5E9", text: "#2E7D32", icon: "radio-button-on" },
       upcoming: { bg: "#FFF3E0", text: "#EF6C00", icon: "time-outline" },
@@ -213,7 +325,7 @@ export default function Consultations() {
       past: { bg: "#F5F5F5", text: "#616161", icon: "checkmark-done-circle-outline" },
     };
 
-    const currentStyle = statusColors[status];
+    const currentStyle = statusColors[status] || statusColors.upcoming;
 
     return (
       <View style={styles.card}>
@@ -226,6 +338,7 @@ export default function Consultations() {
               {consultantMap[item.consultantId] || "Consultant"}
             </Text>
           </View>
+
           <View style={[styles.statusBadge, { backgroundColor: currentStyle.bg }]}>
             <Ionicons
               name={currentStyle.icon}
@@ -242,22 +355,23 @@ export default function Consultations() {
         <View style={styles.cardDivider} />
 
         {status === "ongoing" && (
-          <TouchableOpacity
-            style={styles.openChatBtn}
-            onPress={() => openChat(item)}
-          >
+          <TouchableOpacity style={styles.openChatBtn} onPress={() => openChat(item)}>
             <Ionicons name="chatbubbles-outline" size={16} color="#FFF" />
             <Text style={styles.openChatBtnText}>Open Chat</Text>
           </TouchableOpacity>
         )}
 
         {status === "upcoming" && (
-          <TouchableOpacity
-            style={styles.cancelBtn}
-            onPress={() => handleCancel(item.id)}
-          >
+          <TouchableOpacity style={styles.cancelBtn} onPress={() => handleCancel(item.id)}>
             <Text style={styles.cancelBtnText}>Cancel Appointment</Text>
           </TouchableOpacity>
+        )}
+
+        {/* ✅ Optional: show info if cancelled/declined */}
+        {status === "cancelled" && (
+          <View style={styles.cancelInfoBox}>
+            <Text style={styles.cancelInfoText}>This session is not active anymore.</Text>
+          </View>
         )}
       </View>
     );
@@ -267,14 +381,14 @@ export default function Consultations() {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" />
 
-      {/* 🔥 HEADER RESTORED */}
       <View style={styles.header}>
         <View>
           <Text style={styles.headerTitle}>Consultations</Text>
           <Text style={styles.headerSubtitle}>
-            {filtered.length} active sessions
+            {filtered.length} {activeTab} sessions
           </Text>
         </View>
+
         <View style={styles.headerActions}>
           <TouchableOpacity
             style={styles.actionBtn}
@@ -296,17 +410,9 @@ export default function Consultations() {
           <TouchableOpacity
             key={t}
             onPress={() => setActiveTab(t)}
-            style={[
-              styles.tabItem,
-              activeTab === t && styles.activeTabItem,
-            ]}
+            style={[styles.tabItem, activeTab === t && styles.activeTabItem]}
           >
-            <Text
-              style={[
-                styles.tabLabel,
-                activeTab === t && styles.activeTabLabel,
-              ]}
-            >
+            <Text style={[styles.tabLabel, activeTab === t && styles.activeTabLabel]}>
               {t.toUpperCase()}
             </Text>
           </TouchableOpacity>
@@ -318,6 +424,14 @@ export default function Consultations() {
         keyExtractor={(i) => i.id}
         renderItem={renderItem}
         showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={{ alignItems: "center", marginTop: 40 }}>
+            <Ionicons name="calendar-outline" size={48} color="#CBD5E1" />
+            <Text style={{ marginTop: 10, color: "#94A3B8", fontWeight: "700" }}>
+              No {activeTab} sessions found
+            </Text>
+          </View>
+        }
       />
 
       {currentPaymentData && (
@@ -419,4 +533,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   cancelBtnText: { color: "#CF1322", fontWeight: "700", fontSize: 13 },
+
+  cancelInfoBox: {
+    backgroundColor: "#FFEBEE",
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: "center",
+  },
+  cancelInfoText: { color: "#C62828", fontWeight: "700", fontSize: 12 },
 });

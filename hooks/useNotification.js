@@ -1,36 +1,35 @@
-// hooks/useNotifications.js
 import {
-    collection,
-    onSnapshot,
-    orderBy,
-    query
+  collection,
+  query,
+  orderBy,
+  onSnapshot,
+  updateDoc,
+  doc,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
 import { db } from "../config/firebase";
 
-export const useNotifications = (userId) => {
-  const [notifications, setNotifications] = useState([]);
-  const [unread, setUnread] = useState(0);
+/**
+ * Listen to user notifications (real-time)
+ */
+export const listenToNotifications = (userId, callback) => {
+  const q = query(
+    collection(db, "users", userId, "notifications"),
+    orderBy("createdAt", "desc")
+  );
 
-  useEffect(() => {
-    if (!userId) return;
+  return onSnapshot(q, (snapshot) => {
+    const notifs = snapshot.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+    callback(notifs);
+  });
+};
 
-    const notifRef = collection(db, "users", userId, "notifications");
-    const q = query(notifRef, orderBy("createdAt", "desc"));
-
-    const unsub = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
-
-      setNotifications(data);
-
-      setUnread(data.filter((n) => !n.isRead).length);
-    });
-
-    return unsub;
-  }, [userId]);
-
-  return { notifications, unread };
+/**
+ * Mark notification as read
+ */
+export const markNotificationAsRead = async (userId, notificationId) => {
+  const ref = doc(db, "users", userId, "notifications", notificationId);
+  await updateDoc(ref, { read: true });
 };

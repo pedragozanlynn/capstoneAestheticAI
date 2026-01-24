@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -11,6 +11,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Platform,
 } from "react-native";
 import {
   auth,
@@ -41,30 +42,81 @@ export default function Register() {
   /* ✅ GENDER STATE (ADDED ONLY) */
   const [gender, setGender] = useState(null); // "Male" | "Female"
 
+  /* ===========================
+     ✅ TOAST (TOP POSITION)
+     ✅ NO OK BUTTON
+     =========================== */
+  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2200) => {
+    try {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setToast({ visible: true, text: String(text || ""), type });
+      toastTimerRef.current = setTimeout(() => {
+        setToast((t) => ({ ...t, visible: false }));
+      }, ms);
+    } catch {}
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      } catch {}
+    };
+  }, []);
+
   const validate = () => {
-    if (!name.trim()) return Alert.alert("Registration", "Please enter your name.");
-    if (!EMAIL_REGEX.test(email.trim())) return Alert.alert("Registration", "Enter a valid email.");
-    if (password.length < 6) return Alert.alert("Registration", "Password must be at least 6 characters.");
-    if (password !== confirm) return Alert.alert("Registration", "Passwords do not match.");
-    if (!gender) return Alert.alert("Registration", "Please select your gender.");
-    if (!agree) return Alert.alert("Terms", "Please agree to the Terms & Conditions.");
+    const n = String(name || "").trim();
+    const e = String(email || "").trim();
+
+    if (!n) {
+      showToast("Please enter your name.", "error");
+      return false;
+    }
+    if (!EMAIL_REGEX.test(e)) {
+      showToast("Enter a valid email address.", "error");
+      return false;
+    }
+    if (password.length < 6) {
+      showToast("Password must be at least 6 characters.", "error");
+      return false;
+    }
+    if (password !== confirm) {
+      showToast("Passwords do not match.", "error");
+      return false;
+    }
+    if (!gender) {
+      showToast("Please select your gender.", "error");
+      return false;
+    }
+    if (!agree) {
+      showToast("Please agree to the Terms & Conditions.", "info");
+      return false;
+    }
     return true;
   };
 
   const register = async () => {
     if (!validate()) return;
+
     try {
+      const cleanEmail = String(email || "").trim();
+      const cleanName = String(name || "").trim();
+
       const credential = await createUserWithEmailAndPassword(
         auth,
-        email.trim(),
+        cleanEmail,
         password
       );
-      await updateProfile(credential.user, { displayName: name });
+
+      await updateProfile(credential.user, { displayName: cleanName });
 
       const profile = {
         uid: credential.user.uid,
-        name,
-        email: email.trim(),
+        name: cleanName,
+        email: cleanEmail,
         gender, // ✅ SAVED
         role,
         subscription_type: "Free",
@@ -74,22 +126,55 @@ export default function Register() {
       await setDoc(doc(db, "users", credential.user.uid), profile);
       await cacheUserRole(credential.user.uid, role);
 
-      Alert.alert("Success", "Account created successfully!");
+      // ✅ success message (toast)
+      showToast("Account created successfully!", "success", 1800);
+
       setTimeout(() => {
         router.replace("/Login");
-      }, 2000);
+      }, 1800);
     } catch (error) {
-      Alert.alert("Registration Error", error.message);
+      const msg = String(error?.message || "");
+
+      // ✅ friendlier common auth errors (still minimal)
+      if (msg.toLowerCase().includes("email-already-in-use")) {
+        showToast("This email is already registered.", "error");
+      } else if (msg.toLowerCase().includes("invalid-email")) {
+        showToast("Invalid email address.", "error");
+      } else if (msg.toLowerCase().includes("weak-password")) {
+        showToast("Password is too weak. Use at least 6 characters.", "error");
+      } else {
+        showToast("Registration failed. Please try again.", "error");
+      }
     }
   };
 
   return (
     <Screen style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-        
+      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+      {toast.visible && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.toast,
+            toast.type === "success" && styles.toastSuccess,
+            toast.type === "error" && styles.toastError,
+            toast.type === "info" && styles.toastInfo,
+          ]}
+        >
+          <Text style={styles.toastText}>{toast.text}</Text>
+        </View>
+      )}
+
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+      >
         {/* HEADER (UNCHANGED) */}
         <View style={styles.header}>
-          <Image source={require("../../assets/new_background.jpg")} style={styles.image} />
+          <Image
+            source={require("../../assets/new_background.jpg")}
+            style={styles.image}
+          />
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={26} color="#FFFFFF" />
           </TouchableOpacity>
@@ -107,65 +192,72 @@ export default function Register() {
             <Text style={styles.sectionLabel}>Personal Details</Text>
 
             <Input placeholder="Username" value={name} onChangeText={setName} />
-            <Input placeholder="Email Address" value={email} onChangeText={setEmail} autoCapitalize="none" />
-            <Input placeholder="Password" secureTextEntry value={password} onChangeText={setPassword} />
-            <Input placeholder="Confirm Password" secureTextEntry value={confirm} onChangeText={setConfirm} />
+            <Input
+              placeholder="Email Address"
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+            />
+            <Input
+              placeholder="Password"
+              secureTextEntry
+              value={password}
+              onChangeText={setPassword}
+            />
+            <Input
+              placeholder="Confirm Password"
+              secureTextEntry
+              value={confirm}
+              onChangeText={setConfirm}
+            />
           </View>
 
-{/* GENDER */}
-<View style={styles.section}>
-  <Text style={styles.sectionLabel}>Gender</Text>
+          {/* GENDER */}
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Gender</Text>
 
-  <View style={styles.genderRow}>
-    {/* MALE */}
-    <TouchableOpacity
-      style={[
-        styles.genderBtn,
-        gender === "Male" && styles.genderMaleActive,
-      ]}
-      onPress={() => setGender("Male")}
-    >
-      <Ionicons
-        name="male"
-        size={18}
-        color={gender === "Male" ? "#fff" : "#555"} // ✅ ICON WHITE
-      />
-      <Text
-        style={[
-          styles.genderText,
-          gender === "Male" && { color: "#fff" }, // ✅ TEXT WHITE
-        ]}
-      >
-        Male
-      </Text>
-    </TouchableOpacity>
+            <View style={styles.genderRow}>
+              {/* MALE */}
+              <TouchableOpacity
+                style={[styles.genderBtn, gender === "Male" && styles.genderMaleActive]}
+                onPress={() => setGender("Male")}
+              >
+                <Ionicons
+                  name="male"
+                  size={18}
+                  color={gender === "Male" ? "#fff" : "#555"}
+                />
+                <Text
+                  style={[styles.genderText, gender === "Male" && { color: "#fff" }]}
+                >
+                  Male
+                </Text>
+              </TouchableOpacity>
 
-    {/* FEMALE */}
-    <TouchableOpacity
-      style={[
-        styles.genderBtn,
-        gender === "Female" && styles.genderFemaleActive,
-      ]}
-      onPress={() => setGender("Female")}
-    >
-      <Ionicons
-        name="female"
-        size={18}
-        color={gender === "Female" ? "#fff" : "#555"} // ✅ ICON WHITE
-      />
-      <Text
-        style={[
-          styles.genderText,
-          gender === "Female" && { color: "#fff" }, // ✅ TEXT WHITE
-        ]}
-      >
-        Female
-      </Text>
-    </TouchableOpacity>
-  </View>
-</View>
-
-
+              {/* FEMALE */}
+              <TouchableOpacity
+                style={[
+                  styles.genderBtn,
+                  gender === "Female" && styles.genderFemaleActive,
+                ]}
+                onPress={() => setGender("Female")}
+              >
+                <Ionicons
+                  name="female"
+                  size={18}
+                  color={gender === "Female" ? "#fff" : "#555"}
+                />
+                <Text
+                  style={[
+                    styles.genderText,
+                    gender === "Female" && { color: "#fff" },
+                  ]}
+                >
+                  Female
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
 
           {/* TERMS */}
           <View style={styles.section}>
@@ -186,7 +278,10 @@ export default function Register() {
           {/* ACTIONS */}
           <View style={styles.section}>
             <Button title="Register" onPress={register} />
-            <TouchableOpacity onPress={() => router.replace("/Login")} style={styles.footerLink}>
+            <TouchableOpacity
+              onPress={() => router.replace("/Login")}
+              style={styles.footerLink}
+            >
               <Text style={styles.footer}>Already have an account? Login</Text>
             </TouchableOpacity>
           </View>
@@ -301,42 +396,41 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
 
-/* ===== GENDER STYLES ===== */
-genderRow: {
-  flexDirection: "row",
-  gap: 12,
-},
+  /* ===== GENDER STYLES ===== */
+  genderRow: {
+    flexDirection: "row",
+    gap: 12,
+  },
 
-genderBtn: {
-  flex: 1,
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "center",
-  paddingVertical: 14,
-  borderRadius: 14,
-  borderWidth: 1,
-  borderColor: "#dce3ea",
-  backgroundColor: "#fff",
-},
+  genderBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#dce3ea",
+    backgroundColor: "#fff",
+  },
 
-/* MALE ACTIVE */
-genderMaleActive: {
-  backgroundColor: "#2c4f4f", // DARK TEAL
-  borderColor: "#2c4f4f",
-},
+  /* MALE ACTIVE */
+  genderMaleActive: {
+    backgroundColor: "#2c4f4f", // DARK TEAL
+    borderColor: "#2c4f4f",
+  },
 
-/* FEMALE ACTIVE */
-genderFemaleActive: {
-  backgroundColor: "#8f2f52", // FEMALE COLOR
-  borderColor: "#8f2f52",
-},
+  /* FEMALE ACTIVE */
+  genderFemaleActive: {
+    backgroundColor: "#8f2f52", // FEMALE COLOR
+    borderColor: "#8f2f52",
+  },
 
-genderText: {
-  marginLeft: 8,
-  fontWeight: "700",
-  color: "#555",
-},
-
+  genderText: {
+    marginLeft: 8,
+    fontWeight: "700",
+    color: "#555",
+  },
 
   agreementRow: {
     flexDirection: "row",
@@ -372,5 +466,28 @@ genderText: {
     fontWeight: "600",
     fontSize: 14,
   },
-});
 
+  /* ===== TOAST (TOP, NO OK) ===== */
+  toast: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    top: Platform.OS === "ios" ? 58 : 18,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#0F172A",
+    opacity: 0.96,
+    elevation: 10,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  toastInfo: { backgroundColor: "#0F172A" },
+  toastSuccess: { backgroundColor: "#16A34A" },
+  toastError: { backgroundColor: "#DC2626" },
+});

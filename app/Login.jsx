@@ -5,13 +5,15 @@ import { signInWithEmailAndPassword } from "firebase/auth";
 import { doc, getDoc, onSnapshot } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  Platform,
+  StatusBar,
+  KeyboardAvoidingView, // ✅ ADDED
 } from "react-native";
 import { auth, db } from "../config/firebase";
 import Button from "./components/Button";
@@ -20,6 +22,9 @@ import Input from "./components/Input";
 /* ================= CONSTANTS ================= */
 const ROLE_KEY_PREFIX = "aestheticai:user-role:";
 const PROFILE_KEY_PREFIX = "aestheticai:user-profile:";
+
+/* ✅ email regex (minimal) */
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function Login() {
   const router = useRouter();
@@ -31,9 +36,32 @@ export default function Login() {
 
   const unsubscribeProfileRef = useRef(null);
 
+  /* ===========================
+     ✅ TOAST (TOP, NO OK BUTTON)
+     =========================== */
+  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2200) => {
+    try {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setToast({ visible: true, text: String(text || ""), type });
+      toastTimerRef.current = setTimeout(() => {
+        setToast((t) => ({ ...t, visible: false }));
+      }, ms);
+    } catch {}
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      } catch {}
+    };
+  }, []);
+
   /* ================= ROLE LABEL ================= */
-  const roleLabel =
-    initialRole === "consultant" ? "Consultant" : "User";
+  const roleLabel = initialRole === "consultant" ? "Consultant" : "User";
 
   /* ================= CREATE ACCOUNT ================= */
   const goToRegister = () => {
@@ -88,37 +116,39 @@ export default function Login() {
 
   /* ================= LOGIN ================= */
   const login = async () => {
-    try {
-      const credential = await signInWithEmailAndPassword(
-        auth,
-        email.trim(),
-        password
-      );
+    const e = String(email || "").trim();
+    const p = String(password || "");
 
+    if (!e) return showToast("Please enter your email.", "error");
+    if (!EMAIL_REGEX.test(e))
+      return showToast("Please enter a valid email.", "error");
+    if (!p) return showToast("Please enter your password.", "error");
+    if (p.length < 6)
+      return showToast("Password must be at least 6 characters.", "error");
+
+    try {
+      const credential = await signInWithEmailAndPassword(auth, e, p);
       const uid = credential.user.uid;
 
       const profile = await fetchProfileFromFirestore(uid, initialRole);
       if (!profile) {
-        Alert.alert("No Profile", "Please register your account first.");
+        showToast("No profile found. Please register your account first.", "error");
         return;
       }
 
       if (initialRole === "consultant") {
         if (profile.status === "pending") {
-          Alert.alert("Pending Approval", "Please wait for admin approval.");
+          showToast("Pending approval. Please wait for admin approval.", "info");
           return;
         }
         if (profile.status === "rejected") {
-          Alert.alert("Registration Rejected", "Please contact admin.");
+          showToast("Registration cancelled. Please contact admin.", "error");
           return;
         }
       }
 
       await AsyncStorage.setItem("aestheticai:current-user-id", uid);
-      await AsyncStorage.setItem(
-        "aestheticai:current-user-role",
-        initialRole
-      );
+      await AsyncStorage.setItem("aestheticai:current-user-role", initialRole);
 
       if (initialRole === "user") {
         await AsyncStorage.setItem("userUid", uid);
@@ -131,24 +161,18 @@ export default function Login() {
 
       unsubscribeProfileRef.current = subscribeToProfile(uid, initialRole);
 
-      Alert.alert(
-        "Login Successful",
-        `Welcome back, ${profile.fullName || profile.name || "User"}!`,
-        [
-          {
-            text: "Continue",
-            onPress: () => {
-              if (initialRole === "user") {
-                router.replace("/User/Home");
-              } else {
-                router.replace("/Consultant/Homepage");
-              }
-            },
-          },
-        ]
-      );
+      const displayName = profile.fullName || profile.name || "User";
+      showToast(`Login successful. Welcome back, ${displayName}!`, "success", 1400);
+
+      setTimeout(() => {
+        if (initialRole === "user") {
+          router.replace("/User/Home");
+        } else {
+          router.replace("/Consultant/Homepage");
+        }
+      }, 1400);
     } catch (err) {
-      Alert.alert("Login Error", "Invalid email or password.");
+      showToast("Login failed. Invalid email or password.", "error");
     }
   };
 
@@ -158,63 +182,95 @@ export default function Login() {
 
   /* ================= UI ================= */
   return (
-    <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
-      <View style={styles.header}>
-        <Image
-          source={require("../assets/new_background.jpg")}
-          style={styles.image}
-        />
+    <View style={{ flex: 1 }}>
+      <StatusBar barStyle="light-content" />
 
-        <TouchableOpacity
-          onPress={() => router.push("/")}
-          style={styles.backButton}
+      {/* ✅ ADDED: KeyboardAvoidingView makes screen move up when keyboard opens */}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+      >
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1 }}
+          keyboardShouldPersistTaps="handled" // ✅ ADDED
+          keyboardDismissMode="on-drag" // ✅ ADDED
         >
-          <Ionicons name="arrow-back" size={26} color="#fff" />
-        </TouchableOpacity>
+          <View style={styles.header}>
+            <Image
+              source={require("../assets/new_background.jpg")}
+              style={styles.image}
+            />
 
-        <View style={styles.headerTextContainer}>
-          <Text style={styles.title}>Welcome Back</Text>
+            <TouchableOpacity
+              onPress={() => router.push("/")}
+              style={styles.backButton}
+            >
+              <Ionicons name="arrow-back" size={26} color="#fff" />
+            </TouchableOpacity>
 
-          {/* ✅ HIGHLIGHTED ROLE */}
-          <Text style={styles.subtitle}>
-            Sign in to continue as{" "}
-            <Text style={styles.roleHighlight}>{roleLabel}</Text>
-          </Text>
+            <View style={styles.headerTextContainer}>
+              <Text style={styles.title}>Welcome Back</Text>
+
+              <Text style={styles.subtitle}>
+                Sign in to continue as{" "}
+                <Text style={styles.roleHighlight}>{roleLabel}</Text>
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.content}>
+            <Text style={styles.sectionLabel}>Account Information</Text>
+
+            <Input
+              placeholder="Email"
+              autoCapitalize="none"
+              value={email}
+              onChangeText={setEmail}
+            />
+
+            <Input
+              placeholder="Password"
+              secureTextEntry
+              value={password}
+              onChangeText={setPassword}
+            />
+
+            <TouchableOpacity onPress={() => router.push("/ForgotPassword")}>
+              <Text style={styles.forgotText}>Forgot Password?</Text>
+            </TouchableOpacity>
+
+            <Button title="Login" onPress={login} />
+
+            <View style={{ marginTop: 20, alignItems: "center" }}>
+              <TouchableOpacity onPress={goToRegister}>
+                <Text style={{ color: "#01579B", fontWeight: "700" }}>
+                  Create an account
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* ✅ ADDED: extra space so last elements aren’t covered by keyboard */}
+            <View style={{ height: 30 }} />
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+      {toast.visible && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.toast,
+            toast.type === "success" && styles.toastSuccess,
+            toast.type === "error" && styles.toastError,
+            toast.type === "info" && styles.toastInfo,
+          ]}
+        >
+          <Text style={styles.toastText}>{toast.text}</Text>
         </View>
-      </View>
-
-      <View style={styles.content}>
-        <Text style={styles.sectionLabel}>Account Information</Text>
-
-        <Input
-          placeholder="Email"
-          autoCapitalize="none"
-          value={email}
-          onChangeText={setEmail}
-        />
-
-        <Input
-          placeholder="Password"
-          secureTextEntry
-          value={password}
-          onChangeText={setPassword}
-        />
-
-        <TouchableOpacity onPress={() => router.push("/ForgotPassword")}>
-          <Text style={styles.forgotText}>Forgot Password?</Text>
-        </TouchableOpacity>
-
-        <Button title="Login" onPress={login} />
-
-        <View style={{ marginTop: 20, alignItems: "center" }}>
-          <TouchableOpacity onPress={goToRegister}>
-            <Text style={{ color: "#01579B", fontWeight: "700" }}>
-              Create an account
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </ScrollView>
+      )}
+    </View>
   );
 }
 
@@ -242,7 +298,6 @@ const styles = StyleSheet.create({
   title: { fontSize: 30, fontWeight: "800", color: "#fff" },
   subtitle: { fontSize: 14, color: "#eee", marginTop: 6 },
 
-  /* ✅ ROLE HIGHLIGHT */
   roleHighlight: {
     color: "#F3F9FA",
     fontWeight: "700",
@@ -252,18 +307,14 @@ const styles = StyleSheet.create({
 
   content: {
     flex: 1,
-    marginTop: -40,
+    marginTop: -65,
     padding: 40,
     backgroundColor: "#faf9f6",
     borderTopLeftRadius: 50,
     borderTopRightRadius: 50,
   },
 
-  sectionLabel: {
-    fontSize: 15,
-    fontWeight: "600",
-    marginBottom: 10,
-  },
+  sectionLabel: { fontSize: 15, fontWeight: "600", marginBottom: 10 },
 
   forgotText: {
     color: "#912f56",
@@ -271,4 +322,28 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginBottom: 16,
   },
+
+  /* ===== TOAST (TOP, NO OK) ===== */
+  toast: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    top: Platform.OS === "ios" ? 58 : 18,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#0F172A",
+    opacity: 0.96,
+    elevation: 10,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  toastInfo: { backgroundColor: "#0F172A" },
+  toastSuccess: { backgroundColor: "#16A34A" },
+  toastError: { backgroundColor: "#DC2626" },
 });

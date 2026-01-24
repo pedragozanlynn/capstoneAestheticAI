@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -23,18 +23,53 @@ export default function ManageSubscription() {
   const [userData, setUserData] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // ✅ validations / message guards (prevents alert spam)
+  const didWarnNoAuth = useRef(false);
+  const didWarnNoUserData = useRef(false);
+  const didWarnLoadError = useRef(false);
+  const didWarnBilling = useRef(false);
+  const didInfoPremium = useRef(false);
+
   useEffect(() => {
     const loadSubscription = async () => {
       try {
         const uid = auth.currentUser?.uid;
-        if (!uid) return;
+
+        // ✅ validation: must be signed in
+        if (!uid) {
+          if (!didWarnNoAuth.current) {
+            didWarnNoAuth.current = true;
+            Alert.alert("Session Required", "Please sign in to view your subscription.");
+          }
+          setUserData(null);
+          return;
+        }
 
         const snap = await getDoc(doc(db, "users", uid));
         if (snap.exists()) {
-          setUserData(snap.data());
+          const data = snap.data();
+          setUserData(data);
+
+          // ✅ success/info message (non-blocking, one-time if Premium)
+          if (data?.subscription_type === "Premium" && !didInfoPremium.current) {
+            didInfoPremium.current = true;
+            // Keep it minimal; optional alert. Comment out if you want silent behavior.
+            // Alert.alert("Subscription Active", "Your Premium plan is currently active.");
+          }
+        } else {
+          setUserData(null);
+          if (!didWarnNoUserData.current) {
+            didWarnNoUserData.current = true;
+            Alert.alert("User Data Not Found", "We could not find your account data.");
+          }
         }
       } catch (e) {
         console.log("Subscription load error:", e);
+        setUserData(null);
+        if (!didWarnLoadError.current) {
+          didWarnLoadError.current = true;
+          Alert.alert("Error", "Failed to load subscription details. Please try again.");
+        }
       } finally {
         setLoading(false);
       }
@@ -65,15 +100,45 @@ export default function ManageSubscription() {
   const isPremium = subscription_type === "Premium";
 
   const formatNumericDate = (firebaseTimestamp) => {
-    if (!firebaseTimestamp?.toDate) return "—";
-    const date = firebaseTimestamp.toDate();
-    return date.toLocaleDateString("en-US");
+    try {
+      if (!firebaseTimestamp?.toDate) return "—";
+      const date = firebaseTimestamp.toDate();
+      return date.toLocaleDateString("en-US");
+    } catch {
+      return "—";
+    }
   };
 
   const handleUpgrade = () => {
-    // If you prefer your Premium plan page instead:
-    // router.push("/User/UpgradeInfo") or router.push("/User/UpdateInfo")
-    router.push("/User/UpgradeInfo");
+    try {
+      // ✅ validation: if already Premium, prevent redundant upgrade navigation
+      if (isPremium) {
+        Alert.alert("Already Premium", "Your plan is already active.");
+        return;
+      }
+
+      router.push("/User/UpgradeInfo");
+
+      // ✅ success/info message (optional, kept silent to avoid extra alerts)
+      // Alert.alert("Upgrade", "Redirecting to upgrade options...");
+    } catch (e) {
+      console.log("handleUpgrade error:", e);
+      Alert.alert("Error", "Unable to open upgrade page.");
+    }
+  };
+
+  const handleBilling = () => {
+    // ✅ validation + message
+    if (!isPremium) {
+      Alert.alert("Not Available", "Billing management is available for Premium members only.");
+      return;
+    }
+
+    // Your current placeholder:
+    if (!didWarnBilling.current) {
+      didWarnBilling.current = true;
+      Alert.alert("Billing", "Opening billing settings...");
+    }
   };
 
   return (
@@ -137,8 +202,6 @@ export default function ManageSubscription() {
                 : "Premium features are locked. Upgrade to unlock."}
             </Text>
           </View>
-
-    
         </View>
 
         {/* ===== PLAN DETAILS CARD ===== */}
@@ -152,7 +215,11 @@ export default function ManageSubscription() {
             icon={isPremium ? "shield-checkmark-outline" : "alert-circle-outline"}
           />
 
-          <InfoRow label="Subscribed On" value={formatNumericDate(subscribed_at)} icon="calendar-outline" />
+          <InfoRow
+            label="Subscribed On"
+            value={formatNumericDate(subscribed_at)}
+            icon="calendar-outline"
+          />
 
           <InfoRow
             label="Renewal Date"
@@ -171,18 +238,13 @@ export default function ManageSubscription() {
             <LockedFeatureRow icon="bookmark" text="Unlimited Saved Projects" />
             <LockedFeatureRow icon="grid" text="AI Layout Suggestions" />
             <LockedFeatureRow icon="bag-handle" text="Furniture Matching" isLast />
-
-           
           </View>
         )}
 
         {/* ===== FOOTER ACTIONS ===== */}
         <View style={styles.footer}>
           {isPremium ? (
-            <TouchableOpacity
-              style={styles.secondaryBtn}
-              onPress={() => Alert.alert("Billing", "Opening billing settings...")}
-            >
+            <TouchableOpacity style={styles.secondaryBtn} onPress={handleBilling}>
               <Ionicons
                 name="card-outline"
                 size={20}
@@ -193,13 +255,13 @@ export default function ManageSubscription() {
             </TouchableOpacity>
           ) : (
             <TouchableOpacity
-            activeOpacity={0.9}
-            style={styles.primaryBtn}
-            onPress={handleUpgrade}
-          >
-            <Text style={styles.primaryText}>Upgrade to Premium</Text>
-            <Ionicons name="arrow-forward" size={18} color="#fff" />
-          </TouchableOpacity>
+              activeOpacity={0.9}
+              style={styles.primaryBtn}
+              onPress={handleUpgrade}
+            >
+              <Text style={styles.primaryText}>Upgrade to Premium</Text>
+              <Ionicons name="arrow-forward" size={18} color="#fff" />
+            </TouchableOpacity>
           )}
 
           <Text style={styles.footerHint}>
@@ -225,6 +287,7 @@ const InfoRow = ({ label, value, highlight, icon, isLast }) => (
   </View>
 );
 
+// (UNCHANGED, not used in current UI) kept as-is
 const LockedRow = ({ label, value, icon, onPressUpgrade, isLast }) => (
   <View style={[styles.infoRow, isLast && { borderBottomWidth: 0 }]}>
     <View style={styles.infoLeft}>

@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { addDoc, collection, serverTimestamp } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
@@ -9,6 +9,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Platform,
 } from "react-native";
 import { db } from "../../config/firebase";
 
@@ -53,8 +54,31 @@ export default function PaymentModal({
   const [loading, setLoading] = useState(false);
   const [sessionFee, setSessionFee] = useState(Number(sessionFeeProp || 0));
   const [appointmentAt, setAppointmentAt] = useState(appointmentAtProp || null);
-
   const [fetching, setFetching] = useState(true);
+
+  /* ===========================
+     ✅ TOAST (TOP, NO OK BUTTON)
+     =========================== */
+  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2200) => {
+    try {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setToast({ visible: true, text: String(text || ""), type });
+      toastTimerRef.current = setTimeout(() => {
+        setToast((t) => ({ ...t, visible: false }));
+      }, ms);
+    } catch {}
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      } catch {}
+    };
+  }, []);
 
   useEffect(() => {
     if (!visible) return;
@@ -73,22 +97,54 @@ export default function PaymentModal({
 
     // ✅ no fetch; stop loader immediately
     setFetching(false);
-  }, [visible, sessionFeeProp, appointmentAtProp]);
+  }, [visible, sessionFeeProp, appointmentAtProp, userId, consultantId, consultantName, appointmentId]);
 
   const safeDate = formatDate(appointmentAt);
   const safeTime = formatTime(appointmentAt);
 
+  /* ================= VALIDATIONS ================= */
+  const safeNum = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const validatePayment = () => {
+    if (!userId) return "Missing user ID.";
+    if (!consultantId) return "Missing consultant ID.";
+    if (!appointmentId) return "Missing appointment ID.";
+    const fee = safeNum(sessionFee);
+    if (!fee || fee <= 0) return "Invalid session fee.";
+    if (!appointmentAt) return "Missing appointment schedule.";
+    if (loading) return "Please wait… payment is processing.";
+    return "";
+  };
+
   const handlePayment = async () => {
-    if (!userId || !consultantId || !appointmentId || !sessionFee) {
-      alert("Missing payment information.");
-      console.log("❌ Missing payment info:", { userId, consultantId, appointmentId, sessionFee });
+    const err = validatePayment();
+    if (err) {
+      showToast(err, "error");
+      console.log("❌ Payment validation failed:", {
+        err,
+        userId,
+        consultantId,
+        appointmentId,
+        sessionFee,
+        appointmentAt,
+      });
       return;
     }
 
     setLoading(true);
     try {
-      const consultantShare = Number((sessionFee * 0.9).toFixed(2));
-      const adminShare = Number((sessionFee * 0.1).toFixed(2));
+      const fee = safeNum(sessionFee);
+      const consultantShare = Number((fee * 0.9).toFixed(2));
+      const adminShare = Number((fee * 0.1).toFixed(2));
+
+      // ✅ defensive: ensure sum matches base (avoid rounding drift)
+      const total = Number((consultantShare + adminShare).toFixed(2));
+      const baseAmount = Number(fee.toFixed(2));
+      const adjust = Number((baseAmount - total).toFixed(2));
+      const finalConsultantShare = Number((consultantShare + adjust).toFixed(2));
 
       await addDoc(collection(db, "payments"), {
         userId,
@@ -96,8 +152,8 @@ export default function PaymentModal({
         consultantName: consultantName || "Consultant",
         appointmentId,
         appointmentAt,
-        amount: consultantShare,
-        baseAmount: sessionFee,
+        amount: finalConsultantShare,
+        baseAmount: baseAmount,
         currency: "PHP",
         status: "completed",
         createdAt: serverTimestamp(),
@@ -111,20 +167,31 @@ export default function PaymentModal({
         appointmentId,
         appointmentAt,
         amount: adminShare,
-        baseAmount: sessionFee,
+        baseAmount: baseAmount,
         currency: "PHP",
         status: "completed",
         createdAt: serverTimestamp(),
         type: "admin_income",
       });
 
+      // ✅ toast success (no Alert)
+      showToast("Payment successful. Starting consultation...", "success", 1600);
+
       setLoading(false);
-      onPaymentSuccess?.();
-      onClose?.();
+
+      // allow toast to show briefly then close
+      setTimeout(() => {
+        try {
+          onPaymentSuccess?.();
+        } catch {}
+        try {
+          onClose?.();
+        } catch {}
+      }, 450);
     } catch (err) {
       setLoading(false);
       console.log("❌ Payment failed:", err?.message || err);
-      alert("Payment failed. Please try again.");
+      showToast("Payment failed. Please try again.", "error");
     }
   };
 
@@ -164,7 +231,9 @@ export default function PaymentModal({
 
                 <View style={styles.totalRow}>
                   <Text style={styles.totalLabel}>Grand Total</Text>
-                  <Text style={styles.totalValue}>₱{Number(sessionFee || 0).toFixed(2)}</Text>
+                  <Text style={styles.totalValue}>
+                    ₱{Number(sessionFee || 0).toFixed(2)}
+                  </Text>
                 </View>
               </View>
 
@@ -177,21 +246,42 @@ export default function PaymentModal({
                 style={[styles.payBtn, loading && styles.disabledBtn]}
                 onPress={handlePayment}
                 disabled={loading}
+                activeOpacity={0.85}
               >
                 {loading ? (
                   <ActivityIndicator color="#fff" />
                 ) : (
                   <>
                     <Text style={styles.payText}>Pay & Start Consultation</Text>
-                    <Ionicons name="arrow-forward" size={18} color="#FFF" style={{ marginLeft: 8 }} />
+                    <Ionicons
+                      name="arrow-forward"
+                      size={18}
+                      color="#FFF"
+                      style={{ marginLeft: 8 }}
+                    />
                   </>
                 )}
               </TouchableOpacity>
 
-              <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+              <TouchableOpacity onPress={onClose} style={styles.cancelBtn} disabled={loading}>
                 <Text style={styles.cancelText}>Cancel Payment</Text>
               </TouchableOpacity>
             </>
+          )}
+
+          {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+          {toast.visible && (
+            <View
+              pointerEvents="none"
+              style={[
+                styles.toast,
+                toast.type === "success" && styles.toastSuccess,
+                toast.type === "error" && styles.toastError,
+                toast.type === "info" && styles.toastInfo,
+              ]}
+            >
+              <Text style={styles.toastText}>{toast.text}</Text>
+            </View>
           )}
         </View>
       </View>
@@ -253,7 +343,6 @@ const styles = StyleSheet.create({
   securityNote: { flexDirection: "row", alignItems: "center", marginTop: 15, marginBottom: 25, gap: 5 },
   securityText: { fontSize: 12, color: "#64748B", fontWeight: "500" },
 
-  // ✅ keep your button visibility fixes
   payBtn: {
     backgroundColor: "#2c4f4f",
     width: "100%",
@@ -275,4 +364,28 @@ const styles = StyleSheet.create({
   cancelText: { color: "#94A3B8", fontSize: 14, fontWeight: "700" },
   loaderWrap: { padding: 40, alignItems: "center" },
   loaderText: { marginTop: 10, color: "#64748B", fontSize: 13 },
+
+  /* ===== TOAST (TOP, NO OK) ===== */
+  toast: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    top: Platform.OS === "ios" ? 16 : 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#0F172A",
+    opacity: 0.96,
+    elevation: 10,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  toastInfo: { backgroundColor: "#0F172A" },
+  toastSuccess: { backgroundColor: "#16A34A" },
+  toastError: { backgroundColor: "#DC2626" },
 });

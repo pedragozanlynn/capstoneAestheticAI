@@ -52,6 +52,35 @@ export default function Project() {
   // Keep latest cleanup for Firestore listener
   const cleanupRef = useRef(null);
 
+  // ✅ minimal UX guards (no UI changes)
+  const didWarnNoUserRef = useRef(false);
+  const didShowEmptyInfoRef = useRef(false);
+
+  /* ===========================
+     ✅ TOAST (TOP POSITION)
+     ✅ NO OK BUTTON
+     =========================== */
+  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2200) => {
+    try {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setToast({ visible: true, text: String(text || ""), type });
+      toastTimerRef.current = setTimeout(() => {
+        setToast((t) => ({ ...t, visible: false }));
+      }, ms);
+    } catch {}
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      } catch {}
+    };
+  }, []);
+
   const setFallbackProjects = () => {
     setProjects([
       {
@@ -80,10 +109,16 @@ export default function Project() {
     } catch {}
     cleanupRef.current = null;
 
-    // ✅ Not logged in → static fallback (unchanged behavior)
+    // ✅ Validation + info message (only once): not logged in
     if (!uid) {
       setFallbackProjects();
       cleanupRef.current = () => {};
+
+      if (!didWarnNoUserRef.current) {
+        didWarnNoUserRef.current = true;
+        showToast("Please sign in to view your saved projects.", "info");
+      }
+
       return;
     }
 
@@ -131,12 +166,19 @@ export default function Project() {
         if (parsed.length === 0) {
           // ✅ keep existing fallback
           setFallbackProjects();
+
+          // ✅ Optional: gentle info (only once) when user has no projects yet
+          if (!didShowEmptyInfoRef.current) {
+            didShowEmptyInfoRef.current = true;
+            showToast("No projects yet. Create a design first to see it here.", "info");
+          }
         } else {
           setProjects(parsed);
         }
       },
       (err) => {
         console.log("Error loading projects:", err?.message || err);
+        showToast("Failed to load projects. Please try again.", "error");
         setFallbackProjects();
       }
     );
@@ -167,8 +209,11 @@ export default function Project() {
 
   /* ================= ACTIONS ================= */
   const openVisualization = (project) => {
-    // Keep your existing visualization route
-    // (RoomVisualization will fetch the project by id)
+    if (!project?.id) {
+      showToast("Invalid project.", "error");
+      return;
+    }
+
     router.push({
       pathname: "/User/RoomVisualization",
       params: { id: project.id },
@@ -176,6 +221,16 @@ export default function Project() {
   };
 
   const handleDeleteProject = (projectId) => {
+    if (!projectId) {
+      showToast("Invalid project.", "error");
+      return;
+    }
+    if (projectId === "static-1") {
+      showToast("This sample project cannot be deleted.", "info");
+      return;
+    }
+
+    // ✅ Keep confirmation dialog (destructive action)
     Alert.alert(
       "Delete Project",
       "Are you sure you want to delete this project?",
@@ -189,16 +244,19 @@ export default function Project() {
               // ✅ Legacy AsyncStorage fallback delete
               if (String(projectId).startsWith("aestheticai:project-image:")) {
                 await AsyncStorage.removeItem(projectId);
+                showToast("Project removed successfully.", "success");
                 loadProjects();
                 return;
               }
 
               // ✅ Firestore delete
-              if (projectId && projectId !== "static-1") {
+              if (projectId) {
                 await deleteDoc(doc(db, "projects", projectId));
+                showToast("Project removed successfully.", "success");
               }
             } catch (e) {
               console.log("Delete error:", e?.message || e);
+              showToast("Failed to delete project. Please try again.", "error");
             }
           },
         },
@@ -209,6 +267,21 @@ export default function Project() {
   return (
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" />
+
+      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+      {toast.visible && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.toast,
+            toast.type === "success" && styles.toastSuccess,
+            toast.type === "error" && styles.toastError,
+            toast.type === "info" && styles.toastInfo,
+          ]}
+        >
+          <Text style={styles.toastText}>{toast.text}</Text>
+        </View>
+      )}
 
       {/* 🟦 HEADER */}
       <View style={styles.header}>
@@ -258,11 +331,7 @@ export default function Project() {
                   </Text>
 
                   <View style={styles.dateRow}>
-                    <Ionicons
-                      name="calendar-outline"
-                      size={12}
-                      color="#94A3B8"
-                    />
+                    <Ionicons name="calendar-outline" size={12} color="#94A3B8" />
                     <Text style={styles.projectDate}>{project.date}</Text>
                   </View>
                 </View>
@@ -289,6 +358,30 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#F8FAFC",
   },
+
+  /* ===== TOAST (TOP) ===== */
+  toast: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    top: Platform.OS === "ios" ? 68 : 90, // ✅ top always
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#0F172A",
+    opacity: 0.96,
+    elevation: 10,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  toastInfo: { backgroundColor: "#0F172A" },
+  toastSuccess: { backgroundColor: "#16A34A" },
+  toastError: { backgroundColor: "#DC2626" },
 
   /* ===== HEADER ===== */
   header: {

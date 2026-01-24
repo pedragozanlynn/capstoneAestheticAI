@@ -1,6 +1,12 @@
 import { useRouter } from "expo-router";
-import { addDoc, collection, serverTimestamp, doc, setDoc } from "firebase/firestore";
-import React, { useState } from "react";
+import {
+  addDoc,
+  collection,
+  serverTimestamp,
+  doc,
+  setDoc,
+} from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Image,
@@ -27,24 +33,58 @@ export default function UpgradePayment() {
   const GCASH_NAME = "AestheticAI";
   const GCASH_NUMBER = "0995 862 1473";
 
+  /* ===========================
+     ✅ TOAST (TOP, NO OK BUTTON)
+     =========================== */
+  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
+  const toastTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2200) => {
+    try {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      setToast({ visible: true, text: String(text || ""), type });
+      toastTimerRef.current = setTimeout(() => {
+        setToast((t) => ({ ...t, visible: false }));
+      }, ms);
+    } catch {}
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      } catch {}
+    };
+  }, []);
+
+  const onlyDigits = (s = "") => String(s || "").replace(/\D+/g, "");
+
   const handleSubmit = async () => {
-    if (!amount.trim() || !reference.trim()) {
-      Alert.alert("Missing Info", "Please enter amount and reference number.");
-      return;
+    const a = String(amount || "").trim();
+    const r = String(reference || "").trim();
+
+    // ✅ validations (toast, no OK)
+    if (!a) return showToast("Please enter the amount sent.", "error");
+    const numericAmount = Number(a.replace(/,/g, ""));
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return showToast("Please enter a valid amount.", "error");
+    }
+
+    if (!r) return showToast("Please enter the reference number.", "error");
+    const refDigits = onlyDigits(r);
+    if (refDigits.length < 10) {
+      return showToast("Please enter a valid reference number.", "error");
     }
 
     const uid = auth.currentUser?.uid;
-    if (!uid) {
-      Alert.alert("Not signed in", "Please sign in again and retry.");
-      return;
-    }
+    if (!uid) return showToast("Not signed in. Please sign in again and retry.", "error");
 
     try {
       // 1) Save payment request (ledger)
       await addDoc(collection(db, "subscription_payments"), {
         user_id: uid,
-        amount: parseFloat(amount),
-        reference_number: reference,
+        amount: numericAmount,
+        reference_number: r,
         gcash_number: GCASH_NUMBER,
         timestamp: serverTimestamp(),
         status: "Pending",
@@ -56,35 +96,41 @@ export default function UpgradePayment() {
       await setDoc(
         doc(db, "users", uid),
         {
-          uid, // optional but useful
-          isPro: false, // ✅ boolean field
-          proStatus: "pending", // optional helper
-          proRequestedAt: serverTimestamp(), // optional helper
+          uid,
+          isPro: false,
+          proStatus: "pending",
+          proRequestedAt: serverTimestamp(),
         },
         { merge: true }
       );
 
-      Alert.alert(
-        "Payment Submitted",
-        "Your payment will be verified within 24 hours.",
-        [{ text: "OK", onPress: () => router.replace("/User/Home") }]
-      );
+      // ✅ success toast (no OK)
+      showToast("Payment submitted. Verification within 24 hours.", "success", 1800);
+
+      setTimeout(() => {
+        router.replace("/User/Home");
+      }, 1800);
     } catch (error) {
-      Alert.alert("Error", "Something went wrong while submitting payment.");
+      showToast("Something went wrong while submitting payment.", "error");
     }
   };
 
   return (
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" />
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
         {/* BACK BUTTON & HEADER */}
         <View style={styles.header}>
           <TouchableOpacity style={styles.backCircle} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={22} color="#000" />
           </TouchableOpacity>
           <Text style={styles.title}>Payment Details</Text>
-          <Text style={styles.subtitle}>Send payment via GCash and enter the transaction details below.</Text>
+          <Text style={styles.subtitle}>
+            Send payment via GCash and enter the transaction details below.
+          </Text>
         </View>
 
         {/* GCASH INFO CARD */}
@@ -107,7 +153,7 @@ export default function UpgradePayment() {
               <Text style={styles.value}>{GCASH_NUMBER}</Text>
               <TouchableOpacity
                 style={styles.copyBtn}
-                onPress={() => Alert.alert("Copied", "Number copied to clipboard")}
+                onPress={() => showToast("Number copied to clipboard.", "success")}
               >
                 <Ionicons name="copy-outline" size={18} color="#3fa796" />
               </TouchableOpacity>
@@ -132,7 +178,12 @@ export default function UpgradePayment() {
 
           <Text style={styles.inputLabel}>Reference Number</Text>
           <View style={styles.inputWrapper}>
-            <Ionicons name="receipt-outline" size={20} color="#94A3B8" style={styles.inputIcon} />
+            <Ionicons
+              name="receipt-outline"
+              size={20}
+              color="#94A3B8"
+              style={styles.inputIcon}
+            />
             <TextInput
               style={styles.input}
               placeholder="13-digit Reference No."
@@ -144,15 +195,35 @@ export default function UpgradePayment() {
         </View>
 
         {/* SUBMIT BUTTON */}
-        <TouchableOpacity activeOpacity={0.8} style={styles.submitBtn} onPress={handleSubmit}>
+        <TouchableOpacity
+          activeOpacity={0.8}
+          style={styles.submitBtn}
+          onPress={handleSubmit}
+        >
           <Text style={styles.submitText}>Confirm Payment</Text>
           <Ionicons name="shield-checkmark" size={20} color="#FFF" />
         </TouchableOpacity>
 
         <Text style={styles.note}>
-          Verification may take up to 24 hours. Please keep your GCash receipt for reference.
+          Verification may take up to 24 hours. Please keep your GCash receipt for
+          reference.
         </Text>
       </ScrollView>
+
+      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+      {toast.visible && (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.toast,
+            toast.type === "success" && styles.toastSuccess,
+            toast.type === "error" && styles.toastError,
+            toast.type === "info" && styles.toastInfo,
+          ]}
+        >
+          <Text style={styles.toastText}>{toast.text}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -286,4 +357,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     lineHeight: 18,
   },
+
+  /* ===== TOAST (TOP, NO OK) ===== */
+  toast: {
+    position: "absolute",
+    left: 20,
+    right: 20,
+    top: Platform.OS === "ios" ? 58 : 18,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
+    backgroundColor: "#0F172A",
+    opacity: 0.96,
+    elevation: 10,
+    zIndex: 9999,
+  },
+  toastText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 13,
+    textAlign: "center",
+  },
+  toastInfo: { backgroundColor: "#0F172A" },
+  toastSuccess: { backgroundColor: "#16A34A" },
+  toastError: { backgroundColor: "#DC2626" },
 });

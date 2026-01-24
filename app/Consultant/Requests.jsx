@@ -2,16 +2,18 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { getAuth, onAuthStateChanged } from "firebase/auth";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
   getDocs,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
-  setDoc, // Idinagdag para sa ChatRoom creation
 } from "firebase/firestore";
+
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
@@ -54,6 +56,8 @@ export default function Requests() {
     return unsub;
   }, []);
 
+
+
   const fetchRequests = async () => {
     if (!authUid) return;
     try {
@@ -94,21 +98,47 @@ export default function Requests() {
     if (authUid) fetchRequests();
   }, [authUid]);
 
+  const pushUserNotification = async ({ userId, type, title, message, item }) => {
+    try {
+      if (!userId || !authUid || !item?.id) return;
+  
+      await addDoc(collection(db, "notifications"), {
+        userId: String(userId),
+        consultantId: String(authUid),
+  
+        type: String(type),
+        title: String(title),
+        message: String(message),
+        read: false,
+  
+        appointmentId: String(item.id),
+        appointmentStatus: String(item.status || ""),
+        appointmentAt: item?.appointmentAt || null,
+        sessionFee: item?.sessionFee ?? null,
+  
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.log("❌ pushUserNotification error:", e?.message || e);
+    }
+  };
+  
+
   const acceptRequest = async (item) => {
     if (!authUid) return;
-
+  
     try {
       const appointmentRef = doc(db, "appointments", item.id);
       const chatRoomRef = doc(db, "chatRooms", item.id);
-
-      // 1. I-update ang Appointment status
+  
+      // ✅ 1) Update appointment status
       await updateDoc(appointmentRef, {
         status: "accepted",
         chatRoomId: item.id,
         acceptedAt: serverTimestamp(),
       });
-
-      // 2. I-check at gawin ang ChatRoom
+  
+      // ✅ 2) Create chatRoom if not exists
       const chatRoomSnap = await getDoc(chatRoomRef);
       if (!chatRoomSnap.exists()) {
         await setDoc(chatRoomRef, {
@@ -126,25 +156,55 @@ export default function Requests() {
           unreadForUser: true,
         });
       }
-
+  
+      // ✅ 3) Create notification (single global collection: "notifications")
+      await addDoc(collection(db, "notifications"), {
+        userId: String(item.userId),
+        consultantId: String(authUid),
+  
+        type: "booking_accepted",
+        title: "Booking Accepted",
+        message: "Your consultation booking has been accepted.",
+  
+        appointmentId: String(item.id),
+        appointmentAt: item?.appointmentAt || null,
+        sessionFee: item?.sessionFee ?? null,
+  
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+  
       Alert.alert("Success", "Request accepted!");
-      fetchRequests(); // I-refresh para lumipat sa Accepted tab
+      fetchRequests();
     } catch (error) {
       console.error("❌ Error sa acceptRequest:", error);
       Alert.alert("Error", "Failed to accept request. Please check permissions.");
     }
   };
+  
 
   const declineRequest = async (item) => {
     try {
       await updateDoc(doc(db, "appointments", item.id), {
         status: "declined",
       });
+  
+      await pushUserNotification({
+        userId: item.userId,
+        type: "booking_rejected",
+        title: "Booking Declined",
+        message: "Your consultation booking was declined.",
+        item: { ...item, status: "declined" }, // ensure status reflects decline
+      });
+
+      
+  
       fetchRequests();
     } catch (error) {
       console.error("❌ Decline error:", error);
     }
   };
+  
 
   const openChat = (item) => {
     if (item.status === "completed") {

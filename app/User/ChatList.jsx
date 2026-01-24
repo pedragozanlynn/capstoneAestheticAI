@@ -1,9 +1,8 @@
-// ✅ UPDATED ONLY (related changes):
-// 1) Fetch consultant RATE from /consultants/{consultantId} (field name: rate)
-// 2) Fetch appointmentAt ONLY from /appointments/{appointmentId}
-// 3) Pass consultant.rate as sessionFee + appointmentAt to PaymentModal
-// 4) Add logs to confirm rate/schedule were fetched + modal state changes
-// 5) Render PaymentModal based on paymentModalVisible (so it shows reliably)
+// ✅ UPDATED ONLY (validation-related changes):
+// 1) Validate required room fields before querying payments / opening modal
+// 2) Validate consultantId + appointmentId before fetching docs
+// 3) Validate appointmentAt exists before showing PaymentModal
+// 4) Add minimal user-facing Alert messages + logs for validation failures
 // ❗ No other UI/layout/logic changes
 
 import { Ionicons } from "@expo/vector-icons";
@@ -28,6 +27,7 @@ import {
   View,
   StatusBar,
   SafeAreaView,
+  Alert, // ✅ added
 } from "react-native";
 import { db } from "../../config/firebase";
 import PaymentModal from "../components/PaymentModal";
@@ -50,8 +50,23 @@ export default function ChatList() {
 
   /* ================= HELPERS ================= */
 
+  const isNonEmpty = (v) => String(v || "").trim().length > 0;
+
+  const validateRoomForPayment = (room) => {
+    if (!room?.id) return "Missing chat room id.";
+    if (!isNonEmpty(room?.userId)) return "Missing userId in this chat room.";
+    if (!isNonEmpty(room?.consultantId)) return "Missing consultantId in this chat room.";
+    if (!isNonEmpty(room?.appointmentId)) return "Missing appointmentId in this chat room.";
+    return "";
+  };
+
   const fetchConsultantInfo = async (consultantId) => {
     try {
+      if (!isNonEmpty(consultantId)) {
+        console.log("⚠️ Validation: consultantId missing");
+        return { name: "Consultant", rate: 0 };
+      }
+
       const snap = await getDoc(doc(db, "consultants", consultantId));
       if (!snap.exists()) {
         console.log("⚠️ Consultant doc not found:", consultantId);
@@ -79,6 +94,11 @@ export default function ChatList() {
 
   const fetchAppointmentInfo = async (appointmentId) => {
     try {
+      if (!isNonEmpty(appointmentId)) {
+        console.log("⚠️ Validation: appointmentId missing");
+        return null;
+      }
+
       const snap = await getDoc(doc(db, "appointments", appointmentId));
       if (!snap.exists()) {
         console.log("⚠️ Appointment doc not found:", appointmentId);
@@ -100,6 +120,13 @@ export default function ChatList() {
 
   const checkPayment = async (room) => {
     try {
+      // ✅ validate required fields before querying
+      const err = validateRoomForPayment(room);
+      if (err) {
+        console.log("⚠️ Validation failed (checkPayment):", err, room);
+        return false;
+      }
+
       console.log("🔎 checkPayment start:", {
         roomId: room?.id,
         userId: room?.userId,
@@ -132,6 +159,14 @@ export default function ChatList() {
         appointmentId: room?.appointmentId,
       });
 
+      // ✅ validate room first
+      const roomErr = validateRoomForPayment(room);
+      if (roomErr) {
+        console.log("⚠️ Validation failed (openChatWithPaymentCheck):", roomErr, room);
+        Alert.alert("Cannot open chat", "This conversation is missing booking details.");
+        return;
+      }
+
       const hasPaid = await checkPayment(room);
 
       if (!hasPaid) {
@@ -140,19 +175,27 @@ export default function ChatList() {
           fetchConsultantInfo(room.consultantId),
         ]);
 
+        // ✅ validate appointmentAt before opening PaymentModal
+        const appointmentAt = appointment?.appointmentAt || null;
+        if (!appointmentAt) {
+          console.log("⚠️ Validation: appointmentAt missing for appointmentId:", room.appointmentId);
+          Alert.alert("Missing schedule", "This booking has no schedule yet.");
+          return;
+        }
+
         console.log("📌 Passing to PaymentModal:", {
           roomId: room.id,
           consultantId: room.consultantId,
           appointmentId: room.appointmentId,
           sessionFee_fromConsultantRate: consultant?.rate || 0,
-          appointmentAt_fromAppointment: appointment?.appointmentAt || null,
+          appointmentAt_fromAppointment: appointmentAt,
         });
 
         const payload = {
           ...room,
           consultantName: consultant?.name || room.consultantName || "Consultant",
           sessionFee: consultant?.rate || 0,
-          appointmentAt: appointment?.appointmentAt || null,
+          appointmentAt,
         };
 
         setCurrentPaymentData(payload);
@@ -173,6 +216,7 @@ export default function ChatList() {
       });
     } catch (e) {
       console.log("❌ openChatWithPaymentCheck crash:", e?.message || e);
+      Alert.alert("Error", "Something went wrong. Please try again.");
     }
   };
 

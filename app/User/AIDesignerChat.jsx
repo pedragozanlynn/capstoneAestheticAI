@@ -304,10 +304,10 @@ const isHistoryRealtimeActive = () => {
   // ✅ NEW: run-once boot to show saved prompt + saved images from Projects
   const projectBootRef = useRef(false);
 
-  const DEV_HOST = "192.168.1.8";
-// ✅ If physical phone, set to your PC LAN IP (e.g. 192.168.1.8)
-const API_BASE = __DEV__ ? `http://${DEV_HOST}:3001` : "https://YOUR_DOMAIN";
-const API_URL = `${API_BASE}/ai/design`;
+  const DEV_HOST = "10.137.89.179";
+  const API_BASE = __DEV__ ? `http://${DEV_HOST}:3001` : "https://YOUR_DOMAIN";
+  const API_URL = `${API_BASE}/ai/design`;
+  
 
 
 

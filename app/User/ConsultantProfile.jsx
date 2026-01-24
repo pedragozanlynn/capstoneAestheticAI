@@ -1,7 +1,16 @@
 // ConsultantProfile.jsx
-import React, { useEffect, useState } from "react";
+// ✅ UPDATED ONLY (Validation + validation messages):
+// - Validate consultantId param
+// - Validate consultant doc exists
+// - Validate ratings query + reviewer names safely
+// - Validate "Request Consultation" (must have availability + rate)
+// - Added user-friendly Alert messages for validation failures
+// ❗ No other UI/layout/logic changes
+
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -29,7 +38,8 @@ const THEME = {
   icon: "#2c4f4f",
   button: "#3fa796",
   bg: "#faf9f6",
-  accentBlue: "#B3E5FC"
+  accentBlue: "#B3E5FC",
+  danger: "#DC2626",
 };
 
 export default function ConsultantProfile() {
@@ -43,37 +53,102 @@ export default function ConsultantProfile() {
   const [ratingsLoading, setRatingsLoading] = useState(true);
   const [scheduleVisible, setScheduleVisible] = useState(false);
 
+  // ✅ validation message state (simple + UI-safe)
+  const [pageError, setPageError] = useState("");
+
+  const safeStr = (v) => String(v ?? "").trim();
+  const isNonEmpty = (v) => safeStr(v).length > 0;
+
+  const validateConsultantId = () => {
+    if (!isNonEmpty(consultantId)) return "Missing consultantId.";
+    return "";
+  };
+
+  const validateCanRequest = () => {
+    if (!consultant) return "Consultant data is not available.";
+    const availability = Array.isArray(consultant.availability)
+      ? consultant.availability
+      : [];
+    const rate = Number(consultant.rate || 0);
+
+    if (availability.length === 0)
+      return "This consultant has no schedule available yet.";
+    if (!Number.isFinite(rate) || rate <= 0)
+      return "This consultant has no consultation fee set yet.";
+    return "";
+  };
+
   useEffect(() => {
-    if (!consultantId) return;
+    const idErr = validateConsultantId();
+    if (idErr) {
+      console.log("⚠️ Validation (consultantId):", idErr, { consultantId });
+      setPageError("Invalid consultant. Please go back and try again.");
+      setLoading(false);
+      setRatingsLoading(false);
+      return;
+    }
 
     const fetchData = async () => {
       try {
-        const cSnap = await getDoc(doc(db, "consultants", consultantId));
+        setLoading(true);
+        setRatingsLoading(true);
+        setPageError("");
+
+        // ✅ 1) Consultant doc
+        const cSnap = await getDoc(doc(db, "consultants", String(consultantId)));
         if (cSnap.exists()) {
           setConsultant({ id: cSnap.id, ...cSnap.data() });
+        } else {
+          console.log("⚠️ Consultant not found:", consultantId);
+          setConsultant(null);
+          setPageError("Consultant not found.");
+          return;
         }
 
-        const q = query(
-          collection(db, "ratings"),
-          where("consultantId", "==", consultantId),
-          orderBy("createdAt", "desc")
-        );
-        const rSnap = await getDocs(q);
-        const rList = rSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        setRatings(rList);
+        // ✅ 2) Ratings list
+        let rList = [];
+        try {
+          const q = query(
+            collection(db, "ratings"),
+            where("consultantId", "==", String(consultantId)),
+            orderBy("createdAt", "desc")
+          );
 
+          const rSnap = await getDocs(q);
+          rList = rSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setRatings(rList);
+        } catch (e) {
+          console.log("⚠️ Ratings fetch failed:", e?.message || e);
+          setRatings([]);
+        }
+
+        // ✅ 3) Reviewer map (safe name resolution)
         const map = {};
         await Promise.all(
-          rList.map(async (r) => {
-            if (r.userId && !map[r.userId]) {
-              const uSnap = await getDoc(doc(db, "users", r.userId));
-              if (uSnap.exists()) map[r.userId] = uSnap.data().name;
+          (rList || []).map(async (r) => {
+            const uid = r?.userId ? String(r.userId) : "";
+            if (!uid || map[uid]) return;
+
+            try {
+              const uSnap = await getDoc(doc(db, "users", uid));
+              if (uSnap.exists()) {
+                const u = uSnap.data() || {};
+                map[uid] =
+                  u.name ||
+                  u.fullName ||
+                  u.displayName ||
+                  u.username ||
+                  "Anonymous";
+              }
+            } catch (e) {
+              // keep silent, fallback handled in UI
             }
           })
         );
         setReviewerMap(map);
       } catch (e) {
         console.error("Data fetch error:", e);
+        setPageError("Failed to load consultant profile. Please try again.");
       } finally {
         setLoading(false);
         setRatingsLoading(false);
@@ -81,12 +156,41 @@ export default function ConsultantProfile() {
     };
 
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [consultantId]);
+
+  // ✅ computed + safe
+  const availability = useMemo(() => {
+    return Array.isArray(consultant?.availability) ? consultant.availability : [];
+  }, [consultant]);
+
+  const avgRating = useMemo(() => {
+    if (!ratings || ratings.length === 0) return "0.0";
+    const sum = ratings.reduce((acc, r) => acc + Number(r.rating || 0), 0);
+    return (sum / ratings.length).toFixed(1);
+  }, [ratings]);
 
   if (loading) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={THEME.header} />
+      </View>
+    );
+  }
+
+  // ✅ validation / fatal error screen
+  if (pageError) {
+    return (
+      <View style={styles.center}>
+        <Ionicons name="alert-circle-outline" size={28} color={THEME.danger} />
+        <Text style={styles.errorTitle}>{pageError}</Text>
+        <TouchableOpacity
+          style={styles.errorBtn}
+          onPress={() => router.back()}
+          activeOpacity={0.9}
+        >
+          <Text style={styles.errorBtnText}>Go Back</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -99,32 +203,43 @@ export default function ConsultantProfile() {
     );
   }
 
-  const availability = Array.isArray(consultant.availability) ? consultant.availability : [];
-  const avgRating = ratings.length > 0
-    ? (ratings.reduce((sum, r) => sum + (r.rating || 0), 0) / ratings.length).toFixed(1)
-    : "0.0";
+  const handleOpenSchedule = () => {
+    const err = validateCanRequest();
+    if (err) {
+      Alert.alert("Cannot request consultation", err);
+      return;
+    }
+    setScheduleVisible(true);
+  };
 
   return (
     <View style={styles.container}>
       <StatusBar barStyle="light-content" backgroundColor={THEME.header} />
-      
+
       <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.header}>
           <TouchableOpacity style={styles.backBtn} onPress={router.back}>
             <Ionicons name="chevron-back" size={28} color="#fff" />
           </TouchableOpacity>
-          
+
           <View style={styles.profileInfo}>
             <Image
-              source={consultant.avatar ? { uri: consultant.avatar } : (consultant.gender === "Female" ? require("../../assets/office-woman.png") : require("../../assets/office-man.png"))}
+              source={
+                consultant.avatar
+                  ? { uri: consultant.avatar }
+                  : consultant.gender === "Female"
+                    ? require("../../assets/office-woman.png")
+                    : require("../../assets/office-man.png")
+              }
               style={styles.avatar}
             />
             <Text style={styles.headerTitle}>{consultant.fullName}</Text>
             <Text style={styles.headerSubtitle}>{consultant.specialization}</Text>
-            
-            {/* PINALITAN: Rate display sa ilalim ng specialization */}
+
             <View style={styles.priceTag}>
-              <Text style={styles.priceText}>₱{consultant.rate || "0"}.00 / session</Text>
+              <Text style={styles.priceText}>
+                ₱{consultant.rate || "0"}.00 / session
+              </Text>
             </View>
           </View>
 
@@ -137,9 +252,20 @@ export default function ConsultantProfile() {
 
         <View style={styles.content}>
           <View style={styles.card}>
-            <Text style={[styles.sectionTitle, { color: THEME.header, borderLeftColor: THEME.button }]}>Expert Details</Text>
-            {/* DAGDAG: Consultation Fee Row */}
-            <InfoRow icon="cash-outline" label="Consultation Fee" value={`₱${consultant.rate || "0"}.00`} />
+            <Text
+              style={[
+                styles.sectionTitle,
+                { color: THEME.header, borderLeftColor: THEME.button },
+              ]}
+            >
+              Expert Details
+            </Text>
+
+            <InfoRow
+              icon="cash-outline"
+              label="Consultation Fee"
+              value={`₱${consultant.rate || "0"}.00`}
+            />
             <InfoRow icon="briefcase-outline" label="Type" value={consultant.consultantType} />
             <InfoRow icon="school-outline" label="Education" value={consultant.education || "Not provided"} />
             <InfoRow icon="people-outline" label="Gender" value={consultant.gender} />
@@ -148,20 +274,45 @@ export default function ConsultantProfile() {
           </View>
 
           <View style={styles.card}>
-            <Text style={[styles.sectionTitle, { color: THEME.header, borderLeftColor: THEME.button }]}>Working Days</Text>
+            <Text
+              style={[
+                styles.sectionTitle,
+                { color: THEME.header, borderLeftColor: THEME.button },
+              ]}
+            >
+              Working Days
+            </Text>
+
             <View style={styles.availabilityGrid}>
               {availability.length > 0 ? (
                 availability.map((day, i) => (
-                  <View key={i} style={styles.dayChip}><Text style={styles.dayText}>{day}</Text></View>
+                  <View key={i} style={styles.dayChip}>
+                    <Text style={styles.dayText}>{day}</Text>
+                  </View>
                 ))
               ) : (
                 <Text style={styles.muted}>No schedule set</Text>
               )}
             </View>
+
+            {/* ✅ inline validation hint (schedule missing) */}
+            {availability.length === 0 ? (
+              <Text style={styles.inlineWarn}>
+                Schedule is not available yet. You cannot request a consultation.
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.card}>
-            <Text style={[styles.sectionTitle, { color: THEME.header, borderLeftColor: THEME.button }]}>User Feedback</Text>
+            <Text
+              style={[
+                styles.sectionTitle,
+                { color: THEME.header, borderLeftColor: THEME.button },
+              ]}
+            >
+              User Feedback
+            </Text>
+
             {ratingsLoading ? (
               <ActivityIndicator color={THEME.header} />
             ) : ratings.length === 0 ? (
@@ -170,12 +321,21 @@ export default function ConsultantProfile() {
               ratings.map((r) => (
                 <View key={r.id} style={styles.reviewCard}>
                   <View style={styles.reviewHeader}>
-                    <Text style={styles.reviewName}>{reviewerMap[r.userId] || "Anonymous"}</Text>
-                    <Text style={styles.reviewDate}>{r.createdAt?.toDate?.().toLocaleDateString()}</Text>
+                    <Text style={styles.reviewName}>
+                      {reviewerMap[r.userId] || "Anonymous"}
+                    </Text>
+                    <Text style={styles.reviewDate}>
+                      {r.createdAt?.toDate?.().toLocaleDateString()}
+                    </Text>
                   </View>
                   <View style={styles.starsRow}>
                     {[1, 2, 3, 4, 5].map((i) => (
-                      <Ionicons key={i} name={i <= r.rating ? "star" : "star-outline"} size={14} color="#F59E0B" />
+                      <Ionicons
+                        key={i}
+                        name={i <= r.rating ? "star" : "star-outline"}
+                        size={14}
+                        color="#F59E0B"
+                      />
                     ))}
                   </View>
                   {!!r.feedback && <Text style={styles.reviewText}>{r.feedback}</Text>}
@@ -187,21 +347,21 @@ export default function ConsultantProfile() {
       </ScrollView>
 
       <View style={styles.bottomCta}>
-        <TouchableOpacity style={styles.ctaButton} onPress={() => setScheduleVisible(true)}>
+        <TouchableOpacity style={styles.ctaButton} onPress={handleOpenSchedule}>
           <Ionicons name="calendar-outline" size={20} color="#fff" />
           <Text style={styles.ctaText}>Request Consultation</Text>
         </TouchableOpacity>
       </View>
 
       {consultant && (
-  <ScheduleModal
-    visible={scheduleVisible}
-    onClose={() => setScheduleVisible(false)}
-    consultantId={consultant.id}
-    availability={availability}
-    sessionFee={consultant.rate}
-  />
-)}
+        <ScheduleModal
+          visible={scheduleVisible}
+          onClose={() => setScheduleVisible(false)}
+          consultantId={consultant.id}
+          availability={availability}
+          sessionFee={consultant.rate}
+        />
+      )}
     </View>
   );
 }
@@ -225,7 +385,25 @@ const InfoRow = ({ icon, label, value }) => (
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: THEME.bg },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: THEME.bg },
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: THEME.bg,
+    padding: 24,
+    gap: 10,
+  },
+
+  errorTitle: { color: "#0F172A", fontWeight: "900", fontSize: 14, textAlign: "center" },
+  errorBtn: {
+    marginTop: 8,
+    backgroundColor: THEME.header,
+    paddingVertical: 12,
+    paddingHorizontal: 18,
+    borderRadius: 14,
+  },
+  errorBtnText: { color: "#fff", fontWeight: "900" },
+
   header: {
     backgroundColor: THEME.header,
     paddingTop: 65,
@@ -235,48 +413,95 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 40,
   },
   backBtn: { position: "absolute", top: 45, left: 15, padding: 5 },
-  profileInfo: { alignItems: 'center' },
+  profileInfo: { alignItems: "center" },
   avatar: { width: 110, height: 110, borderRadius: 30, borderWidth: 4, borderColor: "rgba(255,255,255,0.3)" },
   headerTitle: { fontSize: 24, fontWeight: "900", color: "#fff", marginTop: 12 },
   headerSubtitle: { color: THEME.accentBlue, fontSize: 15, fontWeight: "500" },
-  
-  // New Styles para sa Price display sa Header
+
   priceTag: {
     marginTop: 8,
-    backgroundColor: 'rgba(255,255,255,0.15)',
+    backgroundColor: "rgba(255,255,255,0.15)",
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
+    borderColor: "rgba(255,255,255,0.2)",
   },
-  priceText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 13,
-  },
+  priceText: { color: "#fff", fontWeight: "700", fontSize: 13 },
 
-  headerStats: { flexDirection: "row", justifyContent: "space-around", width: "100%", marginTop: 25, paddingHorizontal: 20 },
-  statBox: { alignItems: "center", width: 95, paddingVertical: 12, borderRadius: 18, backgroundColor: "rgba(255,255,255,0.12)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
+  headerStats: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    width: "100%",
+    marginTop: 25,
+    paddingHorizontal: 20,
+  },
+  statBox: {
+    alignItems: "center",
+    width: 95,
+    paddingVertical: 12,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
   statValue: { fontSize: 18, fontWeight: "800", color: "#fff" },
   statLabel: { fontSize: 11, color: "#fff", opacity: 0.8, marginTop: 2 },
+
   content: { paddingHorizontal: 20, paddingTop: 25, paddingBottom: 130 },
-  card: { backgroundColor: "#fff", borderRadius: 25, padding: 22, marginBottom: 20, elevation: 3, shadowColor: "#000", shadowOpacity: 0.05, shadowRadius: 15 },
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 25,
+    padding: 22,
+    marginBottom: 20,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 15,
+  },
   sectionTitle: { fontSize: 18, fontWeight: "800", marginBottom: 18, borderLeftWidth: 5, paddingLeft: 12 },
-  infoRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 18 },
-  infoLabel: { fontSize: 12, color: "#94A3B8", fontWeight: "700", textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  infoRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 18 },
+  infoLabel: { fontSize: 12, color: "#94A3B8", fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5 },
   infoValue: { fontSize: 14, color: "#1E293B", fontWeight: "600", marginTop: 2 },
-  availabilityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+
+  availabilityGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   dayChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: "#E0F2F1", borderWidth: 1, borderColor: "#B2DFDB" },
   dayText: { fontSize: 13, fontWeight: "700", color: "#00796B" },
+
+  inlineWarn: {
+    marginTop: 12,
+    color: THEME.danger,
+    fontWeight: "800",
+    fontSize: 12,
+  },
+
   reviewCard: { backgroundColor: "#F8FAFC", padding: 15, borderRadius: 18, marginBottom: 12, borderWidth: 1, borderColor: "#F1F5F9" },
-  reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  reviewHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   reviewName: { fontWeight: "800", fontSize: 14, color: "#1E293B" },
   reviewDate: { fontSize: 11, color: "#94A3B8" },
-  starsRow: { flexDirection: 'row', marginVertical: 6 },
+  starsRow: { flexDirection: "row", marginVertical: 6 },
   reviewText: { fontSize: 13, color: "#475569", lineHeight: 19 },
-  muted: { color: "#94A3B8", fontStyle: "italic", textAlign: 'center', width: '100%' },
-  bottomCta: { position: 'absolute', bottom: 0, width: '100%', padding: 20, paddingBottom: 35, backgroundColor: 'rgba(250, 249, 246, 0.98)' },
-  ctaButton: { backgroundColor: THEME.button, height: 60, borderRadius: 20, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 12, elevation: 5 },
+
+  muted: { color: "#94A3B8", fontStyle: "italic", textAlign: "center", width: "100%" },
+
+  bottomCta: {
+    position: "absolute",
+    bottom: 0,
+    width: "100%",
+    padding: 20,
+    paddingBottom: 35,
+    backgroundColor: "rgba(250, 249, 246, 0.98)",
+  },
+  ctaButton: {
+    backgroundColor: THEME.button,
+    height: 60,
+    borderRadius: 20,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+    elevation: 5,
+  },
   ctaText: { color: "#fff", fontWeight: "800", fontSize: 16, letterSpacing: 0.5 },
 });

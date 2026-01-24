@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Dimensions,
   Image,
   ScrollView,
@@ -65,6 +66,14 @@ export default function Home() {
   const scrollRef = useRef(null);
   const carouselIndex = useRef(0);
 
+  // ✅ NEW: unread notifications badge count
+  const [unreadNotif, setUnreadNotif] = useState(0);
+
+  // ✅ validation/info guards (no UI changes)
+  const didWarnNoAuth = useRef(false);
+  const didWarnNotifRoute = useRef(false);
+  const didWarnOpenProject = useRef(false);
+
   const carouselImages = [
     require("../../assets/carousel1.jpg"),
     require("../../assets/carousel2.jpg"),
@@ -73,19 +82,37 @@ export default function Home() {
 
   const loadProfile = async () => {
     try {
-      if (!auth.currentUser) return;
+      // ✅ validation: require signed-in user
+      if (!auth.currentUser?.uid) {
+        if (!didWarnNoAuth.current) {
+          didWarnNoAuth.current = true;
+          Alert.alert("Session Required", "Please sign in to load your profile.");
+        }
+        setProfile(null);
+        return;
+      }
+
       const uid = auth.currentUser.uid;
       const snap = await getDoc(doc(db, "users", uid));
       if (snap.exists()) {
         const data = snap.data();
         setProfile(data);
+
+        // ✅ success/info message (optional, non-intrusive) — NOT shown as alert to avoid spam
+        // console.log("✅ Profile loaded");
+
         await AsyncStorage.setItem(
           `${PROFILE_KEY_PREFIX}${uid}`,
           JSON.stringify(data)
         );
+      } else {
+        Alert.alert("Profile Not Found", "Your user profile was not found.");
+        setProfile(null);
       }
     } catch (err) {
       console.log("Profile Load Error:", err);
+      Alert.alert("Error", "Failed to load profile. Please try again.");
+      setProfile(null);
     }
   };
 
@@ -127,11 +154,6 @@ export default function Home() {
   };
 
   // ✅ UPDATED: Fetch real recent projects from Firestore (projects collection)
-  // ✅ Uses SAME source logic as your Projects screen:
-  //    - collection: "projects"
-  //    - filter: where("uid","==",currentUser.uid)
-  //    - realtime: onSnapshot
-  // ✅ No orderBy() to avoid createdAt/index issues; client-side sort if createdAt exists.
   const subscribeRecentProjects = () => {
     try {
       const user = auth.currentUser;
@@ -165,30 +187,77 @@ export default function Home() {
             .slice(0, 10);
 
           setRooms(list);
+
+          // ✅ info message if empty (avoid alerts; just log)
+          // if (list.length === 0) console.log("ℹ️ No recent projects.");
         },
         (err) => {
           console.log("Recent projects listener error:", err);
           setRooms([]);
+          Alert.alert("Error", "Failed to load recent projects.");
         }
       );
 
       return unsub;
     } catch (err) {
       console.log("subscribeRecentProjects error:", err);
+      Alert.alert("Error", "Failed to subscribe to projects.");
+      return () => {};
+    }
+  };
+
+  // ✅ NEW: subscribe unread notifications count for badge (GLOBAL notifications collection)
+  const subscribeUnreadNotifications = () => {
+    try {
+      const user = auth.currentUser;
+      if (!user?.uid) return () => {};
+      const uid = user.uid;
+
+      // ✅ Unread only (GLOBAL collection)
+      const qNotifs = query(
+        collection(db, "notifications"),
+        where("userId", "==", uid),
+        where("read", "==", false),
+        limit(99)
+      );
+
+      const unsub = onSnapshot(
+        qNotifs,
+        (snapshot) => {
+          setUnreadNotif(snapshot.size || 0);
+        },
+        (err) => {
+          console.log("Notifications badge listener error:", err);
+          setUnreadNotif(0);
+          // ✅ lightweight error message (avoid constant alerts)
+          // Alert.alert("Error", "Failed to load notifications.");
+        }
+      );
+
+      return unsub;
+    } catch (err) {
+      console.log("subscribeUnreadNotifications error:", err);
+      setUnreadNotif(0);
       return () => {};
     }
   };
 
   const loadTipOfTheDay = async () => {
-    const todayKey = `tip-${new Date().toDateString()}`;
-    const saved = await AsyncStorage.getItem(todayKey);
-    if (saved) {
-      setTipOfTheDay(JSON.parse(saved));
-    } else {
-      const index = new Date().getDate() % DESIGN_INSPIRATIONS.length;
-      const tip = DESIGN_INSPIRATIONS[index];
-      setTipOfTheDay(tip);
-      await AsyncStorage.setItem(todayKey, JSON.stringify(tip));
+    try {
+      const todayKey = `tip-${new Date().toDateString()}`;
+      const saved = await AsyncStorage.getItem(todayKey);
+      if (saved) {
+        setTipOfTheDay(JSON.parse(saved));
+      } else {
+        const index = new Date().getDate() % DESIGN_INSPIRATIONS.length;
+        const tip = DESIGN_INSPIRATIONS[index];
+        setTipOfTheDay(tip);
+        await AsyncStorage.setItem(todayKey, JSON.stringify(tip));
+      }
+    } catch (e) {
+      console.log("loadTipOfTheDay error:", e);
+      // ✅ no alert spam; tip is non-critical
+      setTipOfTheDay(null);
     }
   };
 
@@ -212,14 +281,21 @@ export default function Home() {
     loadTipOfTheDay();
 
     // ✅ Subscribe to Firestore recent projects
-    let unsub = () => {};
+    let unsubProjects = () => {};
 
-    // In case auth isn't ready yet, re-subscribe once user is available
+    // ✅ Subscribe to unread notifications (badge)
+    let unsubNotifs = () => {};
+
+    // ✅ validation: auth required for listeners
     const trySubscribe = () => {
       try {
         const u = auth.currentUser;
         if (u?.uid) {
-          unsub = subscribeRecentProjects();
+          unsubProjects = subscribeRecentProjects();
+          unsubNotifs = subscribeUnreadNotifications();
+        } else {
+          setRooms([]);
+          setUnreadNotif(0);
         }
       } catch {}
     };
@@ -230,17 +306,31 @@ export default function Home() {
     const authUnsub =
       typeof auth?.onAuthStateChanged === "function"
         ? auth.onAuthStateChanged(() => {
-            // cleanup old listener then resubscribe
+            // cleanup old listeners then resubscribe
             try {
-              unsub?.();
+              unsubProjects?.();
             } catch {}
-            unsub = subscribeRecentProjects();
+            try {
+              unsubNotifs?.();
+            } catch {}
+
+            const u = auth.currentUser;
+            if (u?.uid) {
+              unsubProjects = subscribeRecentProjects();
+              unsubNotifs = subscribeUnreadNotifications();
+            } else {
+              setRooms([]);
+              setUnreadNotif(0);
+            }
           })
         : null;
 
     return () => {
       try {
-        unsub?.();
+        unsubProjects?.();
+      } catch {}
+      try {
+        unsubNotifs?.();
       } catch {}
       try {
         authUnsub?.();
@@ -252,10 +342,15 @@ export default function Home() {
   // ✅ open project visualization
   const openProject = (project) => {
     try {
-      // ✅ Keep same navigation style you requested
-      // RoomVisualization can either:
-      // 1) read by id (recommended) OR
-      // 2) parse project JSON for instant display
+      // ✅ validation: must have id
+      if (!project?.id) {
+        if (!didWarnOpenProject.current) {
+          didWarnOpenProject.current = true;
+          Alert.alert("Unable to Open", "This project is missing required data.");
+        }
+        return;
+      }
+
       router.push({
         pathname: "/User/RoomVisualization",
         params: {
@@ -263,8 +358,35 @@ export default function Home() {
           project: JSON.stringify(project || {}),
         },
       });
+
+      // ✅ optional success/info message (avoid alert spam)
+      // console.log("✅ Opening project:", project.id);
     } catch (e) {
       console.log("openProject error:", e);
+      Alert.alert("Error", "Failed to open project. Please try again.");
+    }
+  };
+
+  // ✅ NEW: go to Notifications screen (connect to Notification.jsx / Notifications.jsx)
+  const goToNotifications = () => {
+    try {
+      // ✅ validation: require signed-in user
+      if (!auth.currentUser?.uid) {
+        Alert.alert("Session Required", "Please sign in to view notifications.");
+        return;
+      }
+
+      // Make sure your screen file is: app/User/Notifications.jsx (route: /User/Notifications)
+      router.push("/User/Notifications");
+
+      // ✅ optional info message (avoid alert spam)
+      // console.log("✅ Navigating to Notifications");
+    } catch (e) {
+      console.log("goToNotifications error:", e);
+      if (!didWarnNotifRoute.current) {
+        didWarnNotifRoute.current = true;
+        Alert.alert("Error", "Notifications page is not available.");
+      }
     }
   };
 
@@ -275,34 +397,60 @@ export default function Home() {
         {/* ===== HEADER ===== */}
         <View style={styles.header}>
           <View style={styles.headerTop}>
-            <TouchableOpacity
-              onPress={() => router.push("/User/Profile")}
-              activeOpacity={0.8}
-            >
-              <Image
-                source={
-                  profile?.gender === "Female"
-                    ? require("../../assets/office-woman.png")
-                    : require("../../assets/office-man.png")
-                }
-                style={styles.profileAvatar}
-              />
-            </TouchableOpacity>
+            {/* LEFT: avatar + greeting/name */}
+            <View style={styles.headerLeft}>
+              <TouchableOpacity
+                onPress={() => {
+                  // ✅ validation: profile access requires signed-in user
+                  if (!auth.currentUser?.uid) {
+                    Alert.alert("Session Required", "Please sign in to view your profile.");
+                    return;
+                  }
+                  router.push("/User/Profile");
+                }}
+                activeOpacity={0.8}
+              >
+                <Image
+                  source={
+                    profile?.gender === "Female"
+                      ? require("../../assets/office-woman.png")
+                      : require("../../assets/office-man.png")
+                  }
+                  style={styles.profileAvatar}
+                />
+              </TouchableOpacity>
 
-            <View style={styles.headerTextBlock}>
-              <Text style={styles.greetText}>Hello,</Text>
+              <View style={styles.headerTextBlock}>
+                <Text style={styles.greetText}>Hello,</Text>
 
-              <View style={styles.nameRow}>
-                <Text style={styles.userName}>{profile?.name || "Guest"}</Text>
+                <View style={styles.nameRow}>
+                  <Text style={styles.userName}>{profile?.name || "Guest"}</Text>
 
-                {isPremium && (
-                  <View style={styles.premiumBadge}>
-                    <Ionicons name="diamond" size={12} color="#FFF" />
-                    <Text style={styles.premiumText}>PRO</Text>
-                  </View>
-                )}
+                  {isPremium && (
+                    <View style={styles.premiumBadge}>
+                      <Ionicons name="diamond" size={12} color="#FFF" />
+                      <Text style={styles.premiumText}>PRO</Text>
+                    </View>
+                  )}
+                </View>
               </View>
             </View>
+
+            {/* RIGHT: notification bell + badge */}
+            <TouchableOpacity
+              onPress={goToNotifications}
+              activeOpacity={0.85}
+              style={styles.notifBtn}
+            >
+              <Ionicons name="notifications" size={22} color="#FFF" />
+              {unreadNotif > 0 && (
+                <View style={styles.notifBadge}>
+                  <Text style={styles.notifBadgeText}>
+                    {unreadNotif > 99 ? "99+" : String(unreadNotif)}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -333,14 +481,28 @@ export default function Home() {
               label="AI Interior Assistant"
               desc="Chat-Based Design"
               color="#0D9488"
-              onPress={() => router.push("/User/AIDesignerChat")}
+              onPress={() => {
+                // ✅ validation: require signed-in user (if your chat needs auth)
+                if (!auth.currentUser?.uid) {
+                  Alert.alert("Session Required", "Please sign in to use AI Assistant.");
+                  return;
+                }
+                router.push("/User/AIDesignerChat");
+              }}
             />
             <Action
               icon="chatbubbles"
               label="Consult"
               desc="Pro Advice"
               color="#7C3AED"
-              onPress={() => router.push("/User/Consultants")}
+              onPress={() => {
+                // ✅ validation: require signed-in user (consult flow typically needs uid)
+                if (!auth.currentUser?.uid) {
+                  Alert.alert("Session Required", "Please sign in to consult an expert.");
+                  return;
+                }
+                router.push("/User/Consultants");
+              }}
             />
           </View>
         </View>
@@ -363,7 +525,16 @@ export default function Home() {
         <View style={styles.projectsSection}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Recent Projects</Text>
-            <TouchableOpacity onPress={() => router.push("/User/Projects")}>
+            <TouchableOpacity
+              onPress={() => {
+                // ✅ validation
+                if (!auth.currentUser?.uid) {
+                  Alert.alert("Session Required", "Please sign in to view your projects.");
+                  return;
+                }
+                router.push("/User/Projects");
+              }}
+            >
               <Text style={styles.seeAll}>See All</Text>
             </TouchableOpacity>
           </View>
@@ -373,33 +544,42 @@ export default function Home() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.projectList}
           >
-            {rooms.map((room) => (
-              <TouchableOpacity
-                key={room.id}
-                style={styles.projectCard}
-                activeOpacity={0.85}
-                onPress={() => openProject(room)}
-              >
-                <Image
-                  source={
-                    room.imageUrl
-                      ? { uri: room.imageUrl }
-                      : require("../../assets/livingroom.jpg")
-                  }
-                  style={styles.projectImg}
-                />
-                <View style={styles.projectInfo}>
-                  <Text style={styles.projectName} numberOfLines={1}>
-                    {room.name}
-                  </Text>
-                  <Ionicons
-                    name="chevron-forward-circle"
-                    size={20}
-                    color="#01579B"
+            {rooms.length > 0 ? (
+              rooms.map((room) => (
+                <TouchableOpacity
+                  key={room.id}
+                  style={styles.projectCard}
+                  activeOpacity={0.85}
+                  onPress={() => openProject(room)}
+                >
+                  <Image
+                    source={
+                      room.imageUrl
+                        ? { uri: room.imageUrl }
+                        : require("../../assets/livingroom.jpg")
+                    }
+                    style={styles.projectImg}
                   />
-                </View>
-              </TouchableOpacity>
-            ))}
+                  <View style={styles.projectInfo}>
+                    <Text style={styles.projectName} numberOfLines={1}>
+                      {room.name}
+                    </Text>
+                    <Ionicons
+                      name="chevron-forward-circle"
+                      size={20}
+                      color="#01579B"
+                    />
+                  </View>
+                </TouchableOpacity>
+              ))
+            ) : (
+              // ✅ validation/info message when empty (no UI redesign; minimal text)
+              <View style={{ paddingLeft: 25, paddingVertical: 10 }}>
+                <Text style={{ color: "#94A3B8", fontWeight: "700" }}>
+                  No recent projects yet.
+                </Text>
+              </View>
+            )}
           </ScrollView>
         </View>
       </ScrollView>
@@ -410,7 +590,11 @@ export default function Home() {
 }
 
 const Action = ({ icon, label, desc, color, onPress }) => (
-  <TouchableOpacity style={styles.actionItem} onPress={onPress} activeOpacity={0.7}>
+  <TouchableOpacity
+    style={styles.actionItem}
+    onPress={onPress}
+    activeOpacity={0.7}
+  >
     <View style={[styles.iconCircle, { backgroundColor: color + "15" }]}>
       <Ionicons name={icon} size={26} color={color} />
     </View>
@@ -432,7 +616,14 @@ const styles = StyleSheet.create({
   headerTop: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between", // ✅ to place bell on the right
+  },
+
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 14,
+    flex: 1,
   },
 
   headerTextBlock: {
@@ -467,6 +658,36 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 2,
     borderColor: "#FFF",
+  },
+
+  // ✅ NEW: notification bell styles (badge)
+  notifBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    justifyContent: "center",
+    alignItems: "center",
+    position: "relative",
+  },
+  notifBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#EF4444",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 5,
+    borderWidth: 2,
+    borderColor: "#01579B",
+  },
+  notifBadgeText: {
+    color: "#FFF",
+    fontSize: 10,
+    fontWeight: "900",
   },
 
   carouselContainer: { marginTop: -60, marginBottom: 25 },
@@ -598,5 +819,10 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
   },
-  projectName: { fontWeight: "800", color: "#1E293B", flex: 1, marginRight: 10 },
+  projectName: {
+    fontWeight: "800",
+    color: "#1E293B",
+    flex: 1,
+    marginRight: 10,
+  },
 });
