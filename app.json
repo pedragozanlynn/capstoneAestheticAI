@@ -2,27 +2,23 @@
   "expo": {
     "name": "AestheticAI",
     "slug": "frontend",
-    "owner": "nllynnn",
+    "owner": "nllynnnn",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icons.png",
     "scheme": "aestheticai",
     "userInterfaceStyle": "light",
-
-    "newArchEnabled": false,
-
+    "newArchEnabled": true,
     "splash": {
       "image": "./assets/icons.png",
       "resizeMode": "contain",
       "backgroundColor": "#FFFFFF"
     },
-
     "ios": {
       "supportsTablet": true,
       "backgroundColor": "#FFFFFF",
       "bundleIdentifier": "com.pedragozanlynn.aestheticai"
     },
-
     "android": {
       "package": "com.pedragozanlynn.aestheticai",
       "icon": "./assets/icons.png",
@@ -33,26 +29,23 @@
       "edgeToEdgeEnabled": true,
       "softwareKeyboardLayoutMode": "pan"
     },
-
     "web": {
       "bundler": "metro",
       "output": "static",
       "favicon": "./assets/icons.png",
       "backgroundColor": "#FFFFFF"
     },
-
     "plugins": [
       "expo-router"
     ],
-
     "experiments": {
       "typedRoutes": true
     },
-
+    "description": "AestheticAI Expo app",
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "378347b9-d92e-49b4-8e56-824914724190"
+        "projectId": "f36d0693-2179-4f28-bbe3-2ec975543a18"
       }
     }
   }

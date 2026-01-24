@@ -304,8 +304,13 @@ const isHistoryRealtimeActive = () => {
   // ✅ NEW: run-once boot to show saved prompt + saved images from Projects
   const projectBootRef = useRef(false);
 
-  // ✅ IMPORTANT: ensure your IP is correct for device testing
-  const API_URL = "http://192.168.1.8:3001/ai/design";
+  const DEV_HOST = "192.168.1.8";
+// ✅ If physical phone, set to your PC LAN IP (e.g. 192.168.1.8)
+const API_BASE = __DEV__ ? `http://${DEV_HOST}:3001` : "https://YOUR_DOMAIN";
+const API_URL = `${API_BASE}/ai/design`;
+
+
+
 
   const quickPrompts = useMemo(
     () => [

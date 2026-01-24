@@ -132,8 +132,27 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
   let tempImagePath = null;
 
   try {
-    let { message, mode, sessionId } = req.body;
-    const hasImage = Boolean(req.file);
+    let {
+      message,
+      mode,
+      sessionId,
+      width,
+      height,
+      outputWidth,
+      outputHeight,
+      size,
+    } = req.body;
+    
+    // normalize size inputs
+    if (!width && outputWidth) width = outputWidth;
+    if (!height && outputHeight) height = outputHeight;
+    
+    if ((!width || !height) && typeof size === "string" && size.includes("x")) {
+      const [w, h] = size.split("x");
+      if (!width) width = w;
+      if (!height) height = h;
+    }
+        const hasImage = Boolean(req.file);
 
     console.log("➡ Message:", message);
     console.log("➡ Mode:", mode);
@@ -184,10 +203,13 @@ app.post("/ai/design", upload.single("image"), async (req, res) => {
     const result = await startAIDesignFlow({
       message,
       mode: normalizedMode,
-      image: base64Image,       // keep for HF / UI if needed
-      imagePath: tempImagePath, // ✅ NEW: used for detector
+      image: base64Image,
+      imagePath: tempImagePath,
       sessionId,
+      width,
+      height,
     });
+    
 
     console.log("✅ AI response generated");
 
