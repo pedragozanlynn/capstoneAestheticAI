@@ -110,6 +110,9 @@ ${
 `.trim()
       : "";
 
+  // ✅ NEW: Extra-strong palette enforcement to prevent neutral-only outputs
+  const paletteEnforcementBlock = buildPaletteEnforcementBlock(palette);
+
   /* ===============================
      ✅ Signals (aligned to classifier)
      =============================== */
@@ -564,6 +567,7 @@ ${absoluteLock}
 
 ${strictLayoutBlock ? strictLayoutBlock : ""}
 ${strictPaletteBlock ? strictPaletteBlock : ""}
+${paletteEnforcementBlock ? paletteEnforcementBlock : ""}
 ${requiredObjectsBlock ? requiredObjectsBlock : ""}
 
 ${negativeBlock}
@@ -589,6 +593,7 @@ ${absoluteLock}
 
 ${strictLayoutBlock ? strictLayoutBlock : ""}
 ${strictPaletteBlock ? strictPaletteBlock : ""}
+${paletteEnforcementBlock ? paletteEnforcementBlock : ""}
 ${requiredObjectsBlock ? requiredObjectsBlock : ""}
 
 ${negativeBlock}
@@ -635,6 +640,7 @@ USER REQUEST (HIGHEST PRIORITY):
 
 ${strictLayoutBlock ? strictLayoutBlock : ""}
 ${strictPaletteBlock ? strictPaletteBlock : ""}
+${paletteEnforcementBlock ? paletteEnforcementBlock : ""}
 ${requiredObjectsBlock ? requiredObjectsBlock : ""}
 
 ${negativeBlock}
@@ -756,4 +762,62 @@ function inferFurnitureDefaults(roomKey, spaceType) {
   // Generic by space type
   if (spaceType === "commercial") return "customer area, display/storage, service counter (optional)";
   return "primary seating, storage, lighting fixture";
+}
+
+/* ===============================
+   ✅ NEW: Strong palette enforcement (prevents gray-dominant outputs)
+   =============================== */
+function buildPaletteEnforcementBlock(pal) {
+  const colors = Array.isArray(pal?.colors) ? pal.colors.filter(Boolean) : [];
+  if (!colors.length) return "";
+
+  const primary = colors[0] || {};
+  const secondary = colors[1] || {};
+  const tertiary = colors[2] || {};
+
+  const pName = String(primary?.name || "Primary").trim();
+  const pHex = String(primary?.hex || "").toUpperCase();
+
+  const sName = String(secondary?.name || "").trim();
+  const sHex = String(secondary?.hex || "").toUpperCase();
+
+  const tName = String(tertiary?.name || "").trim();
+  const tHex = String(tertiary?.hex || "").toUpperCase();
+
+  const pNameLc = pName.toLowerCase();
+  const isBluePrimary = pNameLc.includes("blue") || pHex === "#60A5FA";
+
+  return `
+PALETTE APPLICATION ENFORCEMENT (MANDATORY — NON-NEGOTIABLE):
+- PRIMARY color MUST be clearly visible: ${pName}${pHex ? ` (${pHex})` : ""}
+
+PRIMARY VISIBILITY MINIMUMS (MUST PASS):
+- PRIMARY color must occupy ~15%–30% of the visible scene (NOT tiny accents).
+- PRIMARY must appear on at least ONE LARGE SURFACE (choose at least one):
+  • a full accent wall OR large wall panels
+  • bed textiles (main bedding / duvet) OR headboard upholstery
+  • large curtains/blinds OR a large rug with strong primary sections
+
+ACCENT REQUIREMENTS:
+- PRIMARY must also appear on at least THREE additional accents:
+  • pillows, toys, wall art elements, desk accessories, lamp shade accent, storage bin fronts
+
+${secondary?.hex ? `- SECONDARY color supports: ${sName} (${sHex}) but MUST NOT replace the PRIMARY.` : ""}
+${tertiary?.hex ? `- THIRD color allowed in small amounts: ${tName} (${tHex}).` : ""}
+
+ANTI-NEUTRAL-ONLY RULE (CRITICAL):
+- Even if white/gray are in the palette, the final image MUST NOT look neutral-only.
+- Do NOT produce an all-gray/all-beige look. The PRIMARY theme must be obvious at first glance.
+
+${isBluePrimary ? `
+BLUE THEME OVERRIDE (EXTRA STRICT):
+- Include ONE clearly visible BLUE accent wall OR BLUE main bedding set (duvet/comforter).
+- Add at least TWO BLUE accents (pillows/toys/decor) that are unmistakably blue.
+- If walls are gray/white, BLUE elements must still dominate the focal area.
+`.trim() : ""}
+
+STRICT PALETTE RULES:
+- Do NOT desaturate or mute the PRIMARY color.
+- Do NOT introduce off-palette colors.
+`.trim();
 }

@@ -319,14 +319,63 @@ function inferRoomTypeFromDetections(detectionResult) {
 /* ===============================
    STRICT VISUAL REQUIREMENTS
    =============================== */
+/* ===============================
+   ✅ PALETTE ENFORCEMENT HELPERS (NEW)
+   ✅ Only affects prompt text; no behavior changes elsewhere
+   =============================== */
+function formatPaletteLine(palette) {
+  const colors = Array.isArray(palette?.colors) ? palette.colors : [];
+  if (!colors.length) return "";
+
+  return colors
+    .slice(0, 6)
+    .map((c) => `${String(c?.name || "Color").trim()} ${String(c?.hex || "").toUpperCase()}`.trim())
+    .join(", ");
+}
+
+function buildPaletteApplicationRules(palette) {
+  const colors = Array.isArray(palette?.colors) ? palette.colors : [];
+  if (!colors.length) return "";
+
+  const c0 = colors[0] || {};
+  const c1 = colors[1] || colors[0] || {};
+  const c2 = colors[2] || colors[0] || {};
+  const c3 = colors[3] || colors[1] || colors[0] || {};
+
+  const n0 = String(c0.name || "Color 1").trim();
+  const n1 = String(c1.name || "Color 2").trim();
+  const n2 = String(c2.name || "Color 3").trim();
+  const n3 = String(c3.name || "Color 4").trim();
+
+  const h0 = String(c0.hex || "").toUpperCase();
+  const h1 = String(c1.hex || "").toUpperCase();
+  const h2 = String(c2.hex || "").toUpperCase();
+  const h3 = String(c3.hex || "").toUpperCase();
+
+  return [
+    "PALETTE ENFORCEMENT (MANDATORY):",
+    `- Use ONLY these colors: ${formatPaletteLine(palette)}`,
+    "",
+    "COLOR APPLICATION RULES (MUST FOLLOW):",
+    `- Walls (dominant): ${n0} ${h0}`,
+    `- Large furniture (bed/sofa/cabinets): ${n1} ${h1}`,
+    `- Textiles (curtains, bedding, rug): ${n2} ${h2}`,
+    `- Small accents (pillows, decor, toys): ${n3} ${h3}`,
+    "",
+    "STRICT PALETTE RULES:",
+    "- No random colors outside the palette",
+    "- No default white/gray substitution unless included in the palette",
+    "- Ensure at least TWO visible accents use the palette accent colors",
+    "- Do NOT desaturate or mute the palette colors",
+  ].join("\n");
+}
+
 function buildStrictVisualRequirements({ palette, layoutSuggestions, style, room }) {
   const paletteColors = Array.isArray(palette?.colors) ? palette.colors : [];
+
   const paletteLine =
     paletteColors.length > 0
-      ? `Use this exact color palette (no new dominant colors): ${paletteColors
-          .slice(0, 6)
-          .map((c) => `${(c.name || "Color").trim()} ${String(c.hex || "").toUpperCase()}`.trim())
-          .join(", ")}.`
+      ? `Use this EXACT color palette ONLY (no new dominant colors): ${formatPaletteLine(palette)}.`
       : `Use a palette consistent with the detected style; avoid random colors.`;
 
   const layoutLine =
@@ -645,6 +694,7 @@ export async function orchestrateChat({
 
   /* ===============================
      12) strict wrapper
+     ✅ ONLY palette-related prompt enforcement is added here
      =============================== */
   const strictReq = buildStrictVisualRequirements({
     palette,
@@ -653,14 +703,19 @@ export async function orchestrateChat({
     room,
   });
 
+  const paletteRules = buildPaletteApplicationRules(palette);
+
   const finalImagePrompt = [
     "photorealistic interior photo, ultra realistic",
     strictReq,
+    paletteRules,
     "USER REQUEST:",
     rawMessage,
     "DESIGN BRIEF:",
     imagePrompt,
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   /* ===============================
      13) generate image

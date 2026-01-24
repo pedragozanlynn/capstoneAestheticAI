@@ -15,6 +15,35 @@ const HF_CHAT_MODELS = [
 ];
 
 /**
+ * ✅ NEW: Ensure palette is usable for interior generation
+ * - If only ONE color is present, auto-add neutrals so the model doesn't "escape"
+ * - This also ensures UI palette matches what we expect the image generator to follow
+ */
+function ensureInteriorUsablePalette(palette) {
+  if (!palette || typeof palette !== "object") return palette;
+
+  const colors = Array.isArray(palette.colors) ? palette.colors.filter(Boolean) : [];
+  if (colors.length === 0) return palette;
+
+  // If only one color was detected (e.g. "blue theme"),
+  // add required neutrals so the generator can apply it realistically.
+  if (colors.length === 1) {
+    const primary = colors[0];
+
+    return {
+      name: palette.name || "Balanced Interior Palette",
+      colors: [
+        primary,
+        { name: "Soft White", hex: "#F8FAFC" },
+        { name: "Light Gray", hex: "#E5E7EB" },
+      ],
+    };
+  }
+
+  return { ...palette, colors };
+}
+
+/**
  * Returns a color palette object
  * Shape:
  * {
@@ -67,22 +96,22 @@ export async function getColorPalette(styleInput, userMessage = "") {
 
   if (detected.length > 0) {
     const unique = dedupeByHex(detected).slice(0, 4);
-    return {
+    return ensureInteriorUsablePalette({
       name: "User Defined Palette",
       colors: unique.map((c) => ({ name: c.name, hex: c.hex })),
-    };
+    });
   }
 
   /* ===============================
      2️⃣ STYLE / MOOD RULES (FAST PATH)
      =============================== */
-  if (wantsMinimalist) return presetPalettes.minimalist;
-  if (wantsScandi) return presetPalettes.scandinavian;
-  if (wantsIndustrial) return presetPalettes.industrial;
-  if (wantsJapandi) return presetPalettes.japandi;
-  if (wantsBoho) return presetPalettes.boho;
-  if (wantsLuxury) return presetPalettes.luxury;
-  if (wantsModern) return presetPalettes.modern;
+  if (wantsMinimalist) return ensureInteriorUsablePalette(presetPalettes.minimalist);
+  if (wantsScandi) return ensureInteriorUsablePalette(presetPalettes.scandinavian);
+  if (wantsIndustrial) return ensureInteriorUsablePalette(presetPalettes.industrial);
+  if (wantsJapandi) return ensureInteriorUsablePalette(presetPalettes.japandi);
+  if (wantsBoho) return ensureInteriorUsablePalette(presetPalettes.boho);
+  if (wantsLuxury) return ensureInteriorUsablePalette(presetPalettes.luxury);
+  if (wantsModern) return ensureInteriorUsablePalette(presetPalettes.modern);
 
   /* ===============================
      3️⃣ HF PALETTE REFINEMENT (SAFE, OPTIONAL)
@@ -120,7 +149,7 @@ JSON:
     const raw = await callHF(prompt);
     const parsed = safeParsePaletteJSON(raw);
     const validated = validatePalette(parsed);
-    if (validated) return validated;
+    if (validated) return ensureInteriorUsablePalette(validated);
   }
 
   /* ===============================
@@ -131,7 +160,7 @@ JSON:
       ? styleInput.toLowerCase()
       : styleInput?.name?.toLowerCase() || "modern";
 
-  return presetPalettes[styleKey] || presetPalettes.modern;
+  return ensureInteriorUsablePalette(presetPalettes[styleKey] || presetPalettes.modern);
 }
 
 /* ===============================

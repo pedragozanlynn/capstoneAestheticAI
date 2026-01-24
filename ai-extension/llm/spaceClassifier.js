@@ -24,6 +24,14 @@ const HF_CHAT_MODELS = [
  * - Phrases dominate over tokens
  * - Explicit room mention boost
  * - Adds PH synonyms: balkonahe/veranda/beranda
+ *
+ * ✅ FIX (KIDS BEDROOM):
+ * - kids_bedroom is its own roomType (NOT lumped to bedroom)
+ *
+ * ✅ NEW (HOME OFFICE + STUDY ROOM):
+ * - Study room is treated as home_office by default (recommended for stability)
+ * - Still recognizes "study room / study area / study corner" strongly
+ * - Also accepts "study_room" from LLM and normalizes it -> home_office
  */
 export async function classifySpace(userMessage = "") {
   const rawText = String(userMessage || "");
@@ -45,6 +53,9 @@ export async function classifySpace(userMessage = "") {
 
     // ✅ optional: prevent balcony being treated as bedroom if user says "balcony bedroom"
     balcony: ["balcony bedroom", "bed on balcony", "bed sa balcony"],
+
+    // ✅ prevent kids phrases from boosting adult bedroom
+    bedroom: ["kids bedroom", "children's bedroom", "kids room", "nursery", "toddler bedroom", "teen bedroom"],
   };
 
   const COMMERCIAL_CUES = [
@@ -62,102 +73,177 @@ export async function classifySpace(userMessage = "") {
 
   const CATALOG = {
     residential: [
+      // ✅ KIDS BEDROOM FIRST (so it beats bedroom)
+      {
+        roomType: "kids_bedroom",
+        strong: [
+          "kids bedroom",
+          "kid's bedroom",
+          "children's bedroom",
+          "child bedroom",
+          "nursery bedroom",
+          "toddler bedroom",
+          "teen bedroom",
+          "shared kids bedroom",
+        ],
+        medium: [
+          "kids room",
+          "kid room",
+          "children room",
+          "child room",
+          "nursery",
+          "kwarto ng bata",
+          "silid ng bata",
+          "pambata na kwarto",
+          "pang bata na kwarto",
+          "kwarto pambata",
+          "silid pambata",
+        ],
+        tokens: [
+          "bunk",
+          "bunk bed",
+          "twin bed",
+          "single bed",
+          "crib",
+          "toy",
+          "toys",
+          "playmat",
+          "study desk",
+          "kids desk",
+          "homework",
+        ],
+      },
+
       {
         roomType: "bedroom",
-        strong: ["master bedroom", "guest bedroom", "kids bedroom", "children's bedroom", "shared bedroom"],
-        medium: ["bedroom", "guest room", "kids room", "nursery", "tulugan", "kwarto", "silid"],
+        strong: ["master bedroom", "guest bedroom", "shared bedroom"],
+        medium: ["bedroom", "guest room", "tulugan", "kwarto", "silid"],
         tokens: ["bed", "wardrobe", "nightstand", "dresser", "headboard"],
       },
+
       {
         roomType: "living_room",
         strong: ["living room", "family room", "tv room", "media room"],
         medium: ["livingroom", "lounge", "sala"],
         tokens: ["sofa", "couch", "tv", "coffee table", "entertainment", "console"],
       },
+
       {
         roomType: "kitchen",
         strong: ["dirty kitchen", "show kitchen", "outdoor kitchen"],
         medium: ["kitchen", "kusina"],
         tokens: ["stove", "cooktop", "rangehood", "fridge", "refrigerator", "countertop", "backsplash", "island"],
       },
+
       {
         roomType: "pantry",
         strong: ["walk-in pantry", "walk in pantry"],
         medium: ["pantry"],
         tokens: ["food storage", "shelves pantry"],
       },
+
       {
         roomType: "dining_room",
         strong: ["formal dining room"],
         medium: ["dining room", "dining area", "kainan"],
         tokens: ["dining table", "chairs", "buffet", "sideboard"],
       },
+
       {
         roomType: "bathroom",
         strong: ["powder room", "half bath", "master bathroom", "ensuite", "en suite"],
         medium: ["bathroom", "toilet", "restroom", "cr", "banyo", "palikuran"],
         tokens: ["shower", "toilet bowl", "vanity", "sink", "mirror", "towel"],
       },
+
+      // ✅ HOME OFFICE / STUDY ROOM (one bucket for stability)
       {
         roomType: "home_office",
-        strong: ["home office", "work from home setup", "wfh setup"],
-        medium: ["study room", "workspace", "study", "office room", "opisina sa bahay"],
-        tokens: ["desk", "monitor", "keyboard", "shelves", "bookcase"],
+        strong: [
+          "home office",
+          "work from home setup",
+          "wfh setup",
+          "study room",
+          "study area",
+          "study corner",
+          "workspace at home",
+          "home workspace",
+        ],
+        medium: [
+          "workspace",
+          "study",
+          "office room",
+          "opisina sa bahay",
+          "study zone",
+          "study nook",
+          "computer desk area",
+        ],
+        tokens: ["desk", "monitor", "keyboard", "shelves", "bookcase", "laptop", "office chair"],
       },
+
       {
         roomType: "kids_playroom",
         strong: ["play room", "kids playroom"],
         medium: ["playroom", "toy room"],
         tokens: ["toys", "playmat", "kids area"],
       },
+
       {
         roomType: "walk_in_closet",
         strong: ["walk-in closet", "walk in closet"],
         medium: ["closet room", "wardrobe room", "damitan"],
         tokens: ["hanger", "shelves", "shoe rack"],
       },
+
       {
         roomType: "laundry_room",
         strong: ["laundry room"],
         medium: ["utility room", "laundry", "labahan"],
         tokens: ["washer", "dryer", "laundry basket", "ironing"],
       },
+
       {
         roomType: "storage_room",
         strong: ["storage room"],
         medium: ["storeroom", "storage"],
         tokens: ["boxes", "shelves storage"],
       },
+
       {
         roomType: "service_area",
         strong: ["service area"],
         medium: ["utility area", "service kitchen"],
         tokens: ["utility", "service"],
       },
+
       {
         roomType: "maids_room",
         strong: ["maid's room", "helpers room", "house helper room"],
         medium: ["maids room", "helper room"],
         tokens: ["helper", "maid"],
       },
+
       {
         roomType: "garage",
         strong: ["two car garage", "2-car garage"],
         medium: ["garage", "carport", "garahe"],
         tokens: ["car", "motor", "tools"],
       },
+
       {
         roomType: "entryway",
         strong: ["main entry", "front entry"],
         medium: ["entryway", "foyer", "entrance", "mudroom"],
         tokens: ["shoe rack", "coat", "bench"],
       },
+
       {
         roomType: "hallway",
         strong: ["main corridor"],
         medium: ["hallway", "corridor", "passage"],
         tokens: ["hall", "walkway"],
       },
+
       {
         roomType: "stairs_area",
         strong: ["stair landing"],
@@ -194,12 +280,14 @@ export async function classifySpace(userMessage = "") {
         medium: ["garden", "yard", "bakuran", "landscape"],
         tokens: ["plants", "grass", "outdoor"],
       },
+
       {
         roomType: "studio_apartment",
         strong: ["studio apartment", "studio unit"],
         medium: ["small apartment", "one room apartment", "studio"],
         tokens: ["open plan", "compact"],
       },
+
       {
         roomType: "residential_generic",
         strong: [],
@@ -208,6 +296,7 @@ export async function classifySpace(userMessage = "") {
       },
     ],
 
+    // ✅ SMALL BUSINESS (already included)
     commercial: [
       {
         roomType: "sari_sari_store",
@@ -297,16 +386,47 @@ export async function classifySpace(userMessage = "") {
     return { spaceType: "residential", roomType: "unknown", confidence: 0.35, source: "fallback" };
   }
 
+  // ✅ NOTE: we allow "study_room" but normalize it to "home_office"
   const allowedRoomTypes = [
     // Residential
-    "bedroom","living_room","kitchen","pantry","bathroom","dining_room","home_office",
-    "kids_playroom","studio_apartment","laundry_room","walk_in_closet","storage_room",
-    "service_area","maids_room","entryway","hallway","stairs_area","balcony","garden",
-    "patio","roof_deck","garage","residential_generic",
+    "kids_bedroom",
+    "bedroom",
+    "living_room",
+    "kitchen",
+    "pantry",
+    "bathroom",
+    "dining_room",
+    "home_office",
+    "study_room", // accepted input -> normalized to home_office
+    "kids_playroom",
+    "studio_apartment",
+    "laundry_room",
+    "walk_in_closet",
+    "storage_room",
+    "service_area",
+    "maids_room",
+    "entryway",
+    "hallway",
+    "stairs_area",
+    "balcony",
+    "garden",
+    "patio",
+    "roof_deck",
+    "garage",
+    "residential_generic",
 
     // Commercial
-    "sari_sari_store","retail_store","bakery","milktea_shop","coffee_shop","restaurant",
-    "computer_shop","printing_shop","laundry_shop","pharmacy","commercial_generic",
+    "sari_sari_store",
+    "retail_store",
+    "bakery",
+    "milktea_shop",
+    "coffee_shop",
+    "restaurant",
+    "computer_shop",
+    "printing_shop",
+    "laundry_shop",
+    "pharmacy",
+    "commercial_generic",
 
     "unknown",
   ];
@@ -391,7 +511,7 @@ function scoreAndPick({ text, rawText, catalog, negativePhrases, commercialCues,
 
       const requestBoost = boostIfRequested(rawText, item.roomType);
 
-      // ✅ Explicit room word boost (helps balcony/terrace)
+      // ✅ Explicit room word boost
       const explicitRoomWordBoost = hasPhrase(text, item.roomType.replace(/_/g, " ")) ? 2.0 : 0;
 
       const finalScore = score + contextBoost + requestBoost + explicitRoomWordBoost - negPenalty;
@@ -427,7 +547,10 @@ function scoreAndPick({ text, rawText, catalog, negativePhrases, commercialCues,
     };
   }
 
-  return { spaceType: best.spaceType, roomType: best.roomType, confidence, source: "rules" };
+  // ✅ normalize in case rule engine yields something we want to collapse
+  const normalizedRoomType = normalizeRoomType(best.roomType);
+
+  return { spaceType: best.spaceType, roomType: normalizedRoomType, confidence, source: "rules" };
 }
 
 function scoreItem(text, item) {
@@ -501,6 +624,15 @@ async function hfChatWithFallback({ messages, temperature = 0, max_tokens = 120 
    Helpers
    =============================== */
 
+function normalizeRoomType(roomType) {
+  const rt = String(roomType || "").toLowerCase().trim();
+
+  // ✅ collapse study_room into home_office (stability)
+  if (rt === "study_room") return "home_office";
+
+  return rt;
+}
+
 function normalizeText(s) {
   return String(s || "")
     .toLowerCase()
@@ -528,6 +660,26 @@ function expandSynonyms(text) {
     [" hagdan ", " stairs "],
     [" bakuran ", " garden "],
     [" garahe ", " garage "],
+
+    // ✅ Kids bedroom PH synonyms
+    [" kwarto ng bata ", " kids bedroom "],
+    [" silid ng bata ", " kids bedroom "],
+    [" pambata na kwarto ", " kids bedroom "],
+    [" pang bata na kwarto ", " kids bedroom "],
+    [" kwarto pambata ", " kids bedroom "],
+    [" silid pambata ", " kids bedroom "],
+    [" pambata ", " kids bedroom "],
+    [" pang bata ", " kids bedroom "],
+
+    // ✅ Study/Home office PH synonyms (normalize toward home_office intent)
+    [" study room ", " home office "],
+    [" study area ", " home office "],
+    [" study corner ", " home office "],
+    [" aralan ", " home office "],
+    [" study ", " home office "], // optional; remove if it overfires
+    [" work from home ", " home office "],
+    [" wfh ", " home office "],
+    [" opisina sa bahay ", " home office "],
 
     // ✅ Balcony PH synonyms
     [" balkonahe ", " balcony "],
@@ -641,8 +793,11 @@ function normalizeSpace(obj) {
   const roomType = typeof obj.roomType === "string" ? obj.roomType.trim() : "";
   const spaceType = typeof obj.spaceType === "string" ? obj.spaceType.trim() : "";
 
-  const normalizedRoom = roomType.toLowerCase().replace(/\s+/g, "_");
+  let normalizedRoom = roomType.toLowerCase().replace(/\s+/g, "_");
   const normalizedSpace = spaceType.toLowerCase();
+
+  // ✅ accept study_room but normalize to home_office
+  normalizedRoom = normalizeRoomType(normalizedRoom);
 
   const allowedSpaces = new Set(["residential", "commercial"]);
   if (!allowedSpaces.has(normalizedSpace)) return null;

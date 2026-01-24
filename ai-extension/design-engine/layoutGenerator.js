@@ -1,9 +1,14 @@
 // design-engine/layoutGenerator.js
-// UPDATED: supports object detections (bbox/boxes) -> more accurate placement & layout suggestions
+// ✅ COMPLETE UPDATED VERSION
+//
+// Goal:
+// - If detections exist: treat them as "existing furniture from the photo"
+// - Then generate a BETTER SUGGESTED LAYOUT (not copying the photo positions)
+// - Return both existingItems and suggestedItems, plus human-friendly placements + changes
 //
 // Supported detections formats:
-// A) { image:{width,height}, objects:[{label,score,bbox:{x,y,w,h}}] }   // bbox may be px or normalized depending on your python
-// B) { boxes:[{label,x,y,w,h,score|confidence}] }                      // normalized 0..1 (from JS wrapper)
+// A) { image:{width,height}, objects:[{label,score,bbox:{x,y,w,h}}] }   // bbox may be px or normalized
+// B) { boxes:[{label,x,y,w,h,score|confidence}] }                      // normalized 0..1 (recommended)
 // C) { objects:["sofa","bed"] }                                        // no boxes -> fallback procedural
 
 function clamp(n, min, max) {
@@ -18,6 +23,15 @@ function prettifyId(id) {
   return String(id || "")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function normalizeLabel(s = "") {
+  return String(s || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[_-]/g, " ")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 /* ===============================
@@ -71,15 +85,6 @@ const LABEL_TO_ID = new Map([
   ["rack", "rack"], // rack -> left/right decided by bbox center
   ["display rack", "rack"],
 ]);
-
-function normalizeLabel(s = "") {
-  return String(s || "")
-    .toLowerCase()
-    .trim()
-    .replace(/[_-]/g, " ")
-    .replace(/[^\w\s]/g, "")
-    .replace(/\s+/g, " ");
-}
 
 /* ===============================
    ✅ More accurate position description
@@ -189,25 +194,6 @@ function inferZones(roomType) {
   return [{ name: "Main Zone", description: "Primary furniture grouped to support the room’s use" }];
 }
 
-function buildLayoutSuggestions({ room, items }) {
-  const roomType = String(room?.type || "unknown");
-  const summary = `Suggested ${roomType} layout (${round2(room.length)}m x ${round2(room.width)}m) with clear circulation and practical zoning.`;
-
-  const zones = inferZones(roomType);
-
-  const placements = (items || [])
-    .filter((it) => it?.id)
-    .map((it) => ({
-      item: prettifyId(it.id),
-      position: describePosition(it, room),
-      reason: reasonForItem(it.id, roomType),
-      confidence: typeof it?.confidence === "number" ? it.confidence : undefined,
-      source: it?.source || "procedural",
-    }));
-
-  return { summary, zones, placements, items };
-}
-
 /* ===============================
    ✅ Detection parsing (robust)
    Converts possible detection formats into normalized boxes list:
@@ -228,7 +214,6 @@ function normalizeDetections(detections) {
         const h = Number(b?.h ?? b?.height);
         if (!label || [x, y, w, h].some((n) => !Number.isFinite(n) || n <= 0)) return null;
 
-        // assume normalized if values look like 0..1
         const isNormalized = x <= 1.2 && y <= 1.2 && w <= 1.2 && h <= 1.2;
         return { label, score, x, y, w, h, isNormalized };
       })
@@ -257,9 +242,12 @@ function normalizeDetections(detections) {
         if (!label || [x, y, w, h].some((n) => !Number.isFinite(n) || n <= 0)) return null;
 
         // If we have image dims, we can detect if bbox is px
-        const looksPx = (Number.isFinite(imgW) && Number.isFinite(imgH) && (x > 1.5 || y > 1.5 || w > 1.5 || h > 1.5));
-        const isNormalized = !looksPx; // if px -> not normalized
+        const looksPx =
+          Number.isFinite(imgW) &&
+          Number.isFinite(imgH) &&
+          (x > 1.5 || y > 1.5 || w > 1.5 || h > 1.5);
 
+        const isNormalized = !looksPx; // if px -> not normalized
         return { label, score, x, y, w, h, isNormalized };
       })
       .filter(Boolean);
@@ -271,9 +259,9 @@ function normalizeDetections(detections) {
 }
 
 /* ===============================
-   ✅ Convert normalized/px boxes -> room items
+   ✅ Convert normalized/px boxes -> EXISTING room items (meters)
    - Deduplicate by canonical item id (keep highest score)
-   - Uses bbox center and size for approximate footprint
+   - Uses bbox size as approximate footprint
    =============================== */
 function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
   const W = room.width;
@@ -286,7 +274,6 @@ function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
   const imgW = Number(detections?.image?.width);
   const imgH = Number(detections?.image?.height);
 
-  // best per id
   const best = new Map();
 
   for (const b of boxes) {
@@ -296,11 +283,12 @@ function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
     const id = LABEL_TO_ID.get(b.label);
     if (!id) continue;
 
-    // Convert to normalized 0..1 if needed
-    let nx = b.x, ny = b.y, nw = b.w, nh = b.h;
+    let nx = b.x,
+      ny = b.y,
+      nw = b.w,
+      nh = b.h;
 
     if (!b.isNormalized) {
-      // px -> require image dims
       if (!Number.isFinite(imgW) || !Number.isFinite(imgH) || imgW <= 0 || imgH <= 0) continue;
       nx = b.x / imgW;
       ny = b.y / imgH;
@@ -308,7 +296,6 @@ function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
       nh = b.h / imgH;
     }
 
-    // sanitize normalized
     nx = clamp(nx, 0, 0.98);
     ny = clamp(ny, 0, 0.98);
     nw = clamp(nw, 0.02, 1);
@@ -321,18 +308,15 @@ function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
   const items = [];
 
   for (const d of best.values()) {
-    // Convert normalized bbox to room meters (footprint)
-    // Use min/max clamps to avoid absurd sizes from bbox noise
     const itemW = clamp(W * d.nw, 0.35, W * 0.9);
     const itemH = clamp(L * d.nh, 0.35, L * 0.9);
 
-    // Place using bbox top-left normalized
     let itemX = clamp(W * d.nx, 0.10, W - 0.10 - itemW);
     let itemY = clamp(L * d.ny, 0.10, L - 0.10 - itemH);
 
     let finalId = d.id;
 
-    // Special: rack -> assign left/right based on bbox center
+    // rack -> assign left/right based on bbox center
     if (finalId === "rack") {
       const cx = d.nx + d.nw / 2;
       finalId = cx < 0.5 ? "rack_left" : "rack_right";
@@ -354,9 +338,322 @@ function detectionsToItems({ room, detections, scoreMin = 0.25 } = {}) {
 }
 
 /* ===============================
+   ✅ Helper: safe wall snapping + alignment
+   =============================== */
+function clampItem(it, room, pad = 0.25) {
+  const W = room.width;
+  const L = room.length;
+  it.x = clamp(it.x, pad, W - pad - it.width);
+  it.y = clamp(it.y, pad, L - pad - it.height);
+  it.x = round2(it.x);
+  it.y = round2(it.y);
+  it.width = round2(it.width);
+  it.height = round2(it.height);
+}
+
+function snapToWall(it, room, wall, pad = 0.25) {
+  const W = room.width;
+  const L = room.length;
+  if (!it) return;
+
+  if (wall === "left") it.x = pad;
+  if (wall === "right") it.x = W - pad - it.width;
+  if (wall === "front") it.y = pad;
+  if (wall === "back") it.y = L - pad - it.height;
+}
+
+/* ===============================
+   ✅ Layout improvement engine
+   - Inputs: existingItems (from photo detections)
+   - Output: suggestedItems (improved arrangement)
+   - Does NOT preserve photo layout; it optimizes flow and zoning
+   =============================== */
+function improveDetectedLayout({ room, existingItems }) {
+  const pad = 0.25;
+  const W = room.width;
+  const L = room.length;
+
+  const items = (existingItems || []).map((it) => ({ ...it, source: "suggested" }));
+
+  const get = (id) => items.find((x) => x.id === id);
+
+  // Small utilities
+  const centerAlongX = (it) => {
+    if (!it) return;
+    it.x = (W - it.width) / 2;
+  };
+  const centerAlongY = (it) => {
+    if (!it) return;
+    it.y = (L - it.height) / 2;
+  };
+  const alignCenterY = (a, b) => {
+    if (!a || !b) return;
+    a.y = b.y + b.height / 2 - a.height / 2;
+  };
+  const alignCenterX = (a, b) => {
+    if (!a || !b) return;
+    a.x = b.x + b.width / 2 - a.width / 2;
+  };
+
+  const roomType = String(room?.type || "unknown");
+
+  // ---------- LIVING ROOM ----------
+  if (roomType === "living_room") {
+    const sofa = get("sofa");
+    const tv = get("tv_console");
+    const coffee = get("coffee_table");
+    const rug = get("rug");
+    const accent = get("accent_chair");
+
+    // Anchor: sofa on left wall, centered
+    if (sofa) {
+      snapToWall(sofa, room, "left", pad);
+      centerAlongY(sofa);
+      clampItem(sofa, room, pad);
+    }
+
+    // TV opposite sofa on right wall, aligned to sofa centerline
+    if (tv) {
+      snapToWall(tv, room, "right", pad);
+      if (sofa) alignCenterY(tv, sofa);
+      clampItem(tv, room, pad);
+    }
+
+    // Coffee table between sofa and TV (comfortable reach)
+    if (coffee) {
+      if (sofa && tv) {
+        const minGap = 0.55;
+        const maxGap = 0.8;
+        const available = tv.x - (sofa.x + sofa.width);
+        const gap = clamp(available * 0.35, minGap, maxGap);
+        coffee.x = sofa.x + sofa.width + gap;
+        alignCenterY(coffee, sofa);
+      } else if (sofa) {
+        coffee.x = sofa.x + sofa.width + 0.65;
+        alignCenterY(coffee, sofa);
+      } else {
+        centerAlongX(coffee);
+        centerAlongY(coffee);
+      }
+      clampItem(coffee, room, pad);
+    }
+
+    // Rug: center under seating zone (slightly under sofa front)
+    if (rug) {
+      if (sofa) {
+        rug.x = clamp(sofa.x + 0.15, pad, W - pad - rug.width);
+        rug.y = clamp(sofa.y - 0.25, pad, L - pad - rug.height);
+      } else {
+        centerAlongX(rug);
+        centerAlongY(rug);
+      }
+      clampItem(rug, room, pad);
+    }
+
+    // Accent chair: place near coffee table but not blocking path
+    if (accent && coffee) {
+      // try front-right-ish relative to coffee
+      accent.x = clamp(coffee.x + coffee.width + 0.35, pad, W - pad - accent.width);
+      accent.y = clamp(coffee.y + coffee.height + 0.35, pad, L - pad - accent.height);
+      clampItem(accent, room, pad);
+    }
+  }
+
+  // ---------- BEDROOM ----------
+  if (roomType === "bedroom") {
+    const bed = get("bed");
+    const wardrobe = get("wardrobe");
+    const night = get("nightstand");
+    const desk = get("desk");
+
+    // Bed: front wall center
+    if (bed) {
+      snapToWall(bed, room, "front", pad);
+      centerAlongX(bed);
+      clampItem(bed, room, pad);
+    }
+
+    // Wardrobe: right wall, toward back half
+    if (wardrobe) {
+      snapToWall(wardrobe, room, "right", pad);
+      if (bed) wardrobe.y = clamp(bed.y + bed.height + 0.9, pad, L - pad - wardrobe.height);
+      clampItem(wardrobe, room, pad);
+    }
+
+    // Nightstand: left side of bed near head area
+    if (night && bed) {
+      night.x = clamp(bed.x - night.width - 0.15, pad, W - pad - night.width);
+      night.y = clamp(bed.y + bed.height - night.height - 0.25, pad, L - pad - night.height);
+      clampItem(night, room, pad);
+    }
+
+    // Desk: back-left corner by default
+    if (desk) {
+      snapToWall(desk, room, "left", pad);
+      snapToWall(desk, room, "back", pad);
+      clampItem(desk, room, pad);
+    }
+  }
+
+  // ---------- HOME OFFICE ----------
+  if (roomType === "home_office" || roomType === "office") {
+    const desk = get("desk");
+    const chair = get("chair");
+    const shelf = get("bookshelf");
+
+    if (desk) {
+      snapToWall(desk, room, "left", pad);
+      snapToWall(desk, room, "front", pad);
+      clampItem(desk, room, pad);
+    }
+
+    if (chair && desk) {
+      chair.x = clamp(desk.x + desk.width * 0.35, pad, W - pad - chair.width);
+      chair.y = clamp(desk.y + desk.height + 0.25, pad, L - pad - chair.height);
+      clampItem(chair, room, pad);
+    }
+
+    if (shelf) {
+      snapToWall(shelf, room, "right", pad);
+      snapToWall(shelf, room, "back", pad);
+      clampItem(shelf, room, pad);
+    }
+  }
+
+  // ---------- KITCHEN ----------
+  if (roomType === "kitchen") {
+    const island = get("island");
+
+    if (island) {
+      // island centered with clear edges
+      centerAlongX(island);
+      centerAlongY(island);
+      clampItem(island, room, pad);
+    }
+  }
+
+  // ---------- CAFE ----------
+  if (roomType === "coffee_shop" || roomType === "cafe") {
+    const counter = get("service_counter");
+
+    if (counter) {
+      // counter near front-left by default
+      snapToWall(counter, room, "left", pad);
+      snapToWall(counter, room, "front", pad);
+      clampItem(counter, room, pad);
+    }
+  }
+
+  // ---------- RETAIL ----------
+  if (roomType === "retail_store" || roomType === "retail" || roomType === "store") {
+    const rackL = get("rack_left");
+    const rackR = get("rack_right");
+    const cashier = get("cashier");
+
+    if (rackL) {
+      snapToWall(rackL, room, "left", pad);
+      snapToWall(rackL, room, "front", pad);
+      clampItem(rackL, room, pad);
+    }
+    if (rackR) {
+      snapToWall(rackR, room, "right", pad);
+      snapToWall(rackR, room, "front", pad);
+      clampItem(rackR, room, pad);
+    }
+    if (cashier) {
+      snapToWall(cashier, room, "right", pad);
+      snapToWall(cashier, room, "front", pad);
+      clampItem(cashier, room, pad);
+    }
+  }
+
+  // final clamp for anything not covered
+  for (const it of items) clampItem(it, room, pad);
+
+  return items;
+}
+
+/* ===============================
+   ✅ Output builder (existing vs suggested)
+   placements include current + suggested positions and movement delta
+   =============================== */
+function buildLayoutSuggestions({ room, existingItems = [], suggestedItems = [], fallbackItems = [] }) {
+  const roomType = String(room?.type || "unknown");
+
+  const usingDetections = existingItems.length > 0;
+  const itemsForLegacy = usingDetections ? suggestedItems : fallbackItems;
+
+  const summary = usingDetections
+    ? `Suggested ${roomType} improvement layout (${round2(room.length)}m x ${round2(
+        room.width
+      )}m). Detected furniture was interpreted from the image and then rearranged to improve zoning, alignment, and circulation.`
+    : `Suggested ${roomType} layout (${round2(room.length)}m x ${round2(
+        room.width
+      )}m) with clear circulation and practical zoning.`;
+
+  const zones = inferZones(roomType);
+
+  // legacy placements (for your current UI)
+  const placements = (itemsForLegacy || [])
+    .filter((it) => it?.id)
+    .map((it) => ({
+      item: prettifyId(it.id),
+      position: describePosition(it, room),
+      reason: reasonForItem(it.id, roomType),
+      confidence: typeof it?.confidence === "number" ? it.confidence : undefined,
+      source: it?.source || "procedural",
+    }));
+
+  // richer comparison (optional for UI)
+  const existingMap = new Map((existingItems || []).map((it) => [it.id, it]));
+  const suggestedMap = new Map((suggestedItems || []).map((it) => [it.id, it]));
+  const allIds = Array.from(new Set([...existingMap.keys(), ...suggestedMap.keys()]));
+
+  const changes = usingDetections
+    ? allIds.map((id) => {
+        const ex = existingMap.get(id);
+        const sg = suggestedMap.get(id);
+        if (!sg) return null;
+
+        const dx = ex ? round2(sg.x - ex.x) : undefined;
+        const dy = ex ? round2(sg.y - ex.y) : undefined;
+
+        const moved =
+          typeof dx === "number" && typeof dy === "number" && (Math.abs(dx) >= 0.1 || Math.abs(dy) >= 0.1);
+
+        return {
+          id,
+          item: prettifyId(id),
+          currentPosition: ex ? describePosition(ex, room) : undefined,
+          suggestedPosition: describePosition(sg, room),
+          deltaMeters: ex ? { dx, dy } : undefined,
+          changed: ex ? moved : true,
+          reason: reasonForItem(id, roomType),
+          confidence: ex?.confidence,
+        };
+      }).filter(Boolean)
+    : [];
+
+  // return both:
+  // - items (legacy consumers)
+  // - existingItems / suggestedItems / changes for better UI
+  return {
+    summary,
+    zones,
+    placements,
+    items: itemsForLegacy,
+    existingItems: usingDetections ? existingItems : [],
+    suggestedItems: usingDetections ? suggestedItems : [],
+    changes,
+  };
+}
+
+/* ===============================
    Main
-   - If detections with boxes exist, use them
-   - Else fallback to deterministic procedural placement
+   - If detections with boxes exist:
+       existingItems = from detections
+       suggestedItems = improved layout (not copied)
+   - Else fallback to procedural layout (your original logic)
    =============================== */
 export function generateLayout(room, detections = null) {
   const safeLength = typeof room?.length === "number" && room.length > 0 ? room.length : 4;
@@ -365,20 +662,23 @@ export function generateLayout(room, detections = null) {
   const L = clamp(safeLength, 1.5, 30);
   const W = clamp(safeWidth, 1.5, 30);
 
-  const rawType = String(room?.type || "").toLowerCase().trim().replace(/\s+/g, "_");
+  const rawType = String(room?.type || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+
   const baseRoom = { ...room, type: rawType || "unknown", length: L, width: W };
 
-  // ✅ 1) Detection-driven layout (more accurate)
-  const detectedItems =
-    detections && (Array.isArray(detections?.boxes) || Array.isArray(detections?.objects))
-      ? detectionsToItems({ room: baseRoom, detections, scoreMin: 0.25 })
-      : [];
+  // ✅ 1) Detection-driven (interpret existing → suggest improvements)
+  const hasBoxes = detections && (Array.isArray(detections?.boxes) || Array.isArray(detections?.objects));
+  const existingItems = hasBoxes ? detectionsToItems({ room: baseRoom, detections, scoreMin: 0.25 }) : [];
 
-  if (detectedItems.length > 0) {
-    return buildLayoutSuggestions({ room: baseRoom, items: detectedItems });
+  if (existingItems.length > 0) {
+    const suggestedItems = improveDetectedLayout({ room: baseRoom, existingItems });
+    return buildLayoutSuggestions({ room: baseRoom, existingItems, suggestedItems });
   }
 
-  // ✅ 2) Fallback: procedural layout (your current logic)
+  // ✅ 2) Fallback: procedural layout (your original logic)
   const PAD = 0.25;
   const CLEAR = 0.7;
 
@@ -458,7 +758,7 @@ export function generateLayout(room, detections = null) {
       height: 1.7,
     });
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   if (isBedroom) {
@@ -469,9 +769,21 @@ export function generateLayout(room, detections = null) {
 
     const wardrobeW = clamp(W * 0.18, 0.6, 1.0);
     const wardrobeH = clamp(L * 0.22, 0.5, 0.8);
-    tryPlace({ id: "wardrobe", x: W - PAD - wardrobeW, y: PAD + bedH + CLEAR, width: wardrobeW, height: wardrobeH });
+    tryPlace({
+      id: "wardrobe",
+      x: W - PAD - wardrobeW,
+      y: PAD + bedH + CLEAR,
+      width: wardrobeW,
+      height: wardrobeH,
+    });
 
-    tryPlace({ id: "nightstand", x: (W - bedW) / 2 - 0.45, y: PAD + bedH - 0.55, width: 0.4, height: 0.4 });
+    tryPlace({
+      id: "nightstand",
+      x: (W - bedW) / 2 - 0.45,
+      y: PAD + bedH - 0.55,
+      width: 0.4,
+      height: 0.4,
+    });
 
     if (room?.hasWindow) {
       const deskW = clamp(W * 0.3, 0.9, 1.2);
@@ -494,7 +806,7 @@ export function generateLayout(room, detections = null) {
       height: clamp(bedH * 0.6, 1.0, 1.4),
     });
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   if (isOffice) {
@@ -506,7 +818,7 @@ export function generateLayout(room, detections = null) {
     tryPlace({ id: "chair", x: deskX + deskW * 0.35, y: PAD + deskH + 0.25, width: 0.55, height: 0.55 });
     tryPlace({ id: "bookshelf", x: W - PAD - 0.8, y: L - PAD - 0.3, width: 0.8, height: 0.3 });
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   if (isKitchen) {
@@ -522,7 +834,7 @@ export function generateLayout(room, detections = null) {
       tryPlace({ id: "island", x: (W - 1.2) / 2, y: (L - 0.8) / 2, width: 1.2, height: 0.8 });
     }
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   if (isCafe) {
@@ -534,15 +846,27 @@ export function generateLayout(room, detections = null) {
       height: 0.8,
     });
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   if (isRetail) {
-    place({ id: "rack_left", x: PAD, y: PAD, width: 0.8, height: clamp(L - PAD * 2, 2.0, L - PAD * 2) });
-    place({ id: "rack_right", x: W - PAD - 0.8, y: PAD, width: 0.8, height: clamp(L - PAD * 2, 2.0, L - PAD * 2) });
+    place({
+      id: "rack_left",
+      x: PAD,
+      y: PAD,
+      width: 0.8,
+      height: clamp(L - PAD * 2, 2.0, L - PAD * 2),
+    });
+    place({
+      id: "rack_right",
+      x: W - PAD - 0.8,
+      y: PAD,
+      width: 0.8,
+      height: clamp(L - PAD * 2, 2.0, L - PAD * 2),
+    });
     tryPlace({ id: "cashier", x: W - PAD - 1.2, y: PAD + 0.2, width: 1.2, height: 0.6 });
 
-    return buildLayoutSuggestions({ room: baseRoom, items });
+    return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
   }
 
   place({
@@ -553,5 +877,5 @@ export function generateLayout(room, detections = null) {
     height: 1.6,
   });
 
-  return buildLayoutSuggestions({ room: baseRoom, items });
+  return buildLayoutSuggestions({ room: baseRoom, fallbackItems: items });
 }
