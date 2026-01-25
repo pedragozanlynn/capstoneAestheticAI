@@ -8,6 +8,9 @@ import { AppState } from "react-native";
 import { db } from "./config/firebase";
 import "./polyfills";
 
+// ✅ SAFE AREA PROVIDER (NEW)
+import { SafeAreaProvider } from "react-native-safe-area-context";
+
 /* ================= AUTH ================= */
 import ForgotPassword from "./app/ForgotPassword";
 import Login from "./app/Login";
@@ -33,8 +36,6 @@ import Home from "./app/User/Home";
 import ManageSubscription from "./app/User/ManageSubscription";
 import Profile from "./app/User/Profile";
 import Projects from "./app/User/Projects";
-
-
 
 /* ================= PREMIUM ================= */
 import UpgradeInfo from "./app/User/UpgradeInfo";
@@ -62,49 +63,46 @@ export default function App() {
          * ✅ SINGLE SOURCE OF TRUTH
          * This key MUST be set on login (user OR consultant)
          */
-        const uid = await AsyncStorage.getItem(
-          "aestheticai:current-user-id"
-        );
-
-        const role = await AsyncStorage.getItem(
-          "aestheticai:current-user-role"
-        ); // "user" | "consultant"
-
+        const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
+        const role = await AsyncStorage.getItem("aestheticai:current-user-role"); // "user" | "consultant"
         if (!uid || !role) return;
 
-        const collectionName =
-          role === "consultant" ? "consultants" : "users";
-
+        const collectionName = role === "consultant" ? "consultants" : "users";
         const userRef = doc(db, collectionName, uid);
 
         const setOnline = async () => {
-          await updateDoc(userRef, {
-            isOnline: true,
-            lastSeen: serverTimestamp(),
-          });
+          try {
+            await updateDoc(userRef, {
+              isOnline: true,
+              lastSeen: serverTimestamp(),
+            });
+          } catch (e) {
+            console.log("❌ setOnline failed:", e?.message || e);
+          }
         };
 
         const setOffline = async () => {
-          await updateDoc(userRef, {
-            isOnline: false,
-            lastSeen: serverTimestamp(),
-          });
+          try {
+            await updateDoc(userRef, {
+              isOnline: false,
+              lastSeen: serverTimestamp(),
+            });
+          } catch (e) {
+            console.log("❌ setOffline failed:", e?.message || e);
+          }
         };
 
         // ✅ App opened
         await setOnline();
 
         // ✅ Listen to app background / foreground
-        appStateListener = AppState.addEventListener(
-          "change",
-          (state) => {
-            if (state === "active") {
-              setOnline();
-            } else {
-              setOffline();
-            }
+        appStateListener = AppState.addEventListener("change", (state) => {
+          if (state === "active") {
+            setOnline();
+          } else {
+            setOffline();
           }
-        );
+        });
       } catch (err) {
         console.log("❌ Presence error:", err);
       }
@@ -121,72 +119,52 @@ export default function App() {
      🧭 NAVIGATION
      ====================================================== */
   return (
-    <NavigationContainer>
-      <Stack.Navigator
-        screenOptions={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
-      >
-        {/* AUTH */}
-        <Stack.Screen name="Login" component={Login} />
-        <Stack.Screen name="ForgotPassword" component={ForgotPassword} />
-        <Stack.Screen name="Register" component={Register} />
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <Stack.Navigator
+          screenOptions={{
+            headerShown: false,
+            animation: "slide_from_right",
+          }}
+        >
+          {/* AUTH */}
+          <Stack.Screen name="Login" component={Login} />
+          <Stack.Screen name="ForgotPassword" component={ForgotPassword} />
+          <Stack.Screen name="Register" component={Register} />
 
-        {/* CONSULTANT REGISTER */}
-        <Stack.Screen name="Step1Register" component={Step1Register} />
-        <Stack.Screen name="Step2Details" component={Step2Details} />
-        <Stack.Screen name="Step3Review" component={Step3Review} />
+          {/* CONSULTANT REGISTER */}
+          <Stack.Screen name="Step1Register" component={Step1Register} />
+          <Stack.Screen name="Step2Details" component={Step2Details} />
+          <Stack.Screen name="Step3Review" component={Step3Review} />
 
-        {/* CONSULTANT APP */}
-        <Stack.Screen name="Homepage" component={Homepage} />
-        <Stack.Screen name="Requests" component={Requests} />
-        <Stack.Screen
-          name="EarningsScreen"
-          component={EarningsScreen}
-        />
+          {/* CONSULTANT APP */}
+          <Stack.Screen name="Homepage" component={Homepage} />
+          <Stack.Screen name="Requests" component={Requests} />
+          <Stack.Screen name="EarningsScreen" component={EarningsScreen} />
 
-        {/* USER APP */}
-        <Stack.Screen name="Home" component={Home} />
-        <Stack.Screen name="AIDesigner" component={AIDesigner} />
-        <Stack.Screen name="Consultants" component={Consultants} />
-        <Stack.Screen name="Projects" component={Projects} />
-        <Stack.Screen name="Profile" component={Profile} />
-        <Stack.Screen
-          name="Consultations"
-          component={Consultations}
-        />
-        <Stack.Screen name="EditProfile" component={EditProfile}/>
-        <Stack.Screen name="ChangePassword" component={ChangePassword}/>
-        <Stack.Screen name="ManageSubscription" component={ManageSubscription}/>
-         
+          {/* USER APP */}
+          <Stack.Screen name="Home" component={Home} />
+          <Stack.Screen name="AIDesigner" component={AIDesigner} />
+          <Stack.Screen name="Consultants" component={Consultants} />
+          <Stack.Screen name="Projects" component={Projects} />
+          <Stack.Screen name="Profile" component={Profile} />
+          <Stack.Screen name="Consultations" component={Consultations} />
+          <Stack.Screen name="EditProfile" component={EditProfile} />
+          <Stack.Screen name="ChangePassword" component={ChangePassword} />
+          <Stack.Screen name="ManageSubscription" component={ManageSubscription} />
 
-        {/* PREMIUM */}
-        <Stack.Screen
-          name="UpgradeInfo"
-          component={UpgradeInfo}
-        />
-        <Stack.Screen
-          name="UpgradePayment"
-          component={UpgradePayment}
-        />
+          {/* PREMIUM */}
+          <Stack.Screen name="UpgradeInfo" component={UpgradeInfo} />
+          <Stack.Screen name="UpgradePayment" component={UpgradePayment} />
 
-        {/* ADMIN */}
-        <Stack.Screen name="Dashboard" component={Dashboard} />
-        <Stack.Screen
-          name="ConsultantDetails"
-          component={ConsultantDetails}
-        />
-        <Stack.Screen
-          name="Subscription"
-          component={Subscription}
-        />
-        <Stack.Screen name="Ratings" component={Ratings} />
-        <Stack.Screen
-          name="Withdrawals"
-          component={Withdrawals}
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
+          {/* ADMIN */}
+          <Stack.Screen name="Dashboard" component={Dashboard} />
+          <Stack.Screen name="ConsultantDetails" component={ConsultantDetails} />
+          <Stack.Screen name="Subscription" component={Subscription} />
+          <Stack.Screen name="Ratings" component={Ratings} />
+          <Stack.Screen name="Withdrawals" component={Withdrawals} />
+        </Stack.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
   );
 }

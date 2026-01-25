@@ -33,6 +33,7 @@
     "expo-haptics": "~15.0.7",
     "expo-image": "~3.0.10",
     "expo-image-picker": "~17.0.10",
+    "expo-keep-awake": "~15.0.8",
     "expo-linear-gradient": "~15.0.7",
     "expo-linking": "~8.0.8",
     "expo-router": "~6.0.14",
@@ -63,6 +64,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.0",
+    "baseline-browser-mapping": "^2.9.18",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",
     "typescript": "~5.9.2"

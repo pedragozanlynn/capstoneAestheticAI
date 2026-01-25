@@ -22,12 +22,13 @@
     "android": {
       "package": "com.pedragozanlynn.aestheticai",
       "icon": "./assets/icons.png",
+      
       "adaptiveIcon": {
         "foregroundImage": "./assets/icons.png",
         "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": true,
-      "softwareKeyboardLayoutMode": "pan"
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",

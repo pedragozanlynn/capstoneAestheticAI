@@ -9,7 +9,9 @@ import {
   Text,
   TouchableWithoutFeedback,
   View,
+  Platform,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const { width } = Dimensions.get("window");
 
@@ -20,6 +22,7 @@ export default function BottomNavbar({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const insets = useSafeAreaInsets();
 
   const userTabs = [
     { name: "Home", icon: "home", routePath: "/User/Home" },
@@ -47,7 +50,12 @@ export default function BottomNavbar({
   const tabs =
     role === "admin" ? adminTabs : role === "consultant" ? consultantTabs : userTabs;
 
-  const scaleAnim = useRef(tabs.map(() => new Animated.Value(1))).current;
+  // ✅ Prevent mismatch when role changes (keep array length stable per render)
+  const scaleAnim = useRef([]).current;
+  if (scaleAnim.length !== tabs.length) {
+    scaleAnim.length = 0;
+    tabs.forEach(() => scaleAnim.push(new Animated.Value(1)));
+  }
 
   const handlePressIn = (index) => {
     Animated.spring(scaleAnim[index], {
@@ -63,18 +71,26 @@ export default function BottomNavbar({
       friction: 4,
       useNativeDriver: true,
     }).start(() => {
-      // INALIS ANG UPGRADE REDIRECT DITO
       router.push(tab.routePath);
     });
   };
 
+  // ✅ Keep your floating design BUT safe for installed apps
+  // - Base bottom spacing = 15 (your design)
+  // - Add safe area inset bottom so it won't be cut off
+  // - Minimal clamp to avoid weird 0 on some Androids
+  const safeBottom = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 0);
+  const wrapperBottom = 15 + safeBottom;
+
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, { bottom: wrapperBottom }]}>
       <View style={styles.container}>
         {tabs.map((tab, index) => {
-          const isActive = pathname?.toLowerCase() === tab.routePath?.toLowerCase();
-          
-          const activeColor = "#008080"; 
+          const isActive =
+            String(pathname || "").toLowerCase() ===
+            String(tab.routePath || "").toLowerCase();
+
+          const activeColor = "#008080";
           const inactiveColor = "#0F3E48";
 
           return (
@@ -89,8 +105,12 @@ export default function BottomNavbar({
                   { transform: [{ scale: scaleAnim[index] }] },
                 ]}
               >
-                {isActive && <View style={[styles.activeIndicator, { backgroundColor: activeColor }]} />}
-                
+                {isActive && (
+                  <View
+                    style={[styles.activeIndicator, { backgroundColor: activeColor }]}
+                  />
+                )}
+
                 <Ionicons
                   name={isActive ? tab.icon : `${tab.icon}-outline`}
                   size={26}
@@ -100,12 +120,13 @@ export default function BottomNavbar({
                 <Text
                   style={[
                     styles.tabText,
-                    { 
-                        color: isActive ? activeColor : inactiveColor, 
-                        fontWeight: isActive ? "700" : "500",
-                        opacity: isActive ? 1 : 0.8
+                    {
+                      color: isActive ? activeColor : inactiveColor,
+                      fontWeight: isActive ? "700" : "500",
+                      opacity: isActive ? 1 : 0.8,
                     },
                   ]}
+                  numberOfLines={1}
                 >
                   {tab.name}
                 </Text>
@@ -131,9 +152,9 @@ export default function BottomNavbar({
 const styles = StyleSheet.create({
   wrapper: {
     position: "absolute",
-    bottom: 15,
     width: width,
     alignItems: "center",
+    // ✅ bottom is now computed dynamically
   },
   container: {
     flexDirection: "row",

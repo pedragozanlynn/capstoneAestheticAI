@@ -1,7 +1,6 @@
-import { doc, updateDoc } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   Linking,
   Modal,
   ScrollView,
@@ -10,6 +9,7 @@ import {
   TouchableOpacity,
   View,
   Platform,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "../../config/firebase";
@@ -21,6 +21,10 @@ export default function ConsultantDetailsModal({
   onStatusUpdated,
 }) {
   const [updating, setUpdating] = useState(false);
+
+  // ✅ full Firestore doc state (this is what we render)
+  const [loadingDoc, setLoadingDoc] = useState(false);
+  const [docData, setDocData] = useState(null);
 
   /* ===========================
      ✅ TOAST (TOP, NO OK BUTTON)
@@ -46,23 +50,19 @@ export default function ConsultantDetailsModal({
     };
   }, []);
 
-  /* ================= HELPERS (VALIDATIONS) ================= */
+  /* ================= HELPERS ================= */
   const safeStr = (v) => (v == null ? "" : String(v).trim());
+
+  const normalizeStatus = (status) => {
+    const s = safeStr(status).toLowerCase();
+    if (s === "accepted") return "accepted";
+    if (s === "rejected") return "rejected";
+    return "pending";
+  };
 
   const isValidUrl = (u) => {
     const s = safeStr(u);
     return s.startsWith("http://") || s.startsWith("https://");
-  };
-
-  const validateBeforeUpdate = (status) => {
-    if (!data) return "No consultant data found.";
-    if (!data?.id) return "Document ID is missing.";
-    if (!status) return "Missing status action.";
-    const st = safeStr(status);
-    if (st !== "accepted" && st !== "rejected") return "Invalid status value.";
-    if (updating) return "Please wait… updating is in progress.";
-    if (safeStr(data.status) !== "pending") return "This application is no longer pending.";
-    return "";
   };
 
   const validateBeforeOpenLink = (url) => {
@@ -72,34 +72,106 @@ export default function ConsultantDetailsModal({
     return "";
   };
 
-  const handleUpdate = async (status) => {
+  const openLink = async (url) => {
+    const err = validateBeforeOpenLink(url);
+    if (err) return showToast(err, "error");
+    try {
+      await Linking.openURL(url);
+    } catch {
+      showToast("Unable to open the file link.", "error");
+    }
+  };
+
+  /* ===========================
+     ✅ FETCH FULL DOC ON OPEN
+     =========================== */
+  const consultantId = safeStr(data?.id);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchFullDoc = async () => {
+      if (!visible) return;
+      if (!consultantId) {
+        setDocData(data || null);
+        return;
+      }
+
+      setLoadingDoc(true);
+      try {
+        const snap = await getDoc(doc(db, "consultants", consultantId));
+        if (cancelled) return;
+
+        if (!snap.exists()) {
+          // fallback to passed data
+          setDocData(data || null);
+          showToast("Consultant record not found in Firestore.", "error", 2600);
+        } else {
+          setDocData({ id: consultantId, ...snap.data() });
+        }
+      } catch (e) {
+        if (cancelled) return;
+        setDocData(data || null);
+        showToast("Unable to load consultant details.", "error", 2600);
+      } finally {
+        if (!cancelled) setLoadingDoc(false);
+      }
+    };
+
+    fetchFullDoc();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, consultantId]);
+
+  /* ===========================
+     ✅ UPDATE STATUS
+     =========================== */
+  const validateBeforeUpdate = (statusRaw) => {
+    const st = normalizeStatus(statusRaw);
+
+    if (!consultantId) return "Document ID is missing.";
+    if (st !== "accepted" && st !== "rejected") return "Invalid status value.";
+    if (updating) return "Please wait… updating is in progress.";
+
+    const current = normalizeStatus(docData?.status ?? data?.status);
+    if (current !== "pending") return "This application is no longer pending.";
+
+    return "";
+  };
+
+  const handleUpdate = async (statusRaw) => {
+    const status = normalizeStatus(statusRaw);
     const err = validateBeforeUpdate(status);
     if (err) return showToast(err, "error");
 
     setUpdating(true);
 
     try {
-      await updateDoc(doc(db, "consultants", data.id), { status });
+      await updateDoc(doc(db, "consultants", consultantId), { status });
 
-      if (typeof onStatusUpdated === "function") {
-        onStatusUpdated(data.id, status);
-      }
+      // update local view immediately
+      setDocData((prev) => ({ ...(prev || {}), status }));
 
-      // ✅ toast success (instead of Alert)
+      // notify parent so it moves tabs immediately
+      try {
+        onStatusUpdated?.(consultantId, status);
+      } catch {}
+
       showToast(
         status === "accepted"
           ? "Consultant approved successfully."
           : "Consultant application rejected.",
         "success",
-        1600
+        1400
       );
 
-      // close after short delay so toast is seen
       setTimeout(() => {
         try {
           onClose?.();
         } catch {}
-      }, 450);
+      }, 350);
     } catch (error) {
       console.error("Firestore update error:", error);
       showToast("Unable to update status. Please try again.", "error");
@@ -108,18 +180,38 @@ export default function ConsultantDetailsModal({
     }
   };
 
-  if (!data) return null;
+  // ✅ Use Firestore doc if available, else fallback to passed data
+  const viewData = docData || data;
+  if (!viewData) return null;
 
-  const openLink = async (url) => {
-    const err = validateBeforeOpenLink(url);
-    if (err) return showToast(err, "error");
+  const currentStatus = normalizeStatus(viewData.status);
 
-    try {
-      await Linking.openURL(url);
-    } catch (e) {
-      showToast("Unable to open the file link.", "error");
-    }
+  const badgeBg =
+    currentStatus === "accepted"
+      ? "#E8F5E9"
+      : currentStatus === "rejected"
+      ? "#FEE2E2"
+      : "#FFF3E0";
+
+  const badgeTextColor =
+    currentStatus === "accepted"
+      ? "#2E7D32"
+      : currentStatus === "rejected"
+      ? "#991B1B"
+      : "#E65100";
+
+  const badgeLabel = currentStatus.toUpperCase();
+
+  // ✅ safe fallback render helpers
+  const showVal = (v, fallback = "—") => {
+    const s = safeStr(v);
+    return s ? s : fallback;
   };
+
+  const availabilityArr = useMemo(() => {
+    const a = viewData?.availability;
+    return Array.isArray(a) ? a.filter(Boolean) : [];
+  }, [viewData]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true}>
@@ -129,264 +221,229 @@ export default function ConsultantDetailsModal({
 
           <View style={styles.modalHeader}>
             <View style={styles.headerTitleContainer}>
-              <Text style={styles.title}>{data.fullName}</Text>
-              <View
-                style={[
-                  styles.statusBadge,
-                  {
-                    backgroundColor:
-                      data.status === "accepted" ? "#E8F5E9" : "#FFF3E0",
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.statusText,
-                    {
-                      color: data.status === "accepted" ? "#2E7D32" : "#E65100",
-                    },
-                  ]}
-                >
-                  {(data.status || "pending").toUpperCase()}
+              <Text style={styles.title}>{showVal(viewData.fullName, "(No name)")}</Text>
+
+              <View style={[styles.statusBadge, { backgroundColor: badgeBg }]}>
+                <Text style={[styles.statusText, { color: badgeTextColor }]}>
+                  {badgeLabel}
                 </Text>
               </View>
             </View>
+
             <TouchableOpacity onPress={onClose} style={styles.closeIconButton}>
               <Ionicons name="close-circle" size={32} color="#CBD5E1" />
             </TouchableOpacity>
           </View>
 
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-          >
-            {/* 1. PERSONAL INFORMATION */}
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Personal Profile</Text>
-              <View style={styles.infoCard}>
-                <View style={styles.infoRow}>
-                  <Ionicons
-                    name="mail"
-                    size={18}
-                    color="#01579B"
-                    style={styles.iconSpace}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.fieldLabel}>Email Address</Text>
-                    <Text style={styles.fieldValue}>{data.email}</Text>
+          {loadingDoc ? (
+            <View style={styles.loaderBox}>
+              <ActivityIndicator size="large" color="#01579B" />
+              <Text style={styles.loaderText}>Loading details...</Text>
+            </View>
+          ) : (
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* 1. PERSONAL INFORMATION */}
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Personal Profile</Text>
+                <View style={styles.infoCard}>
+                  <View style={styles.infoRow}>
+                    <Ionicons name="mail" size={18} color="#01579B" style={styles.iconSpace} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>Email Address</Text>
+                      <Text style={styles.fieldValue}>{showVal(viewData.email)}</Text>
+                    </View>
                   </View>
-                </View>
-                <View style={[styles.infoRow, { marginTop: 15 }]}>
-                  <Ionicons
-                    name="location"
-                    size={18}
-                    color="#01579B"
-                    style={styles.iconSpace}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.fieldLabel}>Complete Address</Text>
-                    <Text style={styles.fieldValue}>{data.address}</Text>
+
+                  <View style={[styles.infoRow, { marginTop: 15 }]}>
+                    <Ionicons name="location" size={18} color="#01579B" style={styles.iconSpace} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>Complete Address</Text>
+                      <Text style={styles.fieldValue}>{showVal(viewData.address)}</Text>
+                    </View>
                   </View>
-                </View>
-                <View style={[styles.infoRow, { marginTop: 15 }]}>
-                  <Ionicons
-                    name="male-female"
-                    size={18}
-                    color="#01579B"
-                    style={styles.iconSpace}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.fieldLabel}>Gender</Text>
-                    <Text style={styles.fieldValue}>{data.gender}</Text>
+
+                  <View style={[styles.infoRow, { marginTop: 15 }]}>
+                    <Ionicons name="male-female" size={18} color="#01579B" style={styles.iconSpace} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.fieldLabel}>Gender</Text>
+                      <Text style={styles.fieldValue}>{showVal(viewData.gender)}</Text>
+                    </View>
                   </View>
                 </View>
               </View>
-            </View>
 
-            {/* 2. PROFESSIONAL CREDENTIALS */}
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Professional Credentials</Text>
-              <View style={styles.infoCard}>
-                <View style={styles.detailGrid}>
-                  <View style={styles.gridItem}>
-                    <Text style={styles.fieldLabel}>Specialization</Text>
-                    <Text style={styles.fieldValueBold}>
-                      {data.specialization}
-                    </Text>
+              {/* 2. PROFESSIONAL CREDENTIALS */}
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Professional Credentials</Text>
+                <View style={styles.infoCard}>
+                  <View style={styles.detailGrid}>
+                    <View style={styles.gridItem}>
+                      <Text style={styles.fieldLabel}>Specialization</Text>
+                      <Text style={styles.fieldValueBold}>
+                        {showVal(viewData.specialization)}
+                      </Text>
+                    </View>
                   </View>
-                </View>
 
-                <View style={{ marginTop: 15 }}>
-                  <Text style={styles.fieldLabel}>Educational Attainment</Text>
-                  <Text style={styles.fieldValue}>{data.education}</Text>
-                </View>
+                  <View style={{ marginTop: 15 }}>
+                    <Text style={styles.fieldLabel}>Educational Attainment</Text>
+                    <Text style={styles.fieldValue}>{showVal(viewData.education)}</Text>
+                  </View>
 
-                {(data.experience || data.licenseNumber) && (
-                  <View
-                    style={[
-                      styles.detailGrid,
-                      {
-                        marginTop: 15,
-                        borderTopWidth: 1,
-                        borderTopColor: "#E2E8F0",
-                        paddingTop: 15,
-                      },
-                    ]}
+                  {(viewData.experience || viewData.licenseNumber) ? (
+                    <View
+                      style={[
+                        styles.detailGrid,
+                        {
+                          marginTop: 15,
+                          borderTopWidth: 1,
+                          borderTopColor: "#E2E8F0",
+                          paddingTop: 15,
+                        },
+                      ]}
+                    >
+                      <View style={styles.gridItem}>
+                        <Text style={styles.fieldLabel}>Experience</Text>
+                        <Text style={styles.fieldValue}>
+                          {showVal(viewData.experience, "0")} Years
+                        </Text>
+                      </View>
+
+                      <View style={styles.gridItem}>
+                        <Text style={styles.fieldLabel}>License No.</Text>
+                        <Text style={styles.fieldValue}>
+                          {showVal(viewData.licenseNumber, "N/A")}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+
+              {/* 3. AVAILABILITY */}
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Working Availability</Text>
+                <View style={styles.availabilityContainer}>
+                  {availabilityArr.length > 0 ? (
+                    availabilityArr.map((day, index) => (
+                      <View key={`${day}-${index}`} style={styles.dayBadge}>
+                        <Text style={styles.dayText}>{day}</Text>
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.emptyText}>No schedule specified</Text>
+                  )}
+                </View>
+              </View>
+
+              {/* 4. DOCUMENT EVIDENCE */}
+              <View style={styles.section}>
+                <Text style={styles.sectionLabel}>Document Evidence</Text>
+
+                {viewData.idFrontUrl ? (
+                  <TouchableOpacity
+                    style={styles.portfolioBtn}
+                    onPress={() => openLink(viewData.idFrontUrl)}
+                    activeOpacity={0.8}
                   >
-                    <View style={styles.gridItem}>
-                      <Text style={styles.fieldLabel}>Experience</Text>
-                      <Text style={styles.fieldValue}>
-                        {data.experience} Years
-                      </Text>
+                    <View style={styles.portfolioContent}>
+                      <Ionicons name="card-outline" size={24} color="#FFF" />
+                      <View style={{ marginLeft: 12 }}>
+                        <Text style={styles.portfolioBtnText}>Open Valid ID (Front)</Text>
+                        <Text style={styles.portfolioBtnSub}>View front side of ID</Text>
+                      </View>
                     </View>
-                    <View style={styles.gridItem}>
-                      <Text style={styles.fieldLabel}>License No.</Text>
-                      <Text style={styles.fieldValue}>
-                        {data.licenseNumber || "N/A"}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-              </View>
-            </View>
+                    <Ionicons name="chevron-forward" size={20} color="#FFF" />
+                  </TouchableOpacity>
+                ) : null}
 
-            {/* 3. AVAILABILITY */}
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Working Availability</Text>
-              <View style={styles.availabilityContainer}>
-                {data.availability && data.availability.length > 0 ? (
-                  data.availability.map((day, index) => (
-                    <View key={index} style={styles.dayBadge}>
-                      <Text style={styles.dayText}>{day}</Text>
+                {viewData.idBackUrl ? (
+                  <TouchableOpacity
+                    style={[styles.portfolioBtn, { marginTop: 10 }]}
+                    onPress={() => openLink(viewData.idBackUrl)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.portfolioContent}>
+                      <Ionicons name="card-outline" size={24} color="#FFF" />
+                      <View style={{ marginLeft: 12 }}>
+                        <Text style={styles.portfolioBtnText}>Open Valid ID (Back)</Text>
+                        <Text style={styles.portfolioBtnSub}>View back side of ID</Text>
+                      </View>
                     </View>
-                  ))
+                    <Ionicons name="chevron-forward" size={20} color="#FFF" />
+                  </TouchableOpacity>
+                ) : null}
+
+                {viewData.selfieUrl ? (
+                  <TouchableOpacity
+                    style={[styles.portfolioBtn, { marginTop: 10 }]}
+                    onPress={() => openLink(viewData.selfieUrl)}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.portfolioContent}>
+                      <Ionicons name="camera-outline" size={24} color="#FFF" />
+                      <View style={{ marginLeft: 12 }}>
+                        <Text style={styles.portfolioBtnText}>Open Selfie</Text>
+                        <Text style={styles.portfolioBtnSub}>View selfie verification</Text>
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color="#FFF" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {/* ACTION BUTTONS */}
+              <View style={styles.footerAction}>
+                {currentStatus === "pending" ? (
+                  <>
+                    <TouchableOpacity
+                      style={[styles.actionBtn, styles.rejectBtn]}
+                      onPress={() => handleUpdate("rejected")}
+                      disabled={updating}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.actionBtnText}>
+                        {updating ? "UPDATING..." : "REJECT APPLICATION"}
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.actionBtn, styles.acceptBtn]}
+                      onPress={() => handleUpdate("accepted")}
+                      disabled={updating}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={styles.actionBtnText}>
+                        {updating ? "UPDATING..." : "APPROVE CONSULTANT"}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
                 ) : (
-                  <Text style={styles.emptyText}>No schedule specified</Text>
+                  <View style={styles.completedContainer}>
+                    <Ionicons
+                      name={currentStatus === "accepted" ? "checkmark-done-circle" : "close-circle"}
+                      size={22}
+                      color={currentStatus === "accepted" ? "#2E7D32" : "#EF4444"}
+                    />
+                    <Text
+                      style={[
+                        styles.completedText,
+                        { color: currentStatus === "accepted" ? "#2E7D32" : "#EF4444" },
+                      ]}
+                    >
+                      Application {currentStatus}
+                    </Text>
+                  </View>
                 )}
               </View>
-            </View>
+            </ScrollView>
+          )}
 
-            {/* 4. DOCUMENT EVIDENCE */}
-            <View style={styles.section}>
-              <Text style={styles.sectionLabel}>Document Evidence</Text>
-
-              {data.idFrontUrl ? (
-                <TouchableOpacity
-                  style={styles.portfolioBtn}
-                  onPress={() => openLink(data.idFrontUrl)}
-                  activeOpacity={0.8}
-                >
-                  <View style={styles.portfolioContent}>
-                    <Ionicons name="card-outline" size={24} color="#FFF" />
-                    <View style={{ marginLeft: 12 }}>
-                      <Text style={styles.portfolioBtnText}>
-                        Open Valid ID (Front)
-                      </Text>
-                      <Text style={styles.portfolioBtnSub}>
-                        View front side of ID
-                      </Text>
-                    </View>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#FFF" />
-                </TouchableOpacity>
-              ) : null}
-
-              {data.idBackUrl ? (
-                <TouchableOpacity
-                  style={[styles.portfolioBtn, { marginTop: 10 }]}
-                  onPress={() => openLink(data.idBackUrl)}
-                  activeOpacity={0.8}
-                >
-                  <View style={styles.portfolioContent}>
-                    <Ionicons name="card-outline" size={24} color="#FFF" />
-                    <View style={{ marginLeft: 12 }}>
-                      <Text style={styles.portfolioBtnText}>
-                        Open Valid ID (Back)
-                      </Text>
-                      <Text style={styles.portfolioBtnSub}>
-                        View back side of ID
-                      </Text>
-                    </View>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#FFF" />
-                </TouchableOpacity>
-              ) : null}
-
-              {data.selfieUrl ? (
-                <TouchableOpacity
-                  style={[styles.portfolioBtn, { marginTop: 10 }]}
-                  onPress={() => openLink(data.selfieUrl)}
-                  activeOpacity={0.8}
-                >
-                  <View style={styles.portfolioContent}>
-                    <Ionicons name="camera-outline" size={24} color="#FFF" />
-                    <View style={{ marginLeft: 12 }}>
-                      <Text style={styles.portfolioBtnText}>Open Selfie</Text>
-                      <Text style={styles.portfolioBtnSub}>
-                        View selfie verification
-                      </Text>
-                    </View>
-                  </View>
-                  <Ionicons name="chevron-forward" size={20} color="#FFF" />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-
-            {/* ACTION BUTTONS - Conditioned on 'pending' status */}
-            <View style={styles.footerAction}>
-              {data.status === "pending" ? (
-                <>
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.rejectBtn]}
-                    onPress={() => handleUpdate("rejected")}
-                    disabled={updating}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.actionBtnText}>
-                      {updating ? "UPDATING..." : "REJECT APPLICATION"}
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.actionBtn, styles.acceptBtn]}
-                    onPress={() => handleUpdate("accepted")}
-                    disabled={updating}
-                    activeOpacity={0.85}
-                  >
-                    <Text style={styles.actionBtnText}>
-                      {updating ? "UPDATING..." : "APPROVE CONSULTANT"}
-                    </Text>
-                  </TouchableOpacity>
-                </>
-              ) : (
-                <View style={styles.completedContainer}>
-                  <Ionicons
-                    name={
-                      data.status === "accepted"
-                        ? "checkmark-done-circle"
-                        : "close-circle"
-                    }
-                    size={22}
-                    color={data.status === "accepted" ? "#2E7D32" : "#EF4444"}
-                  />
-                  <Text
-                    style={[
-                      styles.completedText,
-                      {
-                        color:
-                          data.status === "accepted" ? "#2E7D32" : "#EF4444",
-                      },
-                    ]}
-                  >
-                    Application {data.status}
-                  </Text>
-                </View>
-              )}
-            </View>
-          </ScrollView>
-
-          {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+          {/* ✅ TOAST OVERLAY */}
           {toast.visible && (
             <View
               pointerEvents="none"
@@ -528,7 +585,19 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
 
-  /* ===== TOAST (TOP, NO OK) ===== */
+  loaderBox: {
+    flex: 1,
+    paddingTop: 30,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  loaderText: {
+    marginTop: 10,
+    color: "#64748B",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
   toast: {
     position: "absolute",
     left: 16,

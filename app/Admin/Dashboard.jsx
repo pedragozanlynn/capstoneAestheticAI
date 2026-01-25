@@ -2,7 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import { collection, getDocs } from "firebase/firestore";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -14,25 +14,78 @@ import {
   TouchableOpacity,
   View,
   StatusBar,
-  SafeAreaView,
-  Platform
+  Platform,
 } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { LineChart, PieChart } from "react-native-chart-kit";
 import { auth, db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 
 const screenWidth = Dimensions.get("window").width;
 
+/** =========================
+ * ✅ Small safe helpers
+ * ========================= */
+const safeStr = (v) => (v == null ? "" : String(v).trim());
+const safeNum = (v, fallback = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+const isFsTimestamp = (t) => !!t && typeof t === "object" && typeof t.toDate === "function";
+
+const toMillisSafe = (ts) => {
+  try {
+    if (!ts) return 0;
+    if (typeof ts === "number") return ts;
+    if (isFsTimestamp(ts)) return ts.toMillis ? ts.toMillis() : ts.toDate().getTime();
+    const d = new Date(ts);
+    const ms = d.getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  } catch {
+    return 0;
+  }
+};
+
+const toDateSafe = (ts) => {
+  try {
+    if (!ts) return null;
+    if (isFsTimestamp(ts)) return ts.toDate();
+    if (typeof ts === "number") return new Date(ts);
+    const d = new Date(ts);
+    return Number.isFinite(d.getTime()) ? d : null;
+  } catch {
+    return null;
+  }
+};
+
+const formatMoney = (amt) =>
+  `₱${safeNum(amt, 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+
+const normalizeConsultantStatus = (s) => {
+  const x = safeStr(s).toLowerCase();
+  if (x === "accepted") return "accepted";
+  if (x === "rejected") return "rejected";
+  return "pending";
+};
+
 export default function Dashboard() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+
   const [loading, setLoading] = useState(true);
+
   const [totalUsers, setTotalUsers] = useState(0);
   const [totalConsultants, setTotalConsultants] = useState(0);
+
+  // [pending, accepted, rejected, total]
   const [conTrend, setConTrend] = useState([0, 0, 0, 0]);
+
   const [grandTotalSubs, setGrandTotalSubs] = useState(0);
   const [grandTotalAdmin, setGrandTotalAdmin] = useState(0);
+
   const [payments, setPayments] = useState([]);
   const [activeTab, setActiveTab] = useState("all");
+
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
   const handleLogout = () => {
@@ -46,10 +99,8 @@ export default function Dashboard() {
           try {
             await signOut(auth);
             router.replace("/");
-            setTimeout(() => {
-              router.replace("/Admin/Login");
-            }, 50);
-          } catch (error) {
+            setTimeout(() => router.replace("/Admin/Login"), 50);
+          } catch {
             Alert.alert("Error", "Failed to logout.");
           }
         },
@@ -61,81 +112,125 @@ export default function Dashboard() {
     const loadDashboardData = async () => {
       try {
         setLoading(true);
-        const [uSnap, cSnap] = await Promise.all([
+
+        const [uSnap, cSnap, paymentsSnap] = await Promise.all([
           getDocs(collection(db, "users")),
-          getDocs(collection(db, "consultants"))
-        ]);
-        
-        setTotalUsers(uSnap.size);
-        const consData = cSnap.docs.map(d => d.data());
-        setTotalConsultants(consData.length);
-        setConTrend([
-          consData.filter(c => c.status === "pending").length,
-          consData.filter(c => c.status === "accepted").length,
-          consData.filter(c => c.status === "rejected").length,
-          consData.length
+          getDocs(collection(db, "consultants")),
+          getDocs(collection(db, "subscription_payments")),
         ]);
 
-        const paymentsSnap = await getDocs(collection(db, "subscription_payments"));
+        setTotalUsers(uSnap.size);
+
+        const consData = cSnap.docs.map((d) => d.data() || {});
+        setTotalConsultants(consData.length);
+
+        const pending = consData.filter((c) => normalizeConsultantStatus(c.status) === "pending").length;
+        const accepted = consData.filter((c) => normalizeConsultantStatus(c.status) === "accepted").length;
+        const rejected = consData.filter((c) => normalizeConsultantStatus(c.status) === "rejected").length;
+
+        setConTrend([pending, accepted, rejected, consData.length]);
+
         let sTotal = 0;
         let aTotal = 0;
         const combinedList = [];
 
-        paymentsSnap.forEach((doc) => {
-          const d = doc.data();
-          const amt = Number(d.amount) || 0;
-          if (d.type === "admin_income" && d.status === "completed") {
+        paymentsSnap.forEach((docSnap) => {
+          const d = docSnap.data() || {};
+          const amt = safeNum(d.amount, 0);
+
+          // Admin income (session)
+          if (safeStr(d.type) === "admin_income" && safeStr(d.status).toLowerCase() === "completed") {
             aTotal += amt;
-            combinedList.push({ id: doc.id, ...d, categoryType: 'session', displayAmount: amt, unifiedDate: d.createdAt });
-          } else if (d.status === "Approved") {
+            combinedList.push({
+              id: docSnap.id,
+              ...d,
+              categoryType: "session",
+              displayAmount: amt,
+              unifiedDate: d.createdAt || d.timestamp || d.date || null,
+            });
+            return;
+          }
+
+          // Subscription payments
+          if (safeStr(d.status).toLowerCase() === "approved") {
             sTotal += amt;
-            combinedList.push({ id: doc.id, ...d, categoryType: 'subscription', displayAmount: amt, unifiedDate: d.timestamp });
+            combinedList.push({
+              id: docSnap.id,
+              ...d,
+              categoryType: "subscription",
+              displayAmount: amt,
+              unifiedDate: d.timestamp || d.createdAt || d.date || null,
+            });
           }
         });
 
         setGrandTotalSubs(sTotal);
         setGrandTotalAdmin(aTotal);
-        const sorted = combinedList.sort((a, b) => (b.unifiedDate?.toMillis?.() || 0) - (a.unifiedDate?.toMillis?.() || 0));
+
+        const sorted = combinedList.sort((a, b) => toMillisSafe(b.unifiedDate) - toMillisSafe(a.unifiedDate));
         setPayments(sorted);
       } catch (e) {
         console.error("Dashboard Fetch Error:", e);
+        Alert.alert(
+          "Error",
+          "Unable to load dashboard data. Please check your internet connection and try again.",
+          [{ text: "OK" }]
+        );
       } finally {
         setLoading(false);
       }
     };
+
     loadDashboardData();
-  }, []);
+  }, [router]);
 
   const formatDateTime = (ts) => {
-    if (!ts) return "N/A";
-    const date = ts.toDate ? ts.toDate() : new Date(ts);
-    return date.toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const date = toDateSafe(ts);
+    if (!date) return "N/A";
+    return date.toLocaleString("en-PH", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   };
 
-  const filteredPayments = activeTab === "all" 
-    ? payments 
-    : payments.filter(p => activeTab === "subscription" ? p.categoryType === "subscription" : p.categoryType === "session");
+  const filteredPayments = useMemo(() => {
+    if (activeTab === "all") return payments;
+    if (activeTab === "subscription") return payments.filter((p) => p.categoryType === "subscription");
+    return payments.filter((p) => p.categoryType === "session");
+  }, [activeTab, payments]);
+
+  const totalRevenue = grandTotalSubs + grandTotalAdmin;
 
   return (
-    <View style={{ flex: 1, backgroundColor: "#F4F7FA" }}>
-      {/* 1. Tinitiyak na ang status bar ay visible at may background */}
-      <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
-      
-      {/* 2. SafeAreaView wrapper para sa Header */}
-      <SafeAreaView style={styles.headerSafe}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.greeting}>Admin Insights</Text>
-            <Text style={styles.subGreeting}>System monitoring & analytics</Text>
-          </View>
-          <TouchableOpacity onPress={() => setShowProfileMenu(true)} style={styles.profileBtn}>
-            <Ionicons name="person-circle" size={45} color="#01579B" />
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+    <View style={styles.screen}>
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent={false} />
 
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false} contentContainerStyle={{paddingBottom: 120}}>
-        
+    {/* ✅ SAFE AREA (FINAL) */}
+<SafeAreaView edges={["top"]} style={styles.headerSafe}>
+  <View style={styles.headerRow}>
+    <View>
+      <Text style={styles.greeting}>Admin Insights</Text>
+      <Text style={styles.subGreeting}>System monitoring & analytics</Text>
+    </View>
+
+    <TouchableOpacity
+      onPress={() => setShowProfileMenu(true)}
+      style={styles.profileBtn}
+      activeOpacity={0.85}
+    >
+      <Ionicons name="person-circle" size={44} color="#01579B" />
+    </TouchableOpacity>
+  </View>
+</SafeAreaView>
+
+      <ScrollView
+        style={styles.container}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
         {loading ? (
           <View style={styles.innerLoader}>
             <ActivityIndicator size="large" color="#01579B" />
@@ -143,74 +238,90 @@ export default function Dashboard() {
           </View>
         ) : (
           <>
-            {/* CONSULTANT TREND */}
             <Text style={styles.sectionTitle}>Consultant Application Trend</Text>
-            <View style={styles.chartCard}>
+            <View style={styles.card}>
               <LineChart
                 data={{
                   labels: ["Pend", "Appr", "Rej", "Total"],
-                  datasets: [{ data: conTrend }]
+                  datasets: [{ data: conTrend.map((n) => safeNum(n, 0)) }],
                 }}
                 width={screenWidth - 40}
-                height={200}
+                height={210}
                 chartConfig={lineChartConfig}
                 bezier
                 style={styles.chartStyle}
               />
             </View>
 
-            {/* SUMMARY CARDS */}
             <View style={styles.summaryRow}>
               <View style={styles.summaryCard}>
-                <View style={[styles.iconBox, {backgroundColor: '#E3F2FD'}]}>
+                <View style={[styles.iconBox, { backgroundColor: "#E3F2FD" }]}>
                   <Ionicons name="people" size={20} color="#01579B" />
                 </View>
-                <Text style={styles.summaryValue}>{totalUsers}</Text>
+                <Text style={styles.summaryValue}>{safeNum(totalUsers, 0)}</Text>
                 <Text style={styles.summaryLabel}>Total Users</Text>
               </View>
+
               <View style={styles.summaryCard}>
-                <View style={[styles.iconBox, {backgroundColor: '#E0F2F1'}]}>
+                <View style={[styles.iconBox, { backgroundColor: "#E0F2F1" }]}>
                   <Ionicons name="school" size={20} color="#2c4f4f" />
                 </View>
-                <Text style={styles.summaryValue}>{totalConsultants}</Text>
+                <Text style={styles.summaryValue}>{safeNum(totalConsultants, 0)}</Text>
                 <Text style={styles.summaryLabel}>Consultants</Text>
               </View>
             </View>
 
-            {/* REVENUE CHART */}
             <Text style={styles.sectionTitle}>Revenue Distribution</Text>
-            <View style={styles.whiteCard}>
+            <View style={styles.cardCenter}>
               <View style={styles.totalOverlay}>
                 <Text style={styles.overlayLabel}>Total Revenue</Text>
-                <Text style={styles.overlayValue}>₱{(grandTotalSubs + grandTotalAdmin).toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+                <Text style={styles.overlayValue}>{formatMoney(totalRevenue)}</Text>
               </View>
+
               <PieChart
                 data={[
-                  { name: "Subs", population: grandTotalSubs || 0.1, color: "#8f2f52", legendFontColor: "#7F7F7F", legendFontSize: 12 },
-                  { name: "Income", population: grandTotalAdmin || 0.1, color: "#2c4f4f", legendFontColor: "#7F7F7F", legendFontSize: 12 },
+                  {
+                    name: "Subs",
+                    population: grandTotalSubs > 0 ? grandTotalSubs : 0.1,
+                    color: "#8f2f52",
+                    legendFontColor: "#64748B",
+                    legendFontSize: 12,
+                  },
+                  {
+                    name: "Income",
+                    population: grandTotalAdmin > 0 ? grandTotalAdmin : 0.1,
+                    color: "#2c4f4f",
+                    legendFontColor: "#64748B",
+                    legendFontSize: 12,
+                  },
                 ]}
                 width={screenWidth - 40}
-                height={200}
+                height={220}
                 chartConfig={{ color: () => "#000" }}
                 accessor="population"
                 backgroundColor="transparent"
                 paddingLeft="35"
-                absolute={true} 
+                absolute
               />
             </View>
 
-            {/* TRANSACTIONS */}
             <View style={styles.tabHeader}>
-              <Text style={styles.sectionTitle}>Recent Transactions</Text>
+              <Text style={styles.sectionTitleNoTop}>Recent Transactions</Text>
+
               <View style={styles.tabRow}>
-                {["all", "subscription", "session"].map((tab) => (
-                  <TouchableOpacity 
-                    key={tab} 
-                    onPress={() => setActiveTab(tab)}
-                    style={[styles.tabButton, activeTab === tab && styles.tabActive]}
+                {[
+                  { id: "all", label: "All" },
+                  { id: "subscription", label: "Subs" },
+                  { id: "session", label: "Income" },
+                ].map((tab) => (
+                  <TouchableOpacity
+                    key={tab.id}
+                    onPress={() => setActiveTab(tab.id)}
+                    activeOpacity={0.85}
+                    style={[styles.tabButton, activeTab === tab.id && styles.tabActive]}
                   >
-                    <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
-                      {tab === "all" ? "All" : tab === "subscription" ? "Subs" : "Income"}
+                    <Text style={[styles.tabText, activeTab === tab.id && styles.tabTextActive]}>
+                      {tab.label}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -219,20 +330,28 @@ export default function Dashboard() {
 
             <View style={styles.listWrapper}>
               {filteredPayments.length > 0 ? (
-                filteredPayments.map((p) => (
-                  <View key={p.id} style={styles.paymentCard}>
-                    <View style={[styles.iconCircle, {backgroundColor: p.categoryType === 'subscription' ? '#FCE4EC' : '#E0F2F1'}]}>
-                      <Ionicons name={p.categoryType === 'subscription' ? "card" : "cash"} size={18} color={p.categoryType === 'subscription' ? '#8f2f52' : '#2c4f4f'} />
+                filteredPayments.map((p) => {
+                  const isSub = p.categoryType === "subscription";
+                  const accent = isSub ? "#8f2f52" : "#2c4f4f";
+                  const bg = isSub ? "#FCE4EC" : "#E0F2F1";
+
+                  return (
+                    <View key={p.id} style={styles.paymentCard}>
+                      <View style={[styles.iconCircle, { backgroundColor: bg }]}>
+                        <Ionicons name={isSub ? "card" : "cash"} size={18} color={accent} />
+                      </View>
+
+                      <View style={styles.paymentMid}>
+                        <Text style={styles.paymentTitle}>{isSub ? "Subscription" : "Admin Share"}</Text>
+                        <Text style={styles.paymentDate}>{formatDateTime(p.unifiedDate)}</Text>
+                      </View>
+
+                      <Text style={[styles.paymentAmount, { color: accent }]}>
+                        {formatMoney(p.displayAmount)}
+                      </Text>
                     </View>
-                    <View style={{ flex: 1, marginLeft: 12 }}>
-                      <Text style={styles.paymentTitle}>{p.categoryType === 'subscription' ? 'Subscription' : 'Admin Share'}</Text>
-                      <Text style={styles.paymentDate}>{formatDateTime(p.unifiedDate)}</Text>
-                    </View>
-                    <Text style={[styles.paymentAmount, {color: p.categoryType === 'subscription' ? '#8f2f52' : '#2c4f4f'}]}>
-                      ₱{(p.displayAmount || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                    </Text>
-                  </View>
-                ))
+                  );
+                })
               ) : (
                 <View style={styles.emptyBox}>
                   <Text style={styles.emptyText}>No transactions found.</Text>
@@ -243,16 +362,22 @@ export default function Dashboard() {
         )}
       </ScrollView>
 
-      {/* PROFILE MODAL */}
-      <Modal visible={showProfileMenu} transparent animationType="fade">
+      <Modal
+        visible={showProfileMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowProfileMenu(false)}
+      >
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowProfileMenu(false)}>
           <View style={styles.dropdownMenu}>
             <View style={styles.adminInfo}>
               <Ionicons name="shield-checkmark" size={18} color="#01579B" />
               <Text style={styles.adminLabel}>Administrator</Text>
             </View>
+
             <View style={styles.menuDivider} />
-            <TouchableOpacity onPress={handleLogout} style={styles.logoutMenuItem}>
+
+            <TouchableOpacity onPress={handleLogout} style={styles.logoutMenuItem} activeOpacity={0.85}>
               <Ionicons name="log-out-outline" size={20} color="#D32F2F" />
               <Text style={styles.logoutText}>Logout</Text>
             </TouchableOpacity>
@@ -273,67 +398,187 @@ const lineChartConfig = {
   color: (opacity = 1) => `rgba(1, 87, 155, ${opacity})`,
   labelColor: (opacity = 1) => `rgba(100, 116, 139, ${opacity})`,
   propsForDots: { r: "5", strokeWidth: "2", stroke: "#01579B" },
-  propsForBackgroundLines: { strokeDasharray: "" }
+  propsForBackgroundLines: { strokeDasharray: "" },
 };
 
 const styles = StyleSheet.create({
-  headerSafe: { 
-    backgroundColor: '#FFF', 
-    elevation: 2, 
-    shadowColor: '#000', 
-    shadowOpacity: 0.05, 
-    shadowRadius: 5 
+  screen: { flex: 1, backgroundColor: "#F4F7FA" },
+  headerSafe: {
+    backgroundColor: "#FFF",
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
   },
-  headerRow: { 
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    paddingHorizontal: 25, 
-    // In-adjust ang padding para magmukhang balance sa safe area
-    paddingVertical: Platform.OS === 'android' ? 20 : 15 
+  
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  
+    // ✅ REGULAR DESIGN PADDING (consistent across devices)
+    paddingHorizontal: 25,
+    paddingTop: 15,
+    paddingBottom: 12,
   },
-  greeting: { fontSize: 22, fontWeight: "800", color: "#01579B" },
-  subGreeting: { fontSize: 12, color: '#64748B', marginTop: -2 },
+  
+  greeting: { fontSize: 22, fontWeight: "900", color: "#01579B" },
+  subGreeting: { fontSize: 12, color: "#64748B", marginTop: 2, fontWeight: "600" },
+  profileBtn: { padding: 2, borderRadius: 999 },
+
   container: { flex: 1 },
-  innerLoader: { marginTop: 100, alignItems: 'center', justifyContent: 'center' },
-  loaderText: { marginTop: 10, color: '#64748B', fontWeight: '500' },
-  
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.2)' },
-  dropdownMenu: { position: 'absolute', top: 100, right: 20, backgroundColor: '#fff', borderRadius: 15, width: 180, padding: 12, elevation: 10 },
-  adminInfo: { flexDirection: 'row', alignItems: 'center', padding: 5 },
-  adminLabel: { marginLeft: 8, fontWeight: '700', color: '#334155', fontSize: 14 },
-  menuDivider: { height: 1, backgroundColor: '#F1F5F9', marginVertical: 8 },
-  logoutMenuItem: { flexDirection: 'row', alignItems: 'center', padding: 8 },
-  logoutText: { marginLeft: 10, color: '#D32F2F', fontWeight: '700' },
+  scrollContent: { paddingBottom: 120 },
 
-  sectionTitle: { fontSize: 16, fontWeight: "700", color: "#1E293B", paddingHorizontal: 20, marginTop: 25, marginBottom: 12 },
-  chartCard: { backgroundColor: "#fff", marginHorizontal: 20, borderRadius: 24, padding: 15, elevation: 4, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10 },
-  chartStyle: { borderRadius: 16, marginVertical: 0, paddingRight: 40 },
-  
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: 15 },
-  summaryCard: { backgroundColor: '#fff', width: '48%', padding: 18, borderRadius: 24, elevation: 3, shadowColor: '#000', shadowOpacity: 0.05 },
-  iconBox: { width: 36, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
-  summaryValue: { fontSize: 22, fontWeight: '800', color: '#1E293B' },
-  summaryLabel: { fontSize: 11, color: '#64748B', fontWeight: '600', marginTop: 2 },
+  innerLoader: { marginTop: 120, alignItems: "center", justifyContent: "center" },
+  loaderText: { marginTop: 10, color: "#64748B", fontWeight: "700" },
 
-  whiteCard: { backgroundColor: "#fff", marginHorizontal: 20, borderRadius: 24, padding: 20, elevation: 4, alignItems: 'center' },
-  totalOverlay: { position: 'absolute', top: '40%', zIndex: 1, alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.9)', padding: 10, borderRadius: 50 }, 
-  overlayLabel: { fontSize: 10, color: '#64748B', fontWeight: 'bold', textTransform: 'uppercase' },
-  overlayValue: { fontSize: 14, fontWeight: '800', color: '#01579B' },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0F172A",
+    paddingHorizontal: 20,
+    marginTop: 22,
+    marginBottom: 12,
+  },
+  sectionTitleNoTop: {
+    fontSize: 16,
+    fontWeight: "900",
+    color: "#0F172A",
+    marginBottom: 10,
+  },
 
-  tabHeader: { paddingHorizontal: 20 },
-  tabRow: { flexDirection: 'row', marginBottom: 10 },
-  tabButton: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 12, backgroundColor: '#E2E8F0', marginRight: 8 },
-  tabActive: { backgroundColor: '#01579B' },
-  tabText: { fontSize: 12, fontWeight: '700', color: '#64748B' },
-  tabTextActive: { color: '#fff' },
+  card: {
+    backgroundColor: "#fff",
+    marginHorizontal: 20,
+    borderRadius: 22,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+  },
+  cardCenter: {
+    backgroundColor: "#fff",
+    marginHorizontal: 20,
+    borderRadius: 22,
+    padding: 18,
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
+    alignItems: "center",
+  },
+  chartStyle: { borderRadius: 16, paddingRight: 36 },
 
-  listWrapper: { paddingHorizontal: 20 },
-  paymentCard: { backgroundColor: "#fff", padding: 16, borderRadius: 20, marginBottom: 10, flexDirection: 'row', alignItems: 'center', elevation: 2 },
-  iconCircle: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
-  paymentTitle: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
-  paymentDate: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
-  paymentAmount: { fontSize: 16, fontWeight: '800' },
-  emptyBox: { padding: 40, alignItems: 'center' },
-  emptyText: { color: '#94A3B8' }
+  summaryRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    marginTop: 14,
+  },
+  summaryCard: {
+    backgroundColor: "#fff",
+    width: "48%",
+    padding: 16,
+    borderRadius: 22,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
+  },
+  iconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  summaryValue: { fontSize: 22, fontWeight: "900", color: "#0F172A" },
+  summaryLabel: { fontSize: 11, color: "#64748B", fontWeight: "800", marginTop: 2 },
+
+  totalOverlay: {
+    position: "absolute",
+    top: "40%",
+    zIndex: 1,
+    alignItems: "center",
+    backgroundColor: "rgba(255,255,255,0.92)",
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+  overlayLabel: { fontSize: 10, color: "#64748B", fontWeight: "900", textTransform: "uppercase" },
+  overlayValue: { fontSize: 14, fontWeight: "900", color: "#01579B", marginTop: 2 },
+
+  tabHeader: { paddingHorizontal: 20, marginTop: 6 },
+  tabRow: { flexDirection: "row", marginBottom: 10 },
+  tabButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: "#E2E8F0",
+    marginRight: 8,
+  },
+  tabActive: { backgroundColor: "#01579B" },
+  tabText: { fontSize: 12, fontWeight: "900", color: "#64748B" },
+  tabTextActive: { color: "#fff" },
+
+  listWrapper: { paddingHorizontal: 20, paddingBottom: 10 },
+  paymentCard: {
+    backgroundColor: "#fff",
+    padding: 14,
+    borderRadius: 18,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
+  },
+  iconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  paymentMid: { flex: 1, marginLeft: 12 },
+  paymentTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
+  paymentDate: { fontSize: 11, color: "#94A3B8", marginTop: 3, fontWeight: "700" },
+  paymentAmount: { fontSize: 14, fontWeight: "900" },
+
+  emptyBox: { padding: 40, alignItems: "center" },
+  emptyText: { color: "#94A3B8", fontWeight: "800" },
+
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.22)" },
+  dropdownMenu: {
+    position: "absolute",
+    top: Platform.OS === "android" ? 92 : 110,
+    right: 18,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    width: 190,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#F1F5F9",
+    shadowColor: "#000",
+    shadowOpacity: 0.10,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  adminInfo: { flexDirection: "row", alignItems: "center", paddingVertical: 6, paddingHorizontal: 6 },
+  adminLabel: { marginLeft: 8, fontWeight: "900", color: "#334155", fontSize: 14 },
+  menuDivider: { height: 1, backgroundColor: "#F1F5F9", marginVertical: 8 },
+  logoutMenuItem: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 8 },
+  logoutText: { marginLeft: 10, color: "#D32F2F", fontWeight: "900" },
 });

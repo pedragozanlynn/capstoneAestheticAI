@@ -4,13 +4,15 @@ import { Picker } from "@react-native-picker/picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
+  Platform,
+  Modal,
+  Pressable,
 } from "react-native";
 
 // ✅ NEW: camera selfie
@@ -30,6 +32,34 @@ import Input from "../components/Input";
 // session cache
 let sessionFormData = null;
 
+/* ================= CENTER MESSAGE MODAL (Login style) ================= */
+const MSG_COLORS = {
+  info: {
+    bg: "#EFF6FF",
+    border: "#BFDBFE",
+    icon: "information-circle",
+    iconColor: "#01579B",
+  },
+  success: {
+    bg: "#ECFDF5",
+    border: "#BBF7D0",
+    icon: "checkmark-circle",
+    iconColor: "#16A34A",
+  },
+  warning: {
+    bg: "#FFFBEB",
+    border: "#FDE68A",
+    icon: "warning",
+    iconColor: "#F59E0B",
+  },
+  error: {
+    bg: "#FEF2F2",
+    border: "#FECACA",
+    icon: "close-circle",
+    iconColor: "#DC2626",
+  },
+};
+
 export default function Step2Details() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -38,10 +68,9 @@ export default function Step2Details() {
   const [formData, setFormData] = useState({
     specialization: "",
     education: "",
-    experience: "", // (kept optional)
-    licenseNumber: "", // (kept optional)
+    experience: "", // ✅ optional
+    licenseNumber: "", // ✅ optional
 
-    // ✅ Valid ID + Selfie uploads
     idFrontUrl: "",
     idBackUrl: "",
     selfieUrl: "",
@@ -50,7 +79,61 @@ export default function Step2Details() {
     day: "",
   });
 
-  /* ===================== UPLOAD HELPERS ===================== */
+  /* ===========================
+     ✅ MESSAGE MODAL (Login style)
+     Types: info | success | warning | error
+     =========================== */
+  const [msgVisible, setMsgVisible] = useState(false);
+  const [msgType, setMsgType] = useState("info");
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const msgTimerRef = useRef(null);
+
+  const showToast = (text, type = "info", ms = 2400) => {
+    try {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    } catch {}
+
+    const t = String(type || "info");
+    const safeType = MSG_COLORS[t] ? t : "info";
+
+    setMsgType(safeType);
+
+    const autoTitle =
+      safeType === "success"
+        ? "Success"
+        : safeType === "error"
+        ? "Error"
+        : safeType === "warning"
+        ? "Warning"
+        : "Notice";
+
+    setMsgTitle(autoTitle);
+    setMsgBody(String(text || ""));
+    setMsgVisible(true);
+
+    if (ms && ms > 0) {
+      msgTimerRef.current = setTimeout(() => setMsgVisible(false), ms);
+    }
+  };
+
+  const closeMessage = () => {
+    try {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    } catch {}
+    setMsgVisible(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+      } catch {}
+    };
+  }, []);
+
+  /* ===================== HELPERS ===================== */
+  const safeStr = (v) => String(v ?? "").trim();
 
   const normalizePickedFile = (picked) => {
     try {
@@ -88,8 +171,6 @@ export default function Step2Details() {
     }
   };
 
-  /* ===================== LOGIC ===================== */
-
   const handleInputChange = (field, value) => {
     const next = { ...formData, [field]: value };
     setFormData(next);
@@ -97,12 +178,15 @@ export default function Step2Details() {
     AsyncStorage.setItem("step2Data", JSON.stringify(next));
   };
 
-  // ✅ upload ID uses dedicated upload functions (unchanged behavior)
+  /* ===================== UPLOADS ===================== */
+
   const uploadId = async (side) => {
     try {
       const pickedRaw = await pickFile();
       const picked = normalizePickedFile(pickedRaw);
       if (!picked?.uri) return;
+
+      showToast(`Uploading Valid ID (${side})…`, "info", 900);
 
       const uploaded =
         side === "front"
@@ -110,63 +194,55 @@ export default function Step2Details() {
           : await uploadValidIdBack(picked);
 
       if (!uploaded || !uploaded.fileUrl) {
-        return Alert.alert("Upload Failed", "Could not upload your ID file.");
+        return showToast("Upload failed. Please try again.", "error");
       }
 
-      if (side === "front") {
-        handleInputChange("idFrontUrl", uploaded.fileUrl);
-      } else {
-        handleInputChange("idBackUrl", uploaded.fileUrl);
-      }
+      if (side === "front") handleInputChange("idFrontUrl", uploaded.fileUrl);
+      else handleInputChange("idBackUrl", uploaded.fileUrl);
 
-      Alert.alert("Success", `Valid ID (${side}) uploaded successfully!`);
+      showToast(`Valid ID (${side}) uploaded successfully.`, "success");
     } catch (e) {
       console.log("❌ uploadId error:", e?.message || e);
-      Alert.alert("Error", "Something went wrong while uploading.");
+      showToast("Something went wrong while uploading.", "error");
     }
   };
 
-  // ✅ UPDATED: selfie must be captured on-the-spot using camera (NOT gallery)
   const handleUploadSelfie = async () => {
     try {
-      // 1) Ask camera permission
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (perm.status !== "granted") {
-        return Alert.alert(
-          "Camera Permission Needed",
-          "Please allow camera access to take a selfie."
-        );
+        return showToast("Camera permission is required to take a selfie.", "warning", 2800);
       }
 
-      // 2) Open camera
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
         quality: 0.9,
         cameraType: ImagePicker.CameraType.front,
       });
 
-      // user cancelled
       if (result.canceled) return;
 
-      // 3) Normalize into your uploader input
       const picked = normalizePickedFile(result);
       if (!picked?.uri) {
-        return Alert.alert("Error", "Could not read captured selfie.");
+        return showToast("Could not read captured selfie. Please retry.", "error");
       }
 
-      // 4) Upload to Supabase using your existing service
+      showToast("Uploading selfie…", "info", 900);
+
       const uploaded = await uploadSelfieToSupabase(picked);
       if (!uploaded || !uploaded.fileUrl) {
-        return Alert.alert("Upload Failed", "Could not upload selfie photo.");
+        return showToast("Selfie upload failed. Please try again.", "error");
       }
 
       handleInputChange("selfieUrl", uploaded.fileUrl);
-      Alert.alert("Success", "Selfie captured and uploaded successfully!");
+      showToast("Selfie uploaded successfully.", "success");
     } catch (e) {
       console.log("❌ handleUploadSelfie error:", e?.message || e);
-      Alert.alert("Error", e?.message || "Something went wrong while uploading.");
+      showToast(e?.message || "Something went wrong while uploading.", "error");
     }
   };
+
+  /* ===================== INIT ===================== */
 
   useEffect(() => {
     if (sessionFormData) {
@@ -201,240 +277,301 @@ export default function Step2Details() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params?.data]);
 
+  /* ===================== AVAILABILITY ===================== */
+
   const addAvailability = () => {
-    if (!formData.day) {
-      return Alert.alert("Missing Field", "Please select a day.");
+    const day = safeStr(formData.day);
+    if (!day) {
+      return showToast("Please select a day before adding.", "warning");
     }
 
-    if (formData.availability.includes(formData.day)) {
-      return Alert.alert("Already Added", "That day is already in your list.");
+    // ✅ normalize compare (case-safe)
+    const exists = (formData.availability || []).some(
+      (d) => safeStr(d).toLowerCase() === day.toLowerCase()
+    );
+    if (exists) {
+      return showToast("That day is already added.", "warning");
     }
 
     const next = {
       ...formData,
-      availability: [...formData.availability, formData.day],
+      availability: [...(formData.availability || []), day],
       day: "",
     };
 
     setFormData(next);
     sessionFormData = next;
     AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    showToast("Availability day added.", "success", 1200);
   };
 
   const removeAvailability = (index) => {
     const next = {
       ...formData,
-      availability: formData.availability.filter((_, i) => i !== index),
+      availability: (formData.availability || []).filter((_, i) => i !== index),
     };
 
     setFormData(next);
     sessionFormData = next;
     AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    showToast("Removed from availability.", "info", 1200);
   };
+
+  /* ===================== NAV ===================== */
 
   const handleBack = async () => {
     await AsyncStorage.setItem("step2Data", JSON.stringify(formData));
     router.back();
   };
 
+  /* ===================== VALIDATIONS ===================== */
+
+  const isNumeric = (v) => /^\d+$/.test(String(v || "").trim());
+
+  const validateStep2 = () => {
+    const education = safeStr(formData.education);
+    const specialization = safeStr(formData.specialization);
+
+    if (!education) {
+      showToast("Please select your degree (Education).", "warning");
+      return false;
+    }
+    if (!specialization) {
+      showToast("Please select your specialization.", "warning");
+      return false;
+    }
+
+    const exp = safeStr(formData.experience);
+    if (exp && (!isNumeric(exp) || Number(exp) > 80)) {
+      showToast("Experience must be a valid number (years).", "warning");
+      return false;
+    }
+
+    const lic = safeStr(formData.licenseNumber);
+    if (lic && lic.length < 3) {
+      showToast("License number looks too short. Please check it.", "warning");
+      return false;
+    }
+
+    const avail = formData.availability || [];
+    if (avail.length < 1) {
+      showToast("Please add at least 1 availability day.", "warning");
+      return false;
+    }
+
+    if (!safeStr(formData.idFrontUrl) || !safeStr(formData.idBackUrl)) {
+      showToast("Please upload BOTH front and back of your Valid ID.", "warning");
+      return false;
+    }
+
+    if (!safeStr(formData.selfieUrl)) {
+      showToast("Please take and upload your selfie for verification.", "warning");
+      return false;
+    }
+
+    return true;
+  };
+
   const handleNext = async () => {
-    if (!formData.education || !formData.specialization) {
-      return Alert.alert("Missing Field", "Please fill required fields.");
-    }
-
-    if (!formData.idFrontUrl || !formData.idBackUrl) {
-      return Alert.alert(
-        "Missing Valid ID",
-        "Please upload both Front and Back of your Valid ID."
-      );
-    }
-
-    if (!formData.selfieUrl) {
-      return Alert.alert(
-        "Missing Selfie",
-        "Please take your selfie photo for verification."
-      );
-    }
+    if (!validateStep2()) return;
 
     const step1Data = params?.data ? JSON.parse(params.data) : {};
-    router.push({
-      pathname: "/Consultant/Step3Review",
-      params: { data: JSON.stringify({ ...step1Data, step2: formData }) },
-    });
+    showToast("All set. Proceeding to Step 3…", "success", 900);
+
+    setTimeout(() => {
+      router.push({
+        pathname: "/Consultant/Step3Review",
+        params: { data: JSON.stringify({ ...step1Data, step2: formData }) },
+      });
+    }, 300);
   };
 
   /* ===================== UI ===================== */
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* HEADER */}
-      <View style={styles.header}>
-        <Image
-          source={require("../../assets/new_background.jpg")}
-          style={styles.headerImage}
-        />
+    <View style={{ flex: 1 }}>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        {/* HEADER */}
+        <View style={styles.header}>
+          <Image source={require("../../assets/new_background.jpg")} style={styles.headerImage} />
 
-        <TouchableOpacity onPress={handleBack} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-
-        <View style={styles.headerText}>
-          <Text style={styles.headerTitle}>Registration</Text>
-          <Text style={styles.headerSubtitle}>Step 2 • Details</Text>
-        </View>
-      </View>
-
-      {/* CARD */}
-      <View style={styles.card}>
-        {/* EDUCATION */}
-        <View style={styles.pickerBox}>
-          <Picker
-            selectedValue={formData.education}
-            onValueChange={(v) => handleInputChange("education", v)}
-          >
-            <Picker.Item label="Select degree" value="" />
-            <Picker.Item
-              label="Bachelor of Science in Architecture"
-              value="BS Architecture"
-            />
-            <Picker.Item
-              label="Bachelor of Science in Civil Engineering"
-              value="BSCE"
-            />
-            <Picker.Item
-              label="Bachelor of Interior Design"
-              value="Interior Design"
-            />
-          </Picker>
-        </View>
-
-        {/* SPECIALIZATION */}
-        <View style={styles.pickerBox}>
-          <Picker
-            selectedValue={formData.specialization}
-            onValueChange={(v) => handleInputChange("specialization", v)}
-          >
-            <Picker.Item label="Select specialization" value="" />
-            <Picker.Item label="Architectural Design" value="Architectural Design" />
-            <Picker.Item label="Residential Planning" value="Residential Planning" />
-            <Picker.Item label="Sustainable Architecture" value="Sustainable Architecture" />
-            <Picker.Item label="Structural Engineering" value="Structural Engineering" />
-            <Picker.Item label="Construction Engineering" value="Construction Engineering" />
-            <Picker.Item label="Geotechnical Engineering" value="Geotechnical Engineering" />
-            <Picker.Item label="Residential Interior Design" value="Residential Interior Design" />
-            <Picker.Item label="Lighting Design" value="Lighting Design" />
-            <Picker.Item label="Furniture Design" value="Furniture Design" />
-          </Picker>
-        </View>
-
-        {/* OPTIONAL */}
-        <Input
-          label="Experience (Years) (Optional)"
-          keyboardType="numeric"
-          value={formData.experience}
-          onChangeText={(v) => handleInputChange("experience", v)}
-          placeholder="e.g. 3"
-        />
-        <Input
-          label="License Number (Optional)"
-          value={formData.licenseNumber}
-          onChangeText={(v) => handleInputChange("licenseNumber", v)}
-          placeholder="Enter license number"
-        />
-
-        {/* AVAILABILITY */}
-        <View style={styles.pickerBox}>
-          <Picker
-            selectedValue={formData.day}
-            onValueChange={(v) => handleInputChange("day", v)}
-          >
-            <Picker.Item label="Select availability" value="" />
-            {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map((d) => (
-              <Picker.Item key={d} label={d} value={d} />
-            ))}
-          </Picker>
-        </View>
-
-        {formData.day && (
-          <TouchableOpacity style={styles.addBtn} onPress={addAvailability}>
-            <Ionicons name="add" size={18} color="#FFF" />
-            <Text style={styles.addText}>Add Day</Text>
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={24} color="#FFF" />
           </TouchableOpacity>
-        )}
 
-        {formData.availability.map((d, i) => (
-          <View key={i} style={styles.availabilityItem}>
-            <Text style={styles.avail}>{d}</Text>
-            <TouchableOpacity onPress={() => removeAvailability(i)}>
-              <Ionicons name="close" size={20} color="#FF3B30" />
+          <View style={styles.headerText}>
+            <Text style={styles.headerTitle}>Registration</Text>
+            <Text style={styles.headerSubtitle}>Step 2 • Details</Text>
+          </View>
+        </View>
+
+        {/* CARD */}
+        <View style={styles.card}>
+          {/* EDUCATION */}
+          <View style={styles.pickerBox}>
+            <Picker selectedValue={formData.education} onValueChange={(v) => handleInputChange("education", v)}>
+              <Picker.Item label="Select degree" value="" />
+              <Picker.Item label="Bachelor of Science in Architecture" value="BS Architecture" />
+              <Picker.Item label="Bachelor of Science in Civil Engineering" value="BSCE" />
+              <Picker.Item label="Bachelor of Interior Design" value="Interior Design" />
+            </Picker>
+          </View>
+
+          {/* SPECIALIZATION */}
+          <View style={styles.pickerBox}>
+            <Picker
+              selectedValue={formData.specialization}
+              onValueChange={(v) => handleInputChange("specialization", v)}
+            >
+              <Picker.Item label="Select specialization" value="" />
+              <Picker.Item label="Architectural Design" value="Architectural Design" />
+              <Picker.Item label="Residential Planning" value="Residential Planning" />
+              <Picker.Item label="Sustainable Architecture" value="Sustainable Architecture_toggle" />
+              <Picker.Item label="Structural Engineering" value="Structural Engineering" />
+              <Picker.Item label="Construction Engineering" value="Construction Engineering" />
+              <Picker.Item label="Geotechnical Engineering" value="Geotechnical Engineering" />
+              <Picker.Item label="Residential Interior Design" value="Residential Interior Design" />
+              <Picker.Item label="Lighting Design" value="Lighting Design" />
+              <Picker.Item label="Furniture Design" value="Furniture Design" />
+            </Picker>
+          </View>
+
+          {/* OPTIONAL */}
+          <Input
+            label="Experience (Years) (Optional)"
+            keyboardType="numeric"
+            value={formData.experience}
+            onChangeText={(v) => handleInputChange("experience", v)}
+            placeholder="e.g. 3"
+          />
+          <Input
+            label="License Number (Optional)"
+            value={formData.licenseNumber}
+            onChangeText={(v) => handleInputChange("licenseNumber", v)}
+            placeholder="Enter license number"
+          />
+
+          {/* AVAILABILITY */}
+          <View style={styles.pickerBox}>
+            <Picker selectedValue={formData.day} onValueChange={(v) => handleInputChange("day", v)}>
+              <Picker.Item label="Select availability" value="" />
+              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d) => (
+                <Picker.Item key={d} label={d} value={d} />
+              ))}
+            </Picker>
+          </View>
+
+          {formData.day ? (
+            <TouchableOpacity style={styles.addBtn} onPress={addAvailability}>
+              <Ionicons name="add" size={18} color="#FFF" />
+              <Text style={styles.addText}>Add Day</Text>
             </TouchableOpacity>
-          </View>
-        ))}
+          ) : null}
 
-        {/* VALID ID FRONT */}
-        <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("front")}>
-          <Ionicons
-            name={formData.idFrontUrl ? "checkmark-circle" : "card-outline"}
-            size={30}
-            color={formData.idFrontUrl ? "#2ECC71" : "#0F3E48"}
-          />
-          <Text style={styles.uploadTitle}>
-            {formData.idFrontUrl ? "Valid ID (Front) Uploaded" : "Upload Valid ID (Front)"}
-          </Text>
-          <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
-        </TouchableOpacity>
+          {(formData.availability || []).map((d, i) => (
+            <View key={i} style={styles.availabilityItem}>
+              <Text style={styles.avail}>{d}</Text>
+              <TouchableOpacity onPress={() => removeAvailability(i)}>
+                <Ionicons name="close" size={20} color="#FF3B30" />
+              </TouchableOpacity>
+            </View>
+          ))}
 
-        {formData.idFrontUrl && (
-          <View style={styles.uploadSuccess}>
-            <Ionicons name="link-outline" size={16} color="#2ECC71" />
-            <Text style={styles.successText}>Front ID attached</Text>
-          </View>
-        )}
+          {/* VALID ID FRONT */}
+          <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("front")}>
+            <Ionicons
+              name={formData.idFrontUrl ? "checkmark-circle" : "card-outline"}
+              size={30}
+              color={formData.idFrontUrl ? "#2ECC71" : "#0F3E48"}
+            />
+            <Text style={styles.uploadTitle}>
+              {formData.idFrontUrl ? "Valid ID (Front) Uploaded" : "Upload Valid ID (Front)"}
+            </Text>
+            <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
+          </TouchableOpacity>
 
-        {/* VALID ID BACK */}
-        <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("back")}>
-          <Ionicons
-            name={formData.idBackUrl ? "checkmark-circle" : "card-outline"}
-            size={30}
-            color={formData.idBackUrl ? "#2ECC71" : "#0F3E48"}
-          />
-          <Text style={styles.uploadTitle}>
-            {formData.idBackUrl ? "Valid ID (Back) Uploaded" : "Upload Valid ID (Back)"}
-          </Text>
-          <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
-        </TouchableOpacity>
+          {formData.idFrontUrl ? (
+            <View style={styles.uploadSuccess}>
+              <Ionicons name="link-outline" size={16} color="#2ECC71" />
+              <Text style={styles.successText}>Front ID attached</Text>
+            </View>
+          ) : null}
 
-        {formData.idBackUrl && (
-          <View style={styles.uploadSuccess}>
-            <Ionicons name="link-outline" size={16} color="#2ECC71" />
-            <Text style={styles.successText}>Back ID attached</Text>
-          </View>
-        )}
+          {/* VALID ID BACK */}
+          <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("back")}>
+            <Ionicons
+              name={formData.idBackUrl ? "checkmark-circle" : "card-outline"}
+              size={30}
+              color={formData.idBackUrl ? "#2ECC71" : "#0F3E48"}
+            />
+            <Text style={styles.uploadTitle}>
+              {formData.idBackUrl ? "Valid ID (Back) Uploaded" : "Upload Valid ID (Back)"}
+            </Text>
+            <Text style={styles.uploadHint}>JPG/PNG/PDF supported</Text>
+          </TouchableOpacity>
 
-        {/* SELFIE (CAMERA ONLY) */}
-        <TouchableOpacity style={styles.uploadCard} onPress={handleUploadSelfie}>
-          <Ionicons
-            name={formData.selfieUrl ? "checkmark-circle" : "camera-outline"}
-            size={30}
-            color={formData.selfieUrl ? "#2ECC71" : "#0F3E48"}
-          />
-          <Text style={styles.uploadTitle}>
-            {formData.selfieUrl ? "Selfie Uploaded" : "Take Selfie Photo"}
-          </Text>
-          <Text style={styles.uploadHint}>Camera will open (no gallery)</Text>
-        </TouchableOpacity>
+          {formData.idBackUrl ? (
+            <View style={styles.uploadSuccess}>
+              <Ionicons name="link-outline" size={16} color="#2ECC71" />
+              <Text style={styles.successText}>Back ID attached</Text>
+            </View>
+          ) : null}
 
-        {formData.selfieUrl && (
-          <View style={styles.uploadSuccess}>
-            <Ionicons name="link-outline" size={16} color="#2ECC71" />
-            <Text style={styles.successText}>Selfie attached</Text>
-          </View>
-        )}
+          {/* SELFIE (CAMERA ONLY) */}
+          <TouchableOpacity style={styles.uploadCard} onPress={handleUploadSelfie}>
+            <Ionicons
+              name={formData.selfieUrl ? "checkmark-circle" : "camera-outline"}
+              size={30}
+              color={formData.selfieUrl ? "#2ECC71" : "#0F3E48"}
+            />
+            <Text style={styles.uploadTitle}>{formData.selfieUrl ? "Selfie Uploaded" : "Take Selfie Photo"}</Text>
+            <Text style={styles.uploadHint}>Camera will open (no gallery)</Text>
+          </TouchableOpacity>
 
-        {/* NEXT */}
-        <Button title="Next" onPress={handleNext} style={styles.nextBtn} />
-      </View>
-    </ScrollView>
+          {formData.selfieUrl ? (
+            <View style={styles.uploadSuccess}>
+              <Ionicons name="link-outline" size={16} color="#2ECC71" />
+              <Text style={styles.successText}>Selfie attached</Text>
+            </View>
+          ) : null}
+
+          {/* NEXT */}
+          <Button title="Next" onPress={handleNext} style={styles.nextBtn} />
+        </View>
+      </ScrollView>
+
+      {/* ✅ MESSAGE MODAL OVERLAY (Login style) */}
+      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
+        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
+          <Pressable
+            style={[
+              styles.msgCard,
+              {
+                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
+                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
+              },
+            ]}
+            onPress={() => {}}
+          >
+            <View style={styles.msgRow}>
+              <Ionicons
+                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
+                size={22}
+                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
+              />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
+                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
+              </View>
+            </View>
+
+            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
+              <Ionicons name="close" size={18} color="#475569" />
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </View>
   );
 }
 
@@ -542,4 +679,41 @@ const styles = StyleSheet.create({
   },
 
   nextBtn: { marginTop: 10 },
+
+  /* ===== Login-style message modal styles ===== */
+  msgBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.28)",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: Platform.OS === "ios" ? 120 : 80,
+    paddingHorizontal: 18,
+  },
+
+  msgCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    position: "relative",
+  },
+
+  msgRow: { flexDirection: "row", alignItems: "flex-start" },
+  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
+  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
+
+  msgClose: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
 });

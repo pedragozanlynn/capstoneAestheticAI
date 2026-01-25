@@ -13,7 +13,9 @@ import {
   View,
   Platform,
   StatusBar,
-  KeyboardAvoidingView, // ✅ ADDED
+  KeyboardAvoidingView,
+  Modal,
+  Pressable,
 } from "react-native";
 import { auth, db } from "../config/firebase";
 import Button from "./components/Button";
@@ -22,9 +24,29 @@ import Input from "./components/Input";
 /* ================= CONSTANTS ================= */
 const ROLE_KEY_PREFIX = "aestheticai:user-role:";
 const PROFILE_KEY_PREFIX = "aestheticai:user-profile:";
-
-/* ✅ email regex (minimal) */
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* ================= CENTER MESSAGE MODAL (same as earlier) ================= */
+const MSG_COLORS = {
+  info: {
+    bg: "#EFF6FF",
+    border: "#BFDBFE",
+    icon: "information-circle",
+    iconColor: "#01579B",
+  },
+  success: {
+    bg: "#ECFDF5",
+    border: "#BBF7D0",
+    icon: "checkmark-circle",
+    iconColor: "#16A34A",
+  },
+  error: {
+    bg: "#FEF2F2",
+    border: "#FECACA",
+    icon: "close-circle",
+    iconColor: "#DC2626",
+  },
+};
 
 export default function Login() {
   const router = useRouter();
@@ -34,28 +56,44 @@ export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
+  const [loggingIn, setLoggingIn] = useState(false);
+
   const unsubscribeProfileRef = useRef(null);
 
   /* ===========================
-     ✅ TOAST (TOP, NO OK BUTTON)
+     ✅ MESSAGE MODAL (NO OK BUTTON)
      =========================== */
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  const [msgVisible, setMsgVisible] = useState(false);
+  const [msgType, setMsgType] = useState("info");
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const msgTimerRef = useRef(null);
 
-  const showToast = (text, type = "info", ms = 2200) => {
+  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1800) => {
     try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
+    setMsgType(type);
+    setMsgTitle(String(title || ""));
+    setMsgBody(String(body || ""));
+    setMsgVisible(true);
+
+    if (autoHideMs && autoHideMs > 0) {
+      msgTimerRef.current = setTimeout(() => setMsgVisible(false), autoHideMs);
+    }
+  };
+
+  const closeMessage = () => {
+    try {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    } catch {}
+    setMsgVisible(false);
   };
 
   useEffect(() => {
     return () => {
       try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
       } catch {}
     };
   }, []);
@@ -78,10 +116,7 @@ export default function Login() {
   };
 
   const saveProfile = async (uid, profile) => {
-    await AsyncStorage.setItem(
-      `${PROFILE_KEY_PREFIX}${uid}`,
-      JSON.stringify(profile)
-    );
+    await AsyncStorage.setItem(`${PROFILE_KEY_PREFIX}${uid}`, JSON.stringify(profile));
   };
 
   const detectSubscription = (data) => {
@@ -91,11 +126,11 @@ export default function Login() {
   };
 
   const fetchProfileFromFirestore = async (uid, role) => {
-    let collection = "users";
-    if (role === "consultant") collection = "consultants";
-    if (role === "admin") collection = "admin";
+    let collectionName = "users";
+    if (role === "consultant") collectionName = "consultants";
+    if (role === "admin") collectionName = "admin";
 
-    const snap = await getDoc(doc(db, collection, uid));
+    const snap = await getDoc(doc(db, collectionName, uid));
     if (!snap.exists()) return null;
 
     const data = snap.data();
@@ -103,28 +138,39 @@ export default function Login() {
   };
 
   const subscribeToProfile = (uid, role) => {
-    let collection = "users";
-    if (role === "consultant") collection = "consultants";
-    if (role === "admin") collection = "admin";
+    let collectionName = "users";
+    if (role === "consultant") collectionName = "consultants";
+    if (role === "admin") collectionName = "admin";
 
-    return onSnapshot(doc(db, collection, uid), (snap) => {
+    return onSnapshot(doc(db, collectionName, uid), (snap) => {
       if (snap.exists()) {
         saveProfile(uid, { uid, ...snap.data() });
       }
     });
   };
 
-  /* ================= LOGIN ================= */
+  const mapAuthError = (code) => {
+    const c = String(code || "");
+    if (c.includes("auth/invalid-email")) return "Invalid email format.";
+    if (c.includes("auth/user-not-found")) return "Account not found.";
+    if (c.includes("auth/wrong-password")) return "Incorrect password.";
+    if (c.includes("auth/invalid-credential")) return "Invalid email or password.";
+    if (c.includes("auth/too-many-requests")) return "Too many attempts. Please try again later.";
+    return "Login failed. Please try again.";
+  };
+
   const login = async () => {
+    if (loggingIn) return;
+
     const e = String(email || "").trim();
     const p = String(password || "");
 
-    if (!e) return showToast("Please enter your email.", "error");
-    if (!EMAIL_REGEX.test(e))
-      return showToast("Please enter a valid email.", "error");
-    if (!p) return showToast("Please enter your password.", "error");
-    if (p.length < 6)
-      return showToast("Password must be at least 6 characters.", "error");
+    if (!e) return showMessage("error", "Missing field", "Please enter your email.");
+    if (!EMAIL_REGEX.test(e)) return showMessage("error", "Invalid email", "Please enter a valid email.");
+    if (!p) return showMessage("error", "Missing field", "Please enter your password.");
+    if (p.length < 6) return showMessage("error", "Invalid password", "Password must be at least 6 characters.");
+
+    setLoggingIn(true);
 
     try {
       const credential = await signInWithEmailAndPassword(auth, e, p);
@@ -132,21 +178,11 @@ export default function Login() {
 
       const profile = await fetchProfileFromFirestore(uid, initialRole);
       if (!profile) {
-        showToast("No profile found. Please register your account first.", "error");
+        showMessage("error", "No profile", "No profile found. Please register your account first.", 2000);
         return;
       }
 
-      if (initialRole === "consultant") {
-        if (profile.status === "pending") {
-          showToast("Pending approval. Please wait for admin approval.", "info");
-          return;
-        }
-        if (profile.status === "rejected") {
-          showToast("Registration cancelled. Please contact admin.", "error");
-          return;
-        }
-      }
-
+      // ✅ Cache basics early
       await AsyncStorage.setItem("aestheticai:current-user-id", uid);
       await AsyncStorage.setItem("aestheticai:current-user-role", initialRole);
 
@@ -159,10 +195,36 @@ export default function Login() {
       await cacheUserRole(uid, initialRole);
       await saveProfile(uid, profile);
 
-      unsubscribeProfileRef.current = subscribeToProfile(uid, initialRole);
+      // ✅ Keep profile subscription listener (optional)
+      try {
+        unsubscribeProfileRef.current = subscribeToProfile(uid, initialRole);
+      } catch {}
+
+      // ✅ CONSULTANT STATUS GATING
+      if (initialRole === "consultant") {
+        const s = String(profile.status || "").trim().toLowerCase();
+        const status = s || "pending";
+
+        if (status === "pending" || status === "rejected") {
+          showMessage(
+            status === "pending" ? "info" : "error",
+            status === "pending" ? "Pending approval" : "Application rejected",
+            status === "pending"
+              ? "Your application is pending. Redirecting…"
+              : "Your application was rejected. Redirecting…",
+            900
+          );
+
+          setTimeout(() => {
+            router.replace("/Consultant/PendingApproval");
+          }, 900);
+
+          return;
+        }
+      }
 
       const displayName = profile.fullName || profile.name || "User";
-      showToast(`Login successful. Welcome back, ${displayName}!`, "success", 1400);
+      showMessage("success", "Login successful", `Welcome back, ${displayName}!`, 900);
 
       setTimeout(() => {
         if (initialRole === "user") {
@@ -170,9 +232,12 @@ export default function Login() {
         } else {
           router.replace("/Consultant/Homepage");
         }
-      }, 1400);
+      }, 900);
     } catch (err) {
-      showToast("Login failed. Invalid email or password.", "error");
+      const msg = mapAuthError(err?.code);
+      showMessage("error", "Login failed", msg, 2000);
+    } finally {
+      setLoggingIn(false);
     }
   };
 
@@ -185,27 +250,20 @@ export default function Login() {
     <View style={{ flex: 1 }}>
       <StatusBar barStyle="light-content" />
 
-      {/* ✅ ADDED: KeyboardAvoidingView makes screen move up when keyboard opens */}
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+        keyboardVerticalOffset={0}
       >
         <ScrollView
           contentContainerStyle={{ flexGrow: 1 }}
-          keyboardShouldPersistTaps="handled" // ✅ ADDED
-          keyboardDismissMode="on-drag" // ✅ ADDED
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
         >
           <View style={styles.header}>
-            <Image
-              source={require("../assets/new_background.jpg")}
-              style={styles.image}
-            />
+            <Image source={require("../assets/new_background.jpg")} style={styles.image} />
 
-            <TouchableOpacity
-              onPress={() => router.push("/")}
-              style={styles.backButton}
-            >
+            <TouchableOpacity onPress={() => router.push("/")} style={styles.backButton}>
               <Ionicons name="arrow-back" size={26} color="#fff" />
             </TouchableOpacity>
 
@@ -213,8 +271,7 @@ export default function Login() {
               <Text style={styles.title}>Welcome Back</Text>
 
               <Text style={styles.subtitle}>
-                Sign in to continue as{" "}
-                <Text style={styles.roleHighlight}>{roleLabel}</Text>
+                Sign in to continue as <Text style={styles.roleHighlight}>{roleLabel}</Text>
               </Text>
             </View>
           </View>
@@ -222,54 +279,58 @@ export default function Login() {
           <View style={styles.content}>
             <Text style={styles.sectionLabel}>Account Information</Text>
 
-            <Input
-              placeholder="Email"
-              autoCapitalize="none"
-              value={email}
-              onChangeText={setEmail}
-            />
+            <Input placeholder="Email" autoCapitalize="none" value={email} onChangeText={setEmail} />
 
-            <Input
-              placeholder="Password"
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-            />
+            <Input placeholder="Password" secureTextEntry value={password} onChangeText={setPassword} />
 
             <TouchableOpacity onPress={() => router.push("/ForgotPassword")}>
               <Text style={styles.forgotText}>Forgot Password?</Text>
             </TouchableOpacity>
 
-            <Button title="Login" onPress={login} />
+            <Button title={loggingIn ? "Logging in..." : "Login"} onPress={login} disabled={loggingIn} />
 
             <View style={{ marginTop: 20, alignItems: "center" }}>
-              <TouchableOpacity onPress={goToRegister}>
-                <Text style={{ color: "#01579B", fontWeight: "700" }}>
-                  Create an account
-                </Text>
+              <TouchableOpacity onPress={goToRegister} disabled={loggingIn}>
+                <Text style={{ color: "#01579B", fontWeight: "700" }}>Create an account</Text>
               </TouchableOpacity>
             </View>
 
-            {/* ✅ ADDED: extra space so last elements aren’t covered by keyboard */}
             <View style={{ height: 30 }} />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
-      {toast.visible && (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.toast,
-            toast.type === "success" && styles.toastSuccess,
-            toast.type === "error" && styles.toastError,
-            toast.type === "info" && styles.toastInfo,
-          ]}
-        >
-          <Text style={styles.toastText}>{toast.text}</Text>
-        </View>
-      )}
+      {/* ✅ MESSAGE MODAL OVERLAY (same style as earlier) */}
+      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
+        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
+          <Pressable
+            style={[
+              styles.msgCard,
+              {
+                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
+                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
+              },
+            ]}
+            onPress={() => {}}
+          >
+            <View style={styles.msgRow}>
+              <Ionicons
+                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
+                size={22}
+                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
+              />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
+                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
+              </View>
+            </View>
+
+            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
+              <Ionicons name="close" size={18} color="#475569" />
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -323,27 +384,37 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
 
-  /* ===== TOAST (TOP, NO OK) ===== */
-  toast: {
+  msgBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(15,23,42,0.28)",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: Platform.OS === "ios" ? 120 : 80, // ✅ mas bababa
+    paddingHorizontal: 18,
+  },
+  
+  msgCard: {
+    width: "100%",
+    maxWidth: 420,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    position: "relative",
+  },
+  msgRow: { flexDirection: "row", alignItems: "flex-start" },
+  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
+  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
+  msgClose: {
     position: "absolute",
-    left: 20,
-    right: 20,
-    top: Platform.OS === "ios" ? 58 : 18,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.96,
-    elevation: 10,
-    zIndex: 9999,
+    top: 10,
+    right: 10,
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });
