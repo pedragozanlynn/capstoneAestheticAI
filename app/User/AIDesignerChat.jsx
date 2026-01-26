@@ -87,6 +87,17 @@ const makeTitle = (text = "") => {
   return t.length > 32 ? t.slice(0, 32) + "…" : t;
 };
 
+// ==============================
+// ✅ Prompt Filtration Dictionary
+// ==============================
+const PROMPT_FILTERS = {
+  base: ["design", "make", "create", "generate", "customize", "improve", "change", "move"],
+  rooms: ["living room", "bedroom", "kitchen", "dining room", "bathroom", "studio", "office", "small room"],
+  actions: ["move furniture", "change layout", "improve lighting", "optimize space", "rearrange furniture", "add decor", "remove clutter"],
+  styles: ["modern", "minimalist", "scandinavian", "industrial", "cozy", "luxury", "boho", "japanese"],
+  tones: ["brighter", "warmer", "cleaner", "more spacious", "cozier", "simpler"],
+};
+
 export default function AIDesignerChat() {
   const router = useRouter();
   const { tab, prompt, refImage, inputImage } = useLocalSearchParams();
@@ -100,7 +111,7 @@ export default function AIDesignerChat() {
   const HEADER_DARK = "#01579B";
 
   const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || "";
-  const OPENAI_TEXT_MODEL = "gpt-5-mini";
+  const OPENAI_TEXT_MODEL = "gpt-4.1-mini";
 
   const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || "";
   const GEMINI_IMAGE_MODEL = "imagen-3.0-generate-002";
@@ -136,7 +147,13 @@ export default function AIDesignerChat() {
     },
   ]);
 
+  // ✅ MISSING in your paste sometimes: keep input state here (no behavior change)
   const [input, setInput] = useState("");
+
+  // ==============================
+  // ✅ Live Prompt Suggestions
+  // ==============================
+  const [promptSuggestions, setPromptSuggestions] = useState([]);
 
   // ==============================
   // ✅ Prompt Filtration UI (NEW)
@@ -150,6 +167,7 @@ export default function AIDesignerChat() {
   const [isTyping, setIsTyping] = useState(false);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [sessionId, setSessionId] = useState(null);
+  const [uploadedImageBase64, setUploadedImageBase64] = useState(null);
 
   // ✅ references (URLs)
   const [lastReferenceImageUrl, setLastReferenceImageUrl] = useState(null); // ORIGINAL ref
@@ -747,6 +765,113 @@ export default function AIDesignerChat() {
     return { ok: true, cleaned, warn };
   };
 
+  // ==============================
+  // ✅ Prompt Filtration Engine (FIXED)
+  // ==============================
+  // Goals:
+  // - DO NOT show suggestions when input is empty (your quick prompts already cover that)
+  // - Show relevant suggestions based on last word / phrase
+  // - When user taps a suggestion, replace the last partial word (instead of always appending)
+  const getPromptSuggestions = (raw) => {
+    const textRaw = normalizePromptSvc(raw || "");
+    const text = textRaw.toLowerCase().trim();
+
+    // ✅ Critical fix: no suggestions when empty
+    if (!text) return [];
+
+    // Small guard: avoid showing suggestions for very long prompts
+    if (text.length > 220) return [];
+
+    // Phrase-level detection
+    const phraseTail = text.replace(/\s+/g, " ");
+    const tailTriggers = ["make me a", "design a", "create a", "generate a", "design an", "create an", "generate an"];
+    if (tailTriggers.some((t) => phraseTail.endsWith(t))) {
+      return PROMPT_FILTERS.rooms.slice(0, 6);
+    }
+
+    // If user already named a room, propose styles
+    if (
+      PROMPT_FILTERS.rooms.some((r) => phraseTail.includes(r)) ||
+      phraseTail.includes("bedroom") ||
+      phraseTail.includes("living") ||
+      phraseTail.includes("kitchen") ||
+      phraseTail.includes("bathroom")
+    ) {
+      return PROMPT_FILTERS.styles.slice(0, 6);
+    }
+
+    // Action intent
+    if (phraseTail.startsWith("move") || phraseTail.includes(" move ") || phraseTail.includes("rearrange")) {
+      return PROMPT_FILTERS.actions.slice(0, 6);
+    }
+
+    // Tone intent
+    if (phraseTail.includes("more ") || phraseTail.includes("make it ") || phraseTail.includes("feel ")) {
+      return PROMPT_FILTERS.tones.slice(0, 6);
+    }
+
+    // Prefix-based fallback on last token
+    const words = phraseTail.split(/\s+/).filter(Boolean);
+    const last = words[words.length - 1] || "";
+
+    // If last token is too short, prefer base verbs (but still contextual)
+    const pool =
+      last.length <= 2
+        ? [...PROMPT_FILTERS.base, ...PROMPT_FILTERS.rooms]
+        : [
+            ...PROMPT_FILTERS.rooms,
+            ...PROMPT_FILTERS.actions,
+            ...PROMPT_FILTERS.styles,
+            ...PROMPT_FILTERS.tones,
+            ...PROMPT_FILTERS.base,
+          ];
+
+    const uniq = Array.from(new Set(pool));
+
+    // Match either last token prefix OR whole phrase prefix (for multi-word suggestions)
+    const matches = uniq.filter((s) => {
+      const sl = s.toLowerCase();
+      if (!last) return false;
+      return sl.startsWith(last) || sl.startsWith(`${last} `);
+    });
+
+    // If no prefix matches, offer a small “smart default” set
+    if (matches.length === 0) {
+      // Prefer actions if user typed something like "improve", else styles
+      if (phraseTail.includes("improve") || phraseTail.includes("better") || phraseTail.includes("optimize")) {
+        return PROMPT_FILTERS.actions.slice(0, 6);
+      }
+      return PROMPT_FILTERS.styles.slice(0, 6);
+    }
+
+    return matches.slice(0, 6);
+  };
+
+  const applySuggestion = (prevInput, suggestion) => {
+    const base = String(prevInput || "");
+    const trimmed = base.replace(/\s+$/g, "");
+    if (!trimmed) return suggestion;
+
+    const words = trimmed.split(/\s+/);
+    if (words.length === 0) return suggestion;
+
+    const last = words[words.length - 1] || "";
+    const sug = String(suggestion || "").trim();
+    if (!sug) return trimmed;
+
+    // Replace last word if it's a partial prefix of the suggestion
+    const sugFirstToken = sug.split(/\s+/)[0]?.toLowerCase() || "";
+    const lastLower = last.toLowerCase();
+
+    if (lastLower && sug.toLowerCase().startsWith(lastLower) && lastLower !== sug.toLowerCase()) {
+      words[words.length - 1] = sug;
+      return words.join(" ") + " ";
+    }
+
+    // Otherwise append
+    return trimmed + " " + sug + " ";
+  };
+
   const sendMessage = async (text = input) => {
     const v = validatePromptUI(text, { strict: true });
     const clean = v.cleaned;
@@ -868,29 +993,64 @@ export default function AIDesignerChat() {
 
       // ✅ Effective reference for customize: prefer ORIGINAL uploaded ref
       const effectiveImage =
-        desiredMode === MODE.CUSTOMIZE ? uploadedRefUrl || getBestReferenceForCustomize() : null;
-
-      if (desiredMode === MODE.CUSTOMIZE && !effectiveImage) {
-        if (!realtime) {
-          setMessages((prev) => [
-            ...prev,
-            { role: "user", text: clean },
-            {
-              role: "ai",
-              explanation:
-                "Customization needs a reference. Please upload/capture a photo (original room), or open a saved project that has the original image.",
-              tips: [],
-              layoutSuggestions: [],
-              furnitureMatches: [],
-            },
-          ]);
+      desiredMode === MODE.CUSTOMIZE
+        ? (uploadedRefUrl || getBestReferenceForCustomize())
+        : null;
+    
+        const isUsableImageRef = (u) => {
+          const s = typeof u === "string" ? u.trim() : "";
+          if (!s) return false;
+          return (
+            s.startsWith("http://") ||
+            s.startsWith("https://") ||
+            s.startsWith("data:image/") // ✅ allow base64 data URI
+          );
+        };
+        
+        if (desiredMode === MODE.CUSTOMIZE && !isUsableImageRef(effectiveImage)) {
+          if (!realtime) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "user", text: clean },
+              {
+                role: "ai",
+                explanation:
+                  "Customization needs the ORIGINAL room image (public https link or a base64 image). Please re-upload/capture the room photo so I can edit the same room.",
+                tips: [],
+                layoutSuggestions: [],
+                furnitureMatches: [],
+              },
+            ]);
+          }
+          setInput("");
+          setPromptSuggestions([]);
+          setIsTyping(false);
+          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+          return;
         }
-        setInput("");
-        setIsTyping(false);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-        return;
-      }
-
+        
+        if (desiredMode === MODE.CUSTOMIZE && !isUsableImageRef(effectiveImage)) {
+          if (!realtime) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "user", text: clean },
+              {
+                role: "ai",
+                explanation:
+                  "Customization needs the ORIGINAL room image (public https link OR a base64 image). Please re-upload/capture the room photo so I can edit the same room.",
+                tips: [],
+                layoutSuggestions: [],
+                furnitureMatches: [],
+              },
+            ]);
+          }
+          setInput("");
+          setPromptSuggestions([]);
+          setIsTyping(false);
+          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+          return;
+        }
+        
       try {
         const cid = conversationIdRef.current || (await ensureConversationOnce(clean));
         await saveAIUserMessage(cid, { text: clean, image: safeFirestoreImage(uploadedRefUrl) });
@@ -903,6 +1063,7 @@ export default function AIDesignerChat() {
       }
 
       setInput("");
+      setPromptSuggestions([]); // ✅ keep UI clean after send
       setIsTyping(true);
 
       if (!realtime && !proNow && dailyGenCount === WARNING_AT) {
@@ -916,19 +1077,19 @@ export default function AIDesignerChat() {
         const result = await callAIDesignAPI({
           apiKey: OPENAI_API_KEY,
           textModel: OPENAI_TEXT_MODEL,
-
           geminiApiKey: GEMINI_API_KEY,
           geminiImageModel: GEMINI_IMAGE_MODEL,
-
           message: clean,
           mode: desiredMode,
           image: effectiveImage,
           sessionId,
           isPro: proNow,
-
-          imageModel: "gpt-image-1.5", // ✅ correct
           useOpenAIForCustomize: true,
+        
+          hfToken: process.env.EXPO_PUBLIC_HF_TOKEN || "",
+          inputImageBase64: uploadedImageBase64,
         });
+        
 
         if (result?.sessionId) setSessionId(result.sessionId);
 
@@ -1090,11 +1251,17 @@ export default function AIDesignerChat() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 1,
+      base64: true,
     });
+    
 
     if (!result.canceled) {
-      const uri = result.assets[0].uri;
-      setUploadedImage(uri);
+      const asset = result.assets[0];
+     const uri = asset.uri;
+
+setUploadedImage(uri);
+setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : null);
+
       await setRefSizeFromUri(uri);
 
       if (!isHistoryRealtimeActive()) {
@@ -1110,8 +1277,12 @@ export default function AIDesignerChat() {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) return;
 
-    const result = await ImagePicker.launchCameraAsync({ quality: 1 });
-
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 1,
+      base64: true,
+    });
+    
+    
     if (!result.canceled) {
       const uri = result.assets[0].uri;
       setUploadedImage(uri);
@@ -1124,8 +1295,11 @@ export default function AIDesignerChat() {
     }
   };
 
-  const clearAttachment = () => setUploadedImage(null);
-
+  const clearAttachment = () => {
+    setUploadedImage(null);
+    setUploadedImageBase64(null);
+  };
+  
   const renderMessage = ({ item }) => {
     const isAi = item.role === "ai";
     const paletteColors = Array.isArray(item?.palette?.colors) ? item.palette.colors : [];
@@ -1344,158 +1518,186 @@ export default function AIDesignerChat() {
             <MaterialCommunityIcons name="shield-check" size={18} color="#38BDF8" />
           </View>
         </View>
-
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            renderItem={renderMessage}
-            keyExtractor={(_, i) => i.toString()}
-            contentContainerStyle={styles.scrollArea}
-          />
-          {isTyping && (
-            <View style={styles.typingWrap}>
-              <View style={styles.typingBubble}>
-                <View style={styles.typingDot} />
-                <View style={styles.typingDot} />
-                <View style={styles.typingDot} />
-                <Text style={styles.typingText}>Generating…</Text>
-              </View>
-            </View>
-          )}
+  <FlatList
+    ref={flatListRef}
+    data={messages}
+    renderItem={renderMessage}
+    keyExtractor={(_, i) => i.toString()}
+    contentContainerStyle={styles.scrollArea}
+  />
 
-          {/* ✅ Upgrade banner when locked */}
-          {isLocked && (
-            <TouchableOpacity
-              style={styles.upgradeBanner}
-              onPress={() => router.push("/User/UpdateInfo")}
-              activeOpacity={0.9}
-            >
-              <View style={styles.upgradeLeft}>
-                <MaterialCommunityIcons name="crown" size={18} color="#0F172A" />
-                <View style={{ marginLeft: 10 }}>
-                  <Text style={styles.upgradeTitle}>Upgrade to Pro</Text>
-                  <Text style={styles.upgradeSub}>
-                    Unlimited generations • Furniture Matches • Layout Suggestions
-                  </Text>
-                </View>
-              </View>
-              <Feather name="chevron-right" size={18} color="#0F172A" />
-            </TouchableOpacity>
-          )}
+  {isTyping && (
+    <View style={styles.typingWrap}>
+      <View style={styles.typingBubble}>
+        <View style={styles.typingDot} />
+        <View style={styles.typingDot} />
+        <View style={styles.typingDot} />
+        <Text style={styles.typingText}>Generating…</Text>
+      </View>
+    </View>
+  )}
 
-          {/* ✅ Prompt chips (quick prompts) */}
-          {!isLocked && (
-            <View style={styles.chipsWrap}>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-                {chipsToShow.map((c) => (
-                  <TouchableOpacity
-                    key={c}
-                    style={styles.chip}
-                    onPress={() => {
-                      setInput(c);
-                      const v = validatePromptUI(c, { strict: false });
-                      setPromptError(v.ok ? "" : v.error || "");
-                      setPromptWarn(v.warn || "");
-                    }}
-                  >
-                    <Text style={styles.chipText}>{c}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-          )}
-
-          {/* ✅ Attachment preview */}
-          {!!uploadedImage && (
-            <View style={styles.attachmentBar}>
-              <View style={styles.attachmentLeft}>
-                <Image source={{ uri: uploadedImage }} style={styles.attachmentThumb} />
-                <View style={{ marginLeft: 10, flex: 1 }}>
-                  <Text style={styles.attachmentTitle} numberOfLines={1}>
-                    Reference ready
-                  </Text>
-                  <Text style={styles.attachmentSub} numberOfLines={1}>
-                    This will be used for Customize (same room reference)
-                  </Text>
-                </View>
-              </View>
-
-              <TouchableOpacity onPress={clearAttachment} style={styles.attachmentClearBtn}>
-                <Feather name="x" size={16} color="#0F172A" />
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* ✅ Prompt filtration feedback */}
-          {(!!promptError || !!promptWarn) && (
-            <View style={styles.promptFeedbackWrap}>
-              {!!promptError && (
-                <View style={[styles.promptFeedbackCard, styles.promptErrorCard]}>
-                  <Feather name="alert-circle" size={14} color="#991B1B" />
-                  <Text style={styles.promptErrorText}>{promptError}</Text>
-                </View>
-              )}
-
-              {!promptError && !!promptWarn && (
-                <View style={[styles.promptFeedbackCard, styles.promptWarnCard]}>
-                  <Feather name="info" size={14} color="#0F172A" />
-                  <Text style={styles.promptWarnText}>{promptWarn}</Text>
-                </View>
-              )}
-            </View>
-          )}
-
-          {/* Input bar */}
-          <View style={styles.inputBar}>
-            <TouchableOpacity
-              onPress={pickImage}
-              style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
-              disabled={isLocked}
-            >
-              <Feather name="image" size={18} color="#0F172A" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={takePhoto}
-              style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
-              disabled={isLocked}
-            >
-              <Feather name="camera" size={18} color="#0F172A" />
-            </TouchableOpacity>
-
-            <View style={styles.textBox}>
-              <TextInput
-                value={input}
-                onChangeText={(t) => {
-                  setInput(t);
-                  const v = validatePromptUI(t, { strict: false });
-                  setPromptError(v.ok ? "" : v.error || "");
-                  setPromptWarn(v.warn || "");
-                }}
-                placeholder={isLocked ? "Upgrade to continue…" : "Describe what you want to change or design…"}
-                placeholderTextColor="#94A3B8"
-                style={styles.textInput}
-                editable={!isLocked}
-                multiline
-                maxLength={PROMPT_MAX + 50}
-              />
-
-              {/* Optional counter (non-blocking) */}
-              <Text style={styles.counterText}>
-                {Math.min(String(input || "").length, PROMPT_MAX)}/{PROMPT_MAX}
-              </Text>
-            </View>
-
-            <TouchableOpacity
-              onPress={() => sendMessage()}
-              style={[styles.sendBtn, !sendEnabled && { opacity: 0.5 }]}
-              disabled={!sendEnabled}
-            >
-              <Feather name="send" size={18} color="#FFFFFF" />
-            </TouchableOpacity>
+  {/* ✅ FOOTER DOCK (permanent bottom) */}
+  <View style={styles.footerDock}>
+    {/* ✅ Upgrade banner when locked */}
+    {isLocked && (
+      <TouchableOpacity
+        style={styles.upgradeBanner}
+        onPress={() => router.push("/User/UpdateInfo")}
+        activeOpacity={0.9}
+      >
+        <View style={styles.upgradeLeft}>
+          <MaterialCommunityIcons name="crown" size={18} color="#0F172A" />
+          <View style={{ marginLeft: 10 }}>
+            <Text style={styles.upgradeTitle}>Upgrade to Pro</Text>
+            <Text style={styles.upgradeSub}>
+              Unlimited generations • Furniture Matches • Layout Suggestions
+            </Text>
           </View>
-        </KeyboardAvoidingView>
+        </View>
+        <Feather name="chevron-right" size={18} color="#0F172A" />
+      </TouchableOpacity>
+    )}
+
+    {/* ✅ Prompt chips (quick prompts) */}
+    {!isLocked && (
+      <View style={styles.chipsWrap}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
+          {chipsToShow.map((c) => (
+            <TouchableOpacity
+              key={c}
+              style={styles.chip}
+              onPress={() => {
+                setInput(c);
+                const v = validatePromptUI(c, { strict: false });
+                setPromptError(v.ok ? "" : v.error || "");
+                setPromptWarn(v.warn || "");
+                setPromptSuggestions(getPromptSuggestions(c));
+              }}
+            >
+              <Text style={styles.chipText}>{c}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    )}
+
+    {/* ✅ Attachment preview */}
+    {!!uploadedImage && (
+      <View style={styles.attachmentBar}>
+        <View style={styles.attachmentLeft}>
+          <Image source={{ uri: uploadedImage }} style={styles.attachmentThumb} />
+          <View style={{ marginLeft: 10, flex: 1 }}>
+            <Text style={styles.attachmentTitle} numberOfLines={1}>
+              Reference ready
+            </Text>
+            <Text style={styles.attachmentSub} numberOfLines={1}>
+              This will be used for Customize (same room reference)
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity onPress={clearAttachment} style={styles.attachmentClearBtn}>
+          <Feather name="x" size={16} color="#0F172A" />
+        </TouchableOpacity>
+      </View>
+    )}
+
+    {/* ✅ Prompt filtration feedback */}
+    {(!!promptError || !!promptWarn) && (
+      <View style={styles.promptFeedbackWrap}>
+        {!!promptError && (
+          <View style={[styles.promptFeedbackCard, styles.promptErrorCard]}>
+            <Feather name="alert-circle" size={14} color="#991B1B" />
+            <Text style={styles.promptErrorText}>{promptError}</Text>
+          </View>
+        )}
+
+        {!promptError && !!promptWarn && (
+          <View style={[styles.promptFeedbackCard, styles.promptWarnCard]}>
+            <Feather name="info" size={14} color="#0F172A" />
+            <Text style={styles.promptWarnText}>{promptWarn}</Text>
+          </View>
+        )}
+      </View>
+    )}
+
+    {/* ✅ Prompt suggestions ABOVE the footer (input bar) */}
+    {!!promptSuggestions.length && !isLocked && !!String(input || "").trim() && (
+      <View style={styles.promptFilterWrap}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {promptSuggestions.map((s) => (
+            <TouchableOpacity
+              key={s}
+              style={styles.promptFilterChip}
+              onPress={() => {
+                setInput((prev) => applySuggestion(prev, s));
+                setPromptSuggestions([]);
+              }}
+            >
+              <Text style={styles.promptFilterText}>{s}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    )}
+
+    {/* ✅ Footer input bar (permanent bottom) */}
+    <View style={styles.inputBar}>
+      <TouchableOpacity
+        onPress={pickImage}
+        style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
+        disabled={isLocked}
+      >
+        <Feather name="image" size={18} color="#0F172A" />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        onPress={takePhoto}
+        style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
+        disabled={isLocked}
+      >
+        <Feather name="camera" size={18} color="#0F172A" />
+      </TouchableOpacity>
+
+      <View style={styles.textBox}>
+        <TextInput
+          value={input}
+          onChangeText={(t) => {
+            setInput(t);
+
+            const v = validatePromptUI(t, { strict: false });
+            setPromptError(v.ok ? "" : v.error || "");
+            setPromptWarn(v.warn || "");
+
+            const nextSug = getPromptSuggestions(t);
+            setPromptSuggestions(nextSug);
+          }}
+          placeholder={isLocked ? "Upgrade to continue…" : "Describe what you want to change or design…"}
+          placeholderTextColor="#94A3B8"
+          style={styles.textInput}
+          editable={!isLocked}
+          multiline
+          maxLength={PROMPT_MAX + 50}
+        />
+
+        <Text style={styles.counterText}>
+          {Math.min(String(input || "").length, PROMPT_MAX)}/{PROMPT_MAX}
+        </Text>
+      </View>
+
+      <TouchableOpacity
+        onPress={() => sendMessage()}
+        style={[styles.sendBtn, !sendEnabled && { opacity: 0.5 }]}
+        disabled={!sendEnabled}
+      >
+        <Feather name="send" size={18} color="#FFFFFF" />
+      </TouchableOpacity>
+    </View>
+  </View>
+</KeyboardAvoidingView>
+
       </View>
     </SafeAreaView>
   );
@@ -1538,7 +1740,13 @@ const styles = StyleSheet.create({
     marginRight: 6,
   },
   statusText: { color: "#CBD5E1", fontSize: 11, fontWeight: "700" },
-  sessionText: { color: "#94A3B8", fontSize: 11, fontWeight: "700", marginLeft: 6, maxWidth: 160 },
+  sessionText: {
+    color: "#94A3B8",
+    fontSize: 11,
+    fontWeight: "700",
+    marginLeft: 6,
+    maxWidth: 160,
+  },
   headerRight: {
     width: 38,
     height: 38,
@@ -1548,7 +1756,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
   },
 
-  scrollArea: { padding: 14, paddingBottom: 16 },
+  // IMPORTANT: give space for the docked footer (chips + banners + input)
+  scrollArea: { padding: 14, paddingBottom: 360 },
 
   messageRow: { flexDirection: "row", marginBottom: 12, alignItems: "flex-end" },
   aiRow: { justifyContent: "flex-start" },
@@ -1584,7 +1793,12 @@ const styles = StyleSheet.create({
   imageLabel: { fontSize: 11, fontWeight: "800", color: "#64748B" },
 
   section: { marginTop: 8 },
-  sectionHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
   sectionTitle: { fontSize: 12, fontWeight: "900", color: "#0F172A" },
   sectionMeta: { fontSize: 11, fontWeight: "800", color: "#64748B" },
 
@@ -1723,17 +1937,45 @@ const styles = StyleSheet.create({
   promptErrorText: { flex: 1, fontSize: 12, fontWeight: "900", color: "#991B1B" },
   promptWarnText: { flex: 1, fontSize: 12, fontWeight: "900", color: "#0F172A" },
 
+  // ✅ Prompt suggestions row (above input bar)
+  promptFilterWrap: {
+    paddingHorizontal: 14,
+    paddingBottom: 8,
+  },
+  promptFilterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "#E0F2FE",
+    borderWidth: 1,
+    borderColor: "#38BDF8",
+    marginRight: 8,
+  },
+  promptFilterText: { fontSize: 12, fontWeight: "900", color: "#075985" },
+
+  // ✅ Dock container at bottom
+  footerDock: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "#F8FAFC",
+    borderTopWidth: 1,
+    borderTopColor: "#E2E8F0",
+    paddingBottom: 12,
+  },
+
+  // ✅ Input row
   inputBar: {
     flexDirection: "row",
-    alignItems: "flex-end",
+    alignItems: "center", // keep icons + input aligned
     gap: 10,
     paddingHorizontal: 14,
     paddingTop: 10,
-    paddingBottom: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#E2E8F0",
+    paddingBottom: 0,
     backgroundColor: "#F8FAFC",
   },
+
   iconBtn: {
     width: 40,
     height: 40,
@@ -1744,6 +1986,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
+
+  // ✅ Lowered to match icon height
   textBox: {
     flex: 1,
     borderRadius: 16,
@@ -1751,18 +1995,29 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
     backgroundColor: "#FFFFFF",
     paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 8,
-    minHeight: 44,
+    paddingVertical: 8,
+    minHeight: 40,
+    justifyContent: "center",
   },
+
+  // ✅ Critical fix: maxHeight must be ~40, not 110
   textInput: {
     fontSize: 13,
     color: "#0F172A",
-    fontWeight: "700",
-    lineHeight: 19,
-    maxHeight: 110,
+    fontWeight: "400",
+    lineHeight: 18,
+    maxHeight: 15,
+    paddingTop: 0,
+    paddingBottom: 0,
   },
-  counterText: { alignSelf: "flex-end", marginTop: 6, fontSize: 10, fontWeight: "900", color: "#94A3B8" },
+
+  counterText: {
+    alignSelf: "flex-end",
+    marginTop: 4,
+    fontSize: 10,
+    fontWeight: "400",
+    color: "#94A3B8",
+  },
 
   sendBtn: {
     width: 44,
@@ -1773,3 +2028,4 @@ const styles = StyleSheet.create({
     backgroundColor: "#0EA5E9",
   },
 });
+

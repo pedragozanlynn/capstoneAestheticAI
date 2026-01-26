@@ -4,6 +4,15 @@
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 
+// ✅ Ensure we never use org-verified models (e.g. gpt-5-*) as the IMAGE TOOL host
+const pickSafeImageHostModel = (m) => {
+  const s = String(m || "").trim();
+  if (!s) return "gpt-4.1-mini";
+  const lower = s.toLowerCase();
+  if (lower.includes("gpt-5")) return "gpt-4.1-mini";
+  return s;
+};
+
 // ------------------------------
 // Extractors (OpenAI Responses API)
 // ------------------------------
@@ -23,12 +32,33 @@ export const extractOutputText = (json) => {
   return "";
 };
 
+// ✅ More robust: supports string base64 OR url OR nested result objects
 export const extractImageBase64 = (json) => {
   const out = Array.isArray(json?.output) ? json.output : [];
   const calls = out.filter((x) => x?.type === "image_generation_call");
   const first = calls?.[0];
-  const b64 = first?.result;
-  return typeof b64 === "string" && b64.trim() ? b64.trim() : null;
+
+  const r = first?.result;
+
+  // common: string base64
+  if (typeof r === "string" && r.trim()) return r.trim();
+
+  // sometimes tool returns an object
+  if (r && typeof r === "object") {
+    const b64 =
+      r?.b64_json ||
+      r?.base64 ||
+      r?.data?.[0]?.b64_json ||
+      r?.data?.[0]?.base64 ||
+      null;
+
+    if (typeof b64 === "string" && b64.trim()) return b64.trim();
+
+    const url = r?.url || r?.data?.[0]?.url || null;
+    if (typeof url === "string" && url.trim()) return url.trim();
+  }
+
+  return null;
 };
 
 // ------------------------------
@@ -226,11 +256,13 @@ export const callOpenAIReport = async ({
 };
 
 // ------------------------------
-// OpenAI image generation/edit call (UPDATED)
+// OpenAI image generation/edit call (FIXED FOR RESPONSES API)
+// Key fix: DO NOT set model to gpt-image-* here.
+// Use a mainline text/tool model (hostModel) + image_generation tool.
 // ------------------------------
 export const callOpenAIImage = async ({
   apiKey,
-  imageModel,
+  hostModel, // ✅ mainline model (e.g., "gpt-4.1-mini", "gpt-4o", "gpt-5-mini", etc.)
   message,
   mode,
   imageUrl,
@@ -246,12 +278,13 @@ export const callOpenAIImage = async ({
   const MODE = { DESIGN: "design", CUSTOMIZE: "customize" };
   const isCustomizeWithRef = mode === MODE.CUSTOMIZE && !!imageUrl;
 
-  const finalImageModel = String(imageModel || "").trim() || "gpt-image-1.5";
+  // ✅ Always pick a safe host model for image tool calls
+  const finalHostModel = pickSafeImageHostModel(hostModel);
 
-  // ✅ Force edit when customizing with a reference image
+  // ✅ Use tool action explicitly
   const toolConfig = {
     type: "image_generation",
-    ...(isCustomizeWithRef ? { action: "edit" } : {}),
+    action: isCustomizeWithRef ? "edit" : "generate",
   };
 
   const input = [];
@@ -296,7 +329,7 @@ export const callOpenAIImage = async ({
   }
 
   const body = {
-    model: finalImageModel,
+    model: finalHostModel, // ✅ IMPORTANT: safe mainline model for tool host
     input,
     tools: [toolConfig],
     tool_choice: { type: "image_generation" },
@@ -335,8 +368,8 @@ export const callOpenAIImage = async ({
   }
 
   const json = await res.json();
-  const b64 = extractImageBase64(json);
-  return { base64: b64 || null, responseId: json?.id || null };
+  const b64OrUrl = extractImageBase64(json);
+  return { base64: b64OrUrl || null, responseId: json?.id || null };
 };
 
 // ------------------------------
@@ -382,17 +415,22 @@ export const callAIDesignAPI = async ({
   image,
   sessionId,
   isPro,
-  imageModel,
+  imageModel, // kept for backward compatibility
   useOpenAIForCustomize = true,
+
+  // ✅ NEW (required for HF image-to-image customize)
+  hfToken,
+  inputImageBase64,
 }) => {
   const refUrl = image ? String(image) : null;
 
+  // 1) Always get the "brain" report (text + tips + palette + imagePrompt)
   const report = await callOpenAIReport({
     apiKey,
     textModel,
     message,
     proFlag: isPro,
-    imageUrl: refUrl,
+    imageUrl: refUrl, // optional context image
     previousResponseId: sessionId || null,
   });
 
@@ -400,40 +438,56 @@ export const callAIDesignAPI = async ({
     String(report?.parsed?.imagePrompt || "").trim() || String(message || "").trim();
 
   const MODE = { DESIGN: "design", CUSTOMIZE: "customize" };
-  const wantsTrueEdit = useOpenAIForCustomize && mode === MODE.CUSTOMIZE && !!refUrl;
+  const isCustomize = mode === MODE.CUSTOMIZE;
 
   let nextSessionId = report?.responseId || sessionId || null;
 
-  // ✅ CUSTOMIZE: NEVER fallback to generators (they create a different room)
-  if (wantsTrueEdit) {
-    const img = await callOpenAIImage({
-      apiKey,
-      imageModel,
-      message,
-      mode,
-      imageUrl: refUrl,
-      previousResponseId: report?.responseId || sessionId || null,
-    });
+  // 2) ✅ CUSTOMIZE: Hugging Face image-to-image ONLY (no fallback)
+  if (useOpenAIForCustomize && isCustomize) {
+    // HF needs base64 (data:image/...); do not proceed without it
+    const b64 = typeof inputImageBase64 === "string" ? inputImageBase64.trim() : "";
 
-    if (!img?.base64) {
+    if (!hfToken) {
       return {
         data: report?.parsed || {},
         image: null,
         sessionId: nextSessionId,
-        blockedReason: img?.blockedReason || "EDIT_FAILED",
+        blockedReason: "HF_TOKEN_MISSING",
       };
     }
 
-    nextSessionId = img?.responseId || nextSessionId;
+    if (!b64 || !b64.startsWith("data:image/")) {
+      return {
+        data: report?.parsed || {},
+        image: null,
+        sessionId: nextSessionId,
+        blockedReason: "HF_IMAGE_BASE64_MISSING",
+      };
+    }
+
+    const hf = await callHFCustomizeImage({
+      hfToken,
+      prompt: imagePrompt,     // use the report's optimized imagePrompt
+      imageBase64: b64,
+    });
+
+    if (!hf?.base64) {
+      return {
+        data: report?.parsed || {},
+        image: null,
+        sessionId: nextSessionId,
+        blockedReason: hf?.blockedReason || "EDIT_FAILED",
+      };
+    }
 
     return {
       data: report?.parsed || {},
-      image: img?.base64 || null,
+      image: hf.base64, // usually data:image/... returned by HF helper
       sessionId: nextSessionId,
     };
   }
 
-  // ✅ DESIGN: generators allowed (Gemini/Pollinations)
+  // 3) ✅ DESIGN: generators allowed (Gemini/Pollinations)
   try {
     const g = await callGeminiImage({
       apiKey: geminiApiKey,
