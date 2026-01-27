@@ -8,7 +8,7 @@ import {
   setDoc,
   Timestamp,
 } from "firebase/firestore";
-import { db } from "../config/firebase";
+import { db } from "../../config/firebase";
 
 const cleanStr = (v) => {
   const s =
@@ -170,6 +170,10 @@ export async function saveAIResponse(conversationId, payload = {}) {
     role: "ai",
     senderId: uid,
     mode,
+
+    // ✅ IMPORTANT: store prompt so your UI can use it
+    prompt: cleanStr(payload?.prompt),
+
     explanation: cleanStr(payload?.explanation),
     tips: cleanStringArray(payload?.tips),
     palette: normalizePalette(payload?.palette),
@@ -178,10 +182,18 @@ export async function saveAIResponse(conversationId, payload = {}) {
     inputImage: cleanUrlOrNull(payload?.inputImage),
     image: cleanUrlOrNull(payload?.image),
     sessionId: payload?.sessionId ? cleanStr(payload.sessionId) : null,
+
+    // ✅ keep saved flag
+    savedToProjects: payload?.savedToProjects === true,
+
+    // (optional but useful)
+    projectId: cleanStr(payload?.projectId),
+
     createdAt: serverTimestamp(),
   };
 
-  await addDoc(collection(db, "aiConversations", conversationId, "messages"), safe);
+  // ✅ IMPORTANT: return doc id so UI can persist savedToProjects later
+  const docRef = await addDoc(collection(db, "aiConversations", conversationId, "messages"), safe);
 
   await setDoc(
     doc(db, "aiConversations", conversationId),
@@ -198,4 +210,6 @@ export async function saveAIResponse(conversationId, payload = {}) {
     },
     { merge: true }
   );
+
+  return { id: docRef.id };
 }

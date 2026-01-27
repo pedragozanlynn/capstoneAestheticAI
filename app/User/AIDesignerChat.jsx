@@ -1,14 +1,12 @@
 // AIDesignChat.jsx
 // ✅ FIXED: Customize must ALWAYS edit the SAME room reference (no “ibang room”)
-// ✅ UPDATE (YOUR REQUEST):
-// ✅ After CUSTOMIZE, user can ALWAYS go back to DESIGN anytime (even right after customization)
-//    - If user explicitly asks to DESIGN / NEW DESIGN, it will switch to DESIGN and clear refs
-//    - If user does NOT explicitly ask DESIGN, and there is a reference, it will stay CUSTOMIZE (same room)
-// Key fixes kept + adjusted:
-// 1) Force CUSTOMIZE if any reference exists (ONLY when user did NOT explicitly request DESIGN)
-// 2) Reference priority for customize: ORIGINAL (lastReferenceImageUrl) first, then lastGeneratedImageUrl
-// 3) If customize edit fails, DO NOT fallback to generators; show error instead
-// 4) Projects boot sets original ref first when available
+// ✅ UPDATE:
+// ✅ After CUSTOMIZE, when user asks to DESIGN, it will switch to DESIGN and clear refs
+// ✅ UPDATE (YOUR REQUEST NOW):
+// ✅ REMOVE AUTO-SAVE to Projects
+// ✅ ONLY MANUAL SAVE (when user taps Save)
+// ✅ When saving to Projects, include: image, inputImage, prompt, explanation, mode, createdAt
+// ✅ Add success/error messages after save attempt (✅ USING CenterMessageModal)
 
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -16,6 +14,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -32,51 +31,35 @@ import {
 } from "react-native";
 
 import { getAuth } from "firebase/auth";
-import {
-  ensureAIConversation,
-  saveAIResponse,
-  saveAIUserMessage,
-} from "../../services/aiConversationService";
-
-import { uploadAIImageToSupabase } from "../../services/fileUploadService";
-
-import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-} from "firebase/firestore";
-
+import { collection, doc, getDoc, onSnapshot, orderBy, query, updateDoc } from "firebase/firestore";
 import { db } from "../../config/firebase";
 
-import {
-  callAIDesignAPI,
-  mergeBackendPayload,
-  normalizeBackendImageToUri,
-} from "../../services/openaiAIDesignService";
+// ✅ Conversation persistence
+import { ensureAIConversation, saveAIResponse, saveAIUserMessage } from "../../services/ai/aiConversationService";
 
+// ✅ Backend AI call + payload utilities
+import { callAIDesignAPI, mergeBackendPayload, normalizeBackendImageToUri } from "../../services/ai/openaiAIDesignService";
+
+// ✅ Premium gating + mode detection
 import {
-  CUSTOMIZE_TRIGGERS,
   DESIGN_TRIGGERS,
   MODE,
   applyPremiumGatingToPayload,
   detectModeFromMessage,
   normalizeFurnitureItem,
-  normalizeText,
-  safeFirestoreImage,
-} from "../../services/premiumGateService";
+  safeFirestoreImage
+} from "../../services/ai/premiumGateService";
 
-import {
-  getLocalDateKey,
-  incrementDailyCount,
-  loadDailyCounter,
-} from "../../services/dailyLimitService";
+// ✅ Daily limit
+import { getLocalDateKey, incrementDailyCount, loadDailyCounter } from "../../services/ai/dailyLimitService";
 
-import { normalizePrompt as normalizePromptSvc } from "../../services/promptFilterService";
+// ✅ Image upload + Projects save moved to services
+import { uploadAIResultForHistory, uploadUserImageForHistory } from "../../services/ai/chatImageService";
+import { saveResultToProjects } from "../../services/ai/projectsService";
+import PromptFilters from "../components/PromptFilters";
+
+// ✅ Center message modal (YOUR COMPONENT)
+import CenterMessageModal from "../components/CenterMessageModal";
 
 // ==============================
 // ✅ Title helpers
@@ -85,17 +68,6 @@ const makeTitle = (text = "") => {
   const t = String(text).trim().replace(/\s+/g, " ");
   if (!t) return "Aesthetic AI";
   return t.length > 32 ? t.slice(0, 32) + "…" : t;
-};
-
-// ==============================
-// ✅ Prompt Filtration Dictionary
-// ==============================
-const PROMPT_FILTERS = {
-  base: ["design", "make", "create", "generate", "customize", "improve", "change", "move"],
-  rooms: ["living room", "bedroom", "kitchen", "dining room", "bathroom", "studio", "office", "small room"],
-  actions: ["move furniture", "change layout", "improve lighting", "optimize space", "rearrange furniture", "add decor", "remove clutter"],
-  styles: ["modern", "minimalist", "scandinavian", "industrial", "cozy", "luxury", "boho", "japanese"],
-  tones: ["brighter", "warmer", "cleaner", "more spacious", "cozier", "simpler"],
 };
 
 export default function AIDesignerChat() {
@@ -111,7 +83,7 @@ export default function AIDesignerChat() {
   const HEADER_DARK = "#01579B";
 
   const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY || "";
-  const OPENAI_TEXT_MODEL = "gpt-4.1-mini";
+  const OPENAI_TEXT_MODEL = "gpt-5-mini";
 
   const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY || "";
   const GEMINI_IMAGE_MODEL = "imagen-3.0-generate-002";
@@ -147,31 +119,43 @@ export default function AIDesignerChat() {
     },
   ]);
 
-  // ✅ MISSING in your paste sometimes: keep input state here (no behavior change)
   const [input, setInput] = useState("");
-
-  // ==============================
-  // ✅ Live Prompt Suggestions
-  // ==============================
-  const [promptSuggestions, setPromptSuggestions] = useState([]);
-
-  // ==============================
-  // ✅ Prompt Filtration UI (NEW)
-  // ==============================
-  const PROMPT_MIN = 3;
-  const PROMPT_MAX = 600;
-
-  const [promptError, setPromptError] = useState("");
-  const [promptWarn, setPromptWarn] = useState("");
 
   const [isTyping, setIsTyping] = useState(false);
   const [uploadedImage, setUploadedImage] = useState(null);
   const [sessionId, setSessionId] = useState(null);
-  const [uploadedImageBase64, setUploadedImageBase64] = useState(null);
 
   // ✅ references (URLs)
   const [lastReferenceImageUrl, setLastReferenceImageUrl] = useState(null); // ORIGINAL ref
   const [lastGeneratedImageUrl, setLastGeneratedImageUrl] = useState(null); // LAST AI result
+
+  // ==============================
+  // ✅ CenterMessageModal state
+  // ==============================
+  const [msgVisible, setMsgVisible] = useState(false);
+  const [msgType, setMsgType] = useState("info"); // "info" | "success" | "error"
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const [msgAutoHideMs, setMsgAutoHideMs] = useState(1800);
+
+  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1800) => {
+    setMsgType(type);
+    setMsgTitle(String(title || ""));
+    setMsgBody(String(body || ""));
+    setMsgAutoHideMs(Number(autoHideMs) || 1800);
+    setMsgVisible(true);
+  };
+
+  const closeMessage = () => setMsgVisible(false);
+
+  const showSaveResult = (ok, msg) => {
+    showMessage(
+      ok ? "success" : "error",
+      ok ? "Saved" : "Save failed",
+      msg || (ok ? "Saved to Projects." : "Unable to save to Projects."),
+      ok ? 1200 : 2000
+    );
+  };
 
   // ==============================
   // ✅ Project → Chat AUTO CUSTOMIZE PREFILL
@@ -184,12 +168,9 @@ export default function AIDesignerChat() {
 
   useEffect(() => {
     if (tab === "customize") {
-      // Priority: Original uploaded image should be reference (strongest guarantee of same room)
       if (typeof inputImage === "string" && inputImage.startsWith("http")) {
         setLastReferenceImageUrl(inputImage);
       }
-
-      // Keep AI result too (for history), but do NOT override original
       if (typeof refImage === "string" && refImage.startsWith("http")) {
         setLastGeneratedImageUrl(refImage);
       }
@@ -333,134 +314,11 @@ export default function AIDesignerChat() {
     return cid;
   };
 
-  // ✅ FIX: Best reference for customize
-  // ORIGINAL first (lastReferenceImageUrl), then AI result (lastGeneratedImageUrl)
   const getBestReferenceForCustomize = () => {
-    return lastReferenceImageUrl || lastGeneratedImageUrl || null;
-  };
-
-  // ✅ Upload user image to Supabase (refs)
-  const uploadUserImageForHistory = async (uri, promptText) => {
-    const safeUri = typeof uri === "string" ? uri.trim() : "";
-    if (!safeUri) return null;
-
-    if (safeUri.startsWith("http://") || safeUri.startsWith("https://")) {
-      return safeUri;
-    }
-
-    let cid = conversationIdRef.current;
-
-    if (!cid) {
-      try {
-        cid = await ensureConversationOnce(promptText);
-      } catch (e) {
-        cid = `temp_${Date.now()}`;
-        conversationIdRef.current = cid;
-        console.log(
-          "⚠️ ensureConversationOnce failed (user upload), using temp cid:",
-          cid,
-          e?.message || e
-        );
-      }
-    }
-
-    const publicUrl = await uploadAIImageToSupabase({
-      file: {
-        uri: safeUri,
-        name: `user_${Date.now()}.jpg`,
-        mimeType: "image/jpeg",
-      },
-      conversationId: cid,
-      kind: "refs",
-      bucket: "chat-files",
-    });
-
-    if (!publicUrl) {
-      console.log("❌ uploadUserImageForHistory: Supabase returned null URL", {
-        cid,
-        uri: safeUri,
-      });
-    }
-
-    return publicUrl || null;
-  };
-
-  // ✅ Upload AI result image to Supabase (results)
-  const uploadAIResultForHistory = async (imageData, promptText) => {
-    if (!imageData) return null;
-
-    let uri = null;
-
-    if (typeof imageData === "string") {
-      uri = imageData.trim();
-    } else if (imageData && typeof imageData === "object") {
-      const b64 = imageData?.base64 || imageData?.Base64 || imageData?.data || null;
-      if (typeof b64 === "string" && b64.trim()) {
-        uri = b64.startsWith("data:image/") ? b64 : `data:image/jpeg;base64,${b64}`;
-      }
-    }
-
-    if (!uri) return null;
-
-    if (uri.startsWith("http://") || uri.startsWith("https://")) {
-      return uri;
-    }
-
-    const cid = conversationIdRef.current || (await ensureConversationOnce(promptText));
-
-    const publicUrl = await uploadAIImageToSupabase({
-      file: { uri, name: `ai_${Date.now()}.jpg` },
-      conversationId: cid,
-      kind: "results",
-      bucket: "chat-files",
-    });
-
-    return publicUrl || null;
-  };
-
-  const saveResultToProjects = async ({ imageUrl, prompt, mode, inputImageUrl }) => {
-    const uid = auth?.currentUser?.uid || userId;
-
-    if (!uid) throw new Error("Not authenticated (uid missing)");
-
-    const safeUrl = safeFirestoreImage(imageUrl);
-    if (!safeUrl) throw new Error("Invalid image URL");
-
-    const docData = {
-      uid: String(uid),
-      image: safeUrl,
-      prompt: String(prompt || "").trim(),
-      mode: mode || MODE.DESIGN,
-      inputImage: safeFirestoreImage(inputImageUrl) || null,
-      createdAt: serverTimestamp(),
-      source: "ai",
-    };
-
-    Object.keys(docData).forEach((k) => docData[k] === undefined && delete docData[k]);
-
-    await addDoc(collection(db, "projects"), docData);
-  };
-
-  const handleSaveOutline = async (item) => {
-    try {
-      const imageUrl = safeFirestoreImage(item?.image);
-      if (!imageUrl) return;
-
-      const uid = auth?.currentUser?.uid || userId;
-      if (!uid) return;
-
-      if (item?.savedToProjects === true) return;
-
-      const mode = item?.mode || MODE.DESIGN;
-      const prompt = String(item?.prompt || item?.title || chatTitle || "Aesthetic AI").trim();
-      const inputImageUrl = safeFirestoreImage(item?.inputImage) || null;
-
-      await saveResultToProjects({ imageUrl, prompt, mode, inputImageUrl });
-
-      setMessages((prev) => prev.map((m) => (m === item ? { ...m, savedToProjects: true } : m)));
-    } catch (e) {
-      console.warn("handleSaveOutline failed:", e?.message || e);
-    }
+    // ✅ CHAIN EDITING:
+    // Prefer last AI result first (so customize edits the latest generated image),
+    // fallback to original reference only if no generated exists.
+    return lastGeneratedImageUrl || lastReferenceImageUrl || null;
   };
 
   // ==============================
@@ -556,9 +414,7 @@ export default function AIDesignerChat() {
               : []
             : [];
 
-          const furnitureMatchesAll = canShowPremiumNow
-            ? rawFurniture.map(normalizeFurnitureItem)
-            : [];
+          const furnitureMatchesAll = canShowPremiumNow ? rawFurniture.map(normalizeFurnitureItem) : [];
 
           const layoutSuggestionsAll = canShowPremiumNow
             ? Array.isArray(m.layoutSuggestions)
@@ -572,6 +428,7 @@ export default function AIDesignerChat() {
 
           const aiItem = {
             role: "ai",
+            _docId: docSnap.id,
             mode: m.mode || null,
             explanation: m.explanation || "",
             tips: Array.isArray(m.tips) ? m.tips : [],
@@ -582,9 +439,9 @@ export default function AIDesignerChat() {
             image: m.image || null,
             prompt: m.prompt || null,
             savedToProjects: m.savedToProjects === true,
+            projectId: m.projectId || null,
           };
 
-          // ✅ keep refs updated
           if (m.inputImage && String(m.inputImage).startsWith("http")) {
             setLastReferenceImageUrl(String(m.inputImage));
           } else if (m.lastReferenceImage && String(m.lastReferenceImage).startsWith("http")) {
@@ -638,11 +495,9 @@ export default function AIDesignerChat() {
       setHasSavedTitle(true);
     }
 
-    // ✅ ORIGINAL ref first
     if (savedOriginal && (savedOriginal.startsWith("http://") || savedOriginal.startsWith("https://"))) {
       setLastReferenceImageUrl(savedOriginal);
     }
-    // Keep AI result too
     if (savedResult && (savedResult.startsWith("http://") || savedResult.startsWith("https://"))) {
       setLastGeneratedImageUrl(savedResult);
     }
@@ -650,9 +505,7 @@ export default function AIDesignerChat() {
     setMessages((prev) => {
       const next = Array.isArray(prev) ? [...prev] : [];
 
-      if (savedPrompt) {
-        next.push({ role: "user", text: savedPrompt, image: null });
-      }
+      if (savedPrompt) next.push({ role: "user", text: savedPrompt, image: null });
 
       if (savedOriginal || savedResult) {
         next.push({
@@ -681,7 +534,7 @@ export default function AIDesignerChat() {
     if (proLoaded) return isProRef.current === true;
 
     try {
-      const uid = auth?.currentUser?.uid || userId;
+      const uid = userId || auth?.currentUser?.uid;
       if (!uid) return false;
 
       const snap = await getDoc(doc(db, "users", uid));
@@ -693,554 +546,277 @@ export default function AIDesignerChat() {
       setProLoaded(true);
 
       return pro;
-    } catch (e) {
+    } catch {
       setProLoaded(true);
       return false;
     }
   };
 
-  // ------------------------------
-  // Prompt validation helpers
-  // ------------------------------
-  const countAlphaNum = (s) => (normalizePromptSvc(s).match(/[a-zA-Z0-9]/g) || []).length;
+ // ==============================
+// ✅ sendMessage (COMPLETE)
+// ==============================
+const sendMessage = async (text = input, opts = {}) => {
+  const raw = String(text ?? "").trim();
+  if (!raw) return;
 
-  const isOnlySymbolsOrEmoji = (s) => {
-    const t = normalizePromptSvc(s);
-    if (!t) return true;
-    return countAlphaNum(t) === 0;
-  };
+  // lock check
+  if (isLocked) {
+    showMessage("error", "Limit reached", "Upgrade to Pro to continue.", 2000);
+    return;
+  }
 
-  const isRepeatedCharSpam = (s) => /(.)\1{7,}/.test(normalizePromptSvc(s));
-  const isRepeatedWordSpam = (s) => /(\b\w+\b)(\s+\1){6,}/i.test(normalizePromptSvc(s));
-  const hasTooManyLinks = (s) => (normalizePromptSvc(s).match(/https?:\/\/\S+/gi) || []).length >= 3;
+  if (sendingRef.current) return;
+  sendingRef.current = true;
 
-  const validatePromptUI = (raw, { strict = true } = {}) => {
-    const cleaned = normalizePromptSvc(raw);
+  const realtime = isHistoryRealtimeActive();
 
-    if (!cleaned) {
-      if (!strict) return { ok: true, cleaned: "", warn: "" };
-      return { ok: false, cleaned, error: "Please type a message." };
+  try {
+    setIsTyping(true);
+
+    // Ensure pro flag is resolved at least once
+    let proNow = isProRef.current === true;
+    if (!proLoaded) {
+      try {
+        proNow = (await ensureProResolvedOnce()) === true;
+      } catch {}
     }
 
-    if (cleaned.length > PROMPT_MAX) {
-      return {
-        ok: false,
-        cleaned: cleaned.slice(0, PROMPT_MAX),
-        error: `Your message is too long. Keep it under ${PROMPT_MAX} characters.`,
-      };
-    }
-
-    if (isOnlySymbolsOrEmoji(cleaned)) {
-      return { ok: false, cleaned, error: "Please type a clear request (not only symbols or emojis)." };
-    }
-
-    if (isRepeatedCharSpam(cleaned) || isRepeatedWordSpam(cleaned)) {
-      return { ok: false, cleaned, error: "Your message looks repetitive. Please type a clearer request." };
-    }
-
-    if (hasTooManyLinks(cleaned)) {
-      return { ok: false, cleaned, error: "Please avoid sending many links. Summarize what you want instead." };
-    }
-
-    if (cleaned.length < PROMPT_MIN) {
-      if (!strict) {
-        return {
-          ok: true,
-          cleaned,
-          warn: "Add more details (e.g., room type, style, and what you want to improve).",
-        };
-      }
-      return {
-        ok: false,
-        cleaned,
-        error: "Please add more details (e.g., room type, style, and what you want to improve).",
-      };
-    }
-
-    let warn = "";
-    if (cleaned.length >= 350) {
-      warn = "Tip: Shorter prompts usually produce more accurate design results.";
-    }
-
-    return { ok: true, cleaned, warn };
-  };
-
-  // ==============================
-  // ✅ Prompt Filtration Engine (FIXED)
-  // ==============================
-  // Goals:
-  // - DO NOT show suggestions when input is empty (your quick prompts already cover that)
-  // - Show relevant suggestions based on last word / phrase
-  // - When user taps a suggestion, replace the last partial word (instead of always appending)
-  const getPromptSuggestions = (raw) => {
-    const textRaw = normalizePromptSvc(raw || "");
-    const text = textRaw.toLowerCase().trim();
-
-    // ✅ Critical fix: no suggestions when empty
-    if (!text) return [];
-
-    // Small guard: avoid showing suggestions for very long prompts
-    if (text.length > 220) return [];
-
-    // Phrase-level detection
-    const phraseTail = text.replace(/\s+/g, " ");
-    const tailTriggers = ["make me a", "design a", "create a", "generate a", "design an", "create an", "generate an"];
-    if (tailTriggers.some((t) => phraseTail.endsWith(t))) {
-      return PROMPT_FILTERS.rooms.slice(0, 6);
-    }
-
-    // If user already named a room, propose styles
-    if (
-      PROMPT_FILTERS.rooms.some((r) => phraseTail.includes(r)) ||
-      phraseTail.includes("bedroom") ||
-      phraseTail.includes("living") ||
-      phraseTail.includes("kitchen") ||
-      phraseTail.includes("bathroom")
-    ) {
-      return PROMPT_FILTERS.styles.slice(0, 6);
-    }
-
-    // Action intent
-    if (phraseTail.startsWith("move") || phraseTail.includes(" move ") || phraseTail.includes("rearrange")) {
-      return PROMPT_FILTERS.actions.slice(0, 6);
-    }
-
-    // Tone intent
-    if (phraseTail.includes("more ") || phraseTail.includes("make it ") || phraseTail.includes("feel ")) {
-      return PROMPT_FILTERS.tones.slice(0, 6);
-    }
-
-    // Prefix-based fallback on last token
-    const words = phraseTail.split(/\s+/).filter(Boolean);
-    const last = words[words.length - 1] || "";
-
-    // If last token is too short, prefer base verbs (but still contextual)
-    const pool =
-      last.length <= 2
-        ? [...PROMPT_FILTERS.base, ...PROMPT_FILTERS.rooms]
-        : [
-            ...PROMPT_FILTERS.rooms,
-            ...PROMPT_FILTERS.actions,
-            ...PROMPT_FILTERS.styles,
-            ...PROMPT_FILTERS.tones,
-            ...PROMPT_FILTERS.base,
-          ];
-
-    const uniq = Array.from(new Set(pool));
-
-    // Match either last token prefix OR whole phrase prefix (for multi-word suggestions)
-    const matches = uniq.filter((s) => {
-      const sl = s.toLowerCase();
-      if (!last) return false;
-      return sl.startsWith(last) || sl.startsWith(`${last} `);
-    });
-
-    // If no prefix matches, offer a small “smart default” set
-    if (matches.length === 0) {
-      // Prefer actions if user typed something like "improve", else styles
-      if (phraseTail.includes("improve") || phraseTail.includes("better") || phraseTail.includes("optimize")) {
-        return PROMPT_FILTERS.actions.slice(0, 6);
-      }
-      return PROMPT_FILTERS.styles.slice(0, 6);
-    }
-
-    return matches.slice(0, 6);
-  };
-
-  const applySuggestion = (prevInput, suggestion) => {
-    const base = String(prevInput || "");
-    const trimmed = base.replace(/\s+$/g, "");
-    if (!trimmed) return suggestion;
-
-    const words = trimmed.split(/\s+/);
-    if (words.length === 0) return suggestion;
-
-    const last = words[words.length - 1] || "";
-    const sug = String(suggestion || "").trim();
-    if (!sug) return trimmed;
-
-    // Replace last word if it's a partial prefix of the suggestion
-    const sugFirstToken = sug.split(/\s+/)[0]?.toLowerCase() || "";
-    const lastLower = last.toLowerCase();
-
-    if (lastLower && sug.toLowerCase().startsWith(lastLower) && lastLower !== sug.toLowerCase()) {
-      words[words.length - 1] = sug;
-      return words.join(" ") + " ";
-    }
-
-    // Otherwise append
-    return trimmed + " " + sug + " ";
-  };
-
-  const sendMessage = async (text = input) => {
-    const v = validatePromptUI(text, { strict: true });
-    const clean = v.cleaned;
-
-    if (!v.ok) {
-      setPromptError(v.error || "Invalid prompt.");
-      setPromptWarn("");
-
-      if (!isHistoryRealtimeActive()) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "ai", explanation: v.error || "Invalid prompt.", tips: [], layoutSuggestions: [], furnitureMatches: [] },
-        ]);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-      }
-      return;
-    }
-
-    setPromptError("");
-    setPromptWarn(v.warn || "");
-
-    if (sendingRef.current) return;
-    sendingRef.current = true;
-
-    const realtime = isHistoryRealtimeActive();
-
-    try {
-      let proNow = isProRef.current === true;
-      if (!proLoaded) {
-        try {
-          proNow = (await ensureProResolvedOnce()) === true;
-        } catch {}
+    // ✅ DAILY LIMIT (only for free users)
+    if (!proNow) {
+      const nowKey = getLocalDateKey();
+      if (dailyGenDateKey !== nowKey) {
+        setDailyGenDateKey(nowKey);
+        setDailyGenCount(0);
       }
 
-      if (!hasSavedTitle) {
-        setChatTitle(makeTitle(clean));
-        setHasSavedTitle(true);
-        try {
-          await ensureConversationOnce(clean);
-        } catch (e) {
-          console.warn("AI Conversation ensure failed:", e?.message || e);
-        }
-      }
-
-      if (isLocked) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "ai",
-            explanation:
-              "Daily limit reached (5/5). Upgrade to Pro to continue chatting with unlimited generations.",
-            tips: [],
-            layoutSuggestions: [],
-            furnitureMatches: [],
-          },
-          {
-            role: "ai",
-            explanation:
-              "You can still review your previous results in this chat. To continue generating new designs, tap the Upgrade banner below.",
-            tips: [],
-            layoutSuggestions: [],
-            furnitureMatches: [],
-          },
-        ]);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+      if (dailyGenCount >= DAILY_LIMIT) {
+        setIsTyping(false);
+        showMessage("error", "Daily limit reached", "Try again tomorrow or upgrade to Pro.", 2200);
         return;
       }
 
-      // ✅ NEW: explicit intent detection (works in ANY tab)
-      const normalizedMsg = normalizeText(clean);
-      const explicitDesign = DESIGN_TRIGGERS.some((k) => normalizedMsg.includes(k));
-      const explicitCustomize = CUSTOMIZE_TRIGGERS.some((k) => normalizedMsg.includes(k));
-
-      let desiredMode = detectModeFromMessage(clean);
-
-      // ✅ User explicit intent always wins
-      if (explicitDesign) desiredMode = MODE.DESIGN;
-      if (explicitCustomize) desiredMode = MODE.CUSTOMIZE;
-
-      // ✅ Tab customize: default CUSTOMIZE unless explicitly design/customize
-      if (tab === "customize") {
-        if (!explicitDesign && !explicitCustomize) desiredMode = MODE.CUSTOMIZE;
+      if (dailyGenCount === WARNING_AT) {
+        showMessage(
+          "info",
+          "Heads up",
+          `You’re at ${WARNING_AT}/${DAILY_LIMIT} generations today.`,
+          1800
+        );
       }
-
-      // ✅ FIX #1 (UPDATED): Force CUSTOMIZE if ANY reference exists (prevents “ibang room”)
-      // BUT if user explicitly requested DESIGN, allow DESIGN (go back anytime).
-      const hasAnyRef = !!uploadedImage || !!getBestReferenceForCustomize();
-      if (hasAnyRef && desiredMode !== MODE.CUSTOMIZE && !explicitDesign) {
-        desiredMode = MODE.CUSTOMIZE;
-      }
-
-      // If user starts a NEW DESIGN, clear refs (so design is totally fresh)
-      if (desiredMode === MODE.DESIGN) {
-        setLastGeneratedImageUrl(null);
-        setLastReferenceImageUrl(null);
-      }
-
-      let uploadedRefUrl = null;
-      if (uploadedImage) {
-        uploadedRefUrl = await uploadUserImageForHistory(uploadedImage, clean);
-
-        if (uploadedRefUrl) {
-          // ✅ This is ORIGINAL ref
-          setLastReferenceImageUrl(uploadedRefUrl);
-
-          setMessages((prev) => {
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const m = prev[i];
-              if (m?.role === "user" && typeof m?.image === "string" && m.image.startsWith("file://")) {
-                const next = [...prev];
-                next[i] = { ...m, image: uploadedRefUrl };
-                return next;
-              }
-            }
-            return prev;
-          });
-        }
-      }
-
-      // ✅ Effective reference for customize: prefer ORIGINAL uploaded ref
-      const effectiveImage =
-      desiredMode === MODE.CUSTOMIZE
-        ? (uploadedRefUrl || getBestReferenceForCustomize())
-        : null;
-    
-        const isUsableImageRef = (u) => {
-          const s = typeof u === "string" ? u.trim() : "";
-          if (!s) return false;
-          return (
-            s.startsWith("http://") ||
-            s.startsWith("https://") ||
-            s.startsWith("data:image/") // ✅ allow base64 data URI
-          );
-        };
-        
-        if (desiredMode === MODE.CUSTOMIZE && !isUsableImageRef(effectiveImage)) {
-          if (!realtime) {
-            setMessages((prev) => [
-              ...prev,
-              { role: "user", text: clean },
-              {
-                role: "ai",
-                explanation:
-                  "Customization needs the ORIGINAL room image (public https link or a base64 image). Please re-upload/capture the room photo so I can edit the same room.",
-                tips: [],
-                layoutSuggestions: [],
-                furnitureMatches: [],
-              },
-            ]);
-          }
-          setInput("");
-          setPromptSuggestions([]);
-          setIsTyping(false);
-          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-          return;
-        }
-        
-        if (desiredMode === MODE.CUSTOMIZE && !isUsableImageRef(effectiveImage)) {
-          if (!realtime) {
-            setMessages((prev) => [
-              ...prev,
-              { role: "user", text: clean },
-              {
-                role: "ai",
-                explanation:
-                  "Customization needs the ORIGINAL room image (public https link OR a base64 image). Please re-upload/capture the room photo so I can edit the same room.",
-                tips: [],
-                layoutSuggestions: [],
-                furnitureMatches: [],
-              },
-            ]);
-          }
-          setInput("");
-          setPromptSuggestions([]);
-          setIsTyping(false);
-          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-          return;
-        }
-        
-      try {
-        const cid = conversationIdRef.current || (await ensureConversationOnce(clean));
-        await saveAIUserMessage(cid, { text: clean, image: safeFirestoreImage(uploadedRefUrl) });
-      } catch (e) {
-        console.warn("saveAIUserMessage failed:", e?.message || e);
-      }
-
-      if (!realtime) {
-        setMessages((prev) => [...prev, { role: "user", text: clean, image: uploadedRefUrl || null }]);
-      }
-
-      setInput("");
-      setPromptSuggestions([]); // ✅ keep UI clean after send
-      setIsTyping(true);
-
-      if (!realtime && !proNow && dailyGenCount === WARNING_AT) {
-        setMessages((prev) => [
-          ...prev,
-          { role: "ai", explanation: "Notice: You have 2 generations left today.", tips: [], layoutSuggestions: [], furnitureMatches: [] },
-        ]);
-      }
-
-      try {
-        const result = await callAIDesignAPI({
-          apiKey: OPENAI_API_KEY,
-          textModel: OPENAI_TEXT_MODEL,
-          geminiApiKey: GEMINI_API_KEY,
-          geminiImageModel: GEMINI_IMAGE_MODEL,
-          message: clean,
-          mode: desiredMode,
-          image: effectiveImage,
-          sessionId,
-          isPro: proNow,
-          useOpenAIForCustomize: true,
-        
-          hfToken: process.env.EXPO_PUBLIC_HF_TOKEN || "",
-          inputImageBase64: uploadedImageBase64,
-        });
-        
-
-        if (result?.sessionId) setSessionId(result.sessionId);
-
-        // ✅ FIX #3: Customize edit failed => show message (NO generator fallback)
-        if (desiredMode === MODE.CUSTOMIZE && result?.blockedReason) {
-          setIsTyping(false);
-          setUploadedImage(null);
-
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "ai",
-              explanation:
-                "Customization edit failed. I cannot redesign the same room without a successful image edit. Please try again, or re-upload the original reference image.",
-              tips: [],
-              layoutSuggestions: [],
-              furnitureMatches: [],
-            },
-          ]);
-
-          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-          return;
-        }
-
-        let updatedCount = dailyGenCount;
-        if (!proNow) {
-          const next = await incrementDailyCount(userId, dailyGenCount);
-          setDailyGenDateKey(getLocalDateKey());
-          setDailyGenCount(next);
-          updatedCount = next;
-        }
-
-        setUploadedImage(null);
-        setIsTyping(false);
-
-        const mergedPayload = mergeBackendPayload(result);
-
-        const {
-          explanation,
-          tips,
-          palette,
-          layoutSuggestions: backendLayoutSuggestions,
-          furnitureMatches: furnitureMatchesAll,
-        } = applyPremiumGatingToPayload({ mergedPayload, proNow });
-
-        const resultImageUri = normalizeBackendImageToUri(result?.image);
-
-        let aiImagePublicUrl = null;
-        if (resultImageUri) {
-          if (resultImageUri.startsWith("http://") || resultImageUri.startsWith("https://")) {
-            aiImagePublicUrl = resultImageUri;
-          } else {
-            aiImagePublicUrl = await uploadAIResultForHistory(resultImageUri, clean);
-          }
-        }
-
-        const uiResultImage = aiImagePublicUrl || resultImageUri || null;
-
-        if (uiResultImage) {
-          setLastGeneratedImageUrl(uiResultImage);
-
-          // ✅ Never override ORIGINAL ref with AI result
-          // only set reference if we don't have any original reference yet
-          setLastReferenceImageUrl((prev) => prev || safeFirestoreImage(effectiveImage) || null);
-        }
-
-        const firestoreInputImageUrl =
-          desiredMode === MODE.CUSTOMIZE ? safeFirestoreImage(effectiveImage) : safeFirestoreImage(uploadedRefUrl);
-
-        try {
-          const cid = conversationIdRef.current || (await ensureConversationOnce(clean));
-          await saveAIResponse(cid, {
-            mode: desiredMode,
-            explanation,
-            tips,
-            palette,
-            layoutSuggestions: proNow ? backendLayoutSuggestions : [],
-            furnitureMatches: proNow ? furnitureMatchesAll : [],
-            inputImage: firestoreInputImageUrl,
-            image: safeFirestoreImage(aiImagePublicUrl || resultImageUri),
-            sessionId: result?.sessionId || sessionId || null,
-            lastReferenceImage: safeFirestoreImage(effectiveImage) || null,
-            prompt: clean,
-          });
-        } catch (e) {
-          console.warn("saveAIResponse failed:", e?.message || e);
-        }
-
-        if (!isHistoryRealtimeActive()) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "ai",
-              mode: desiredMode,
-              inputImage: firestoreInputImageUrl,
-              image: uiResultImage,
-              explanation,
-              tips,
-              palette,
-              layoutSuggestions: proNow ? backendLayoutSuggestions : [],
-              furnitureMatches: proNow ? furnitureMatchesAll : [],
-              prompt: clean,
-              savedToProjects: false,
-            },
-          ]);
-        }
-
-        const nextCount = !proNow ? updatedCount : dailyGenCount;
-
-        if (!proNow && nextCount >= DAILY_LIMIT) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "ai",
-              explanation:
-                "Daily limit reached (5/5). Upgrade to Pro to continue chatting with unlimited generations.",
-              tips: [],
-              layoutSuggestions: [],
-              furnitureMatches: [],
-            },
-            {
-              role: "ai",
-              explanation:
-                "You can still review your previous results in this chat. To continue generating new designs, tap the Upgrade banner below.",
-              tips: [],
-              layoutSuggestions: [],
-              furnitureMatches: [],
-            },
-          ]);
-        }
-
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-      } catch (err) {
-        console.error("AI UI ERROR:", err);
-        setIsTyping(false);
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "ai",
-            explanation: "Unable to process your request at the moment. Please try again.",
-            tips: [],
-            layoutSuggestions: [],
-            furnitureMatches: [],
-          },
-        ]);
-      }
-    } finally {
-      sendingRef.current = false;
     }
-  };
+
+    // ✅ Determine intent/mode
+    const forcedMode = opts?.forceMode || null;
+    const detected = detectModeFromMessage(raw);
+
+    const userExplicitDesign =
+      forcedMode === MODE.DESIGN ||
+      DESIGN_TRIGGERS?.some((t) => raw.toLowerCase().includes(String(t).toLowerCase()));
+
+    // ✅ DESIGN request must clear refs (per your spec)
+    if (userExplicitDesign) {
+      setLastReferenceImageUrl(null);
+      setLastGeneratedImageUrl(null);
+      setUploadedImage(null);
+      setRefImageSize(null);
+      refImageSizeRef.current = null;
+    }
+
+    // Decide final mode:
+    // - explicit DESIGN => DESIGN
+    // - otherwise, if any reference exists (uploaded or stored), CUSTOMIZE
+    // - else DESIGN
+    const hasAnyRef =
+      !!uploadedImage || !!lastReferenceImageUrl || !!lastGeneratedImageUrl;
+
+    const finalMode =
+      userExplicitDesign ? MODE.DESIGN : hasAnyRef ? MODE.CUSTOMIZE : MODE.DESIGN;
+
+    // ✅ Prepare conversation id (new chat or existing)
+    const cid =
+      conversationIdRef.current ||
+      (await ensureConversationOnce(raw));
+
+    // ✅ Build reference image for customize
+    // RULE: "Customize must ALWAYS edit SAME room reference"
+    // - If user attached NEW image now, that becomes the ORIGINAL reference
+    // - Otherwise: use ORIGINAL reference first; fallback to lastGenerated only if no original exists
+    let localRefUri = null;
+    if (finalMode === MODE.CUSTOMIZE) {
+      localRefUri = uploadedImage || null;
+      if (!localRefUri) {
+        localRefUri = lastReferenceImageUrl || lastGeneratedImageUrl || null;
+      }
+    }
+
+    // ✅ Upload user reference (if local file) for history + backend usage
+    let refHttpUrl = null;
+    if (finalMode === MODE.CUSTOMIZE && localRefUri) {
+      if (/^https?:\/\//i.test(localRefUri)) {
+        refHttpUrl = localRefUri;
+      } else {
+        // local file uri -> upload
+        const up = await uploadUserImageForHistory({
+          uid: auth?.currentUser?.uid || userId,
+          conversationId: cid,
+          uri: localRefUri,
+        });
+        refHttpUrl = up?.url || up || null;
+      }
+    }
+
+    // ✅ Persist user message (best effort)
+    if (!realtime) {
+      setMessages((prev) => [
+        ...(Array.isArray(prev) ? prev : []),
+        { role: "user", text: raw, image: localRefUri && !/^https?:\/\//i.test(localRefUri) ? localRefUri : null },
+      ]);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+    }
+
+    try {
+      await saveAIUserMessage({
+        conversationId: cid,
+        text: raw,
+        image: refHttpUrl || null,
+        mode: finalMode,
+      });
+    } catch (eSaveUser) {
+      // non-blocking
+      console.warn("⚠️ saveAIUserMessage failed:", eSaveUser?.message || eSaveUser);
+    }
+
+    // ✅ Build payload for backend
+    let payload = {
+      prompt: raw,
+      mode: finalMode,
+      // image only for customize
+      image: finalMode === MODE.CUSTOMIZE ? refHttpUrl : null,
+      // optional size hint
+      refImageSize: refImageSizeRef.current || null,
+    };
+
+    payload = applyPremiumGatingToPayload(payload, { isPro: proNow });
+
+    // ✅ Call AI backend
+    const result = await callAIDesignAPI({
+      payload,
+      openaiApiKey: OPENAI_API_KEY,
+      openaiTextModel: OPENAI_TEXT_MODEL,
+      geminiApiKey: GEMINI_API_KEY,
+      geminiImageModel: GEMINI_IMAGE_MODEL,
+    });
+
+    // ✅ Normalize/merge backend response
+    const merged = mergeBackendPayload(result);
+
+    const aiImageUri = normalizeBackendImageToUri(merged?.image);
+    if (!aiImageUri) throw new Error("AI did not return an image.");
+
+    // ✅ Upload AI image for history if needed (store http url)
+    let aiHttpUrl = null;
+    if (/^https?:\/\//i.test(aiImageUri)) {
+      aiHttpUrl = aiImageUri;
+    } else {
+      const up2 = await uploadAIResultForHistory({
+        uid: auth?.currentUser?.uid || userId,
+        conversationId: cid,
+        uri: aiImageUri, // can be data:image/...
+      });
+      aiHttpUrl = up2?.url || up2 || null;
+    }
+
+    if (!aiHttpUrl) throw new Error("Failed to store AI image.");
+
+    // ✅ Update reference trackers
+    setLastGeneratedImageUrl(aiHttpUrl);
+
+    // IMPORTANT: never override ORIGINAL reference with AI result
+    // If user uploaded a new reference now, lock it as ORIGINAL
+    if (finalMode === MODE.CUSTOMIZE) {
+      if (refHttpUrl && /^https?:\/\//i.test(refHttpUrl)) {
+        setLastReferenceImageUrl((prev) => prev || refHttpUrl);
+      }
+    }
+
+    // ✅ Save AI response into conversation
+    const aiDoc = {
+      conversationId: cid,
+      mode: finalMode,
+      prompt: raw,
+      explanation: String(merged?.explanation || "").trim(),
+      tips: Array.isArray(merged?.tips) ? merged.tips : [],
+      palette: merged?.palette || null,
+      layoutSuggestions: Array.isArray(merged?.layoutSuggestions) ? merged.layoutSuggestions : [],
+      furnitureMatches: Array.isArray(merged?.furnitureMatches) ? merged.furnitureMatches : [],
+      inputImage: finalMode === MODE.CUSTOMIZE ? safeFirestoreImage(refHttpUrl) : null,
+      image: safeFirestoreImage(aiHttpUrl),
+      savedToProjects: false,
+      projectId: null,
+    };
+
+    let savedDocId = null;
+    try {
+      const saved = await saveAIResponse(aiDoc);
+      savedDocId = saved?.id || saved?.docId || null;
+    } catch (eSaveAi) {
+      console.warn("⚠️ saveAIResponse failed:", eSaveAi?.message || eSaveAi);
+    }
+
+    // ✅ Update UI if not realtime (realtime will re-render via snapshot)
+    if (!realtime) {
+      setMessages((prev) => [
+        ...(Array.isArray(prev) ? prev : []),
+        {
+          role: "ai",
+          _docId: savedDocId || null,
+          ...aiDoc,
+        },
+      ]);
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 160);
+    }
+
+    // ✅ Daily increment (only free)
+    if (!proNow) {
+      try {
+        const next = await incrementDailyCount(userId);
+        if (next && typeof next.count === "number") {
+          setDailyGenCount(next.count);
+          setDailyGenDateKey(next.dateKey || getLocalDateKey());
+        } else {
+          setDailyGenCount((c) => c + 1);
+        }
+      } catch (eInc) {
+        setDailyGenCount((c) => c + 1);
+      }
+    }
+
+    // ✅ Clear composer + attachment after successful send
+    setInput("");
+    setUploadedImage(null);
+  } catch (e) {
+    console.warn("❌ sendMessage failed:", e?.message || e);
+
+    if (!isHistoryRealtimeActive()) {
+      setMessages((prev) => [
+        ...(Array.isArray(prev) ? prev : []),
+        {
+          role: "ai",
+          explanation: e?.message || "Something went wrong.",
+          tips: [],
+          layoutSuggestions: [],
+          furnitureMatches: [],
+        },
+      ]);
+    }
+
+    showMessage("error", "Generation failed", e?.message || "Please try again.", 2200);
+  } finally {
+    setIsTyping(false);
+    sendingRef.current = false;
+  }
+};
+
 
   const pickImage = async () => {
     if (isLocked) return;
@@ -1251,17 +827,11 @@ export default function AIDesignerChat() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 1,
-      base64: true,
     });
-    
 
     if (!result.canceled) {
-      const asset = result.assets[0];
-     const uri = asset.uri;
-
-setUploadedImage(uri);
-setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` : null);
-
+      const uri = result.assets[0].uri;
+      setUploadedImage(uri);
       await setRefSizeFromUri(uri);
 
       if (!isHistoryRealtimeActive()) {
@@ -1277,12 +847,8 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) return;
 
-    const result = await ImagePicker.launchCameraAsync({
-      quality: 1,
-      base64: true,
-    });
-    
-    
+    const result = await ImagePicker.launchCameraAsync({ quality: 1 });
+
     if (!result.canceled) {
       const uri = result.assets[0].uri;
       setUploadedImage(uri);
@@ -1295,18 +861,97 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
     }
   };
 
-  const clearAttachment = () => {
-    setUploadedImage(null);
-    setUploadedImageBase64(null);
+  const clearAttachment = () => setUploadedImage(null);
+
+  const getMessagesCollectionRef = () => {
+    if (!userId) return null;
+    if (!chatIdParam || chatIdParam === "new") return null;
+
+    return sourceParam === "user"
+      ? collection(db, "users", userId, "aiConversations", chatIdParam, "messages")
+      : collection(db, "aiConversations", chatIdParam, "messages");
   };
-  
+
+  const savingProjectRef = useRef(false);
+
+  // ✅ MANUAL SAVE: saves image + prompt + explanation + title to Projects
+  const handleManualSave = async (item) => {
+    if (savingProjectRef.current) return;
+    savingProjectRef.current = true;
+
+    try {
+      const uid = auth?.currentUser?.uid || userId;
+      if (!uid) throw new Error("No uid");
+
+      const imageUrl = safeFirestoreImage(item?.image);
+      if (!imageUrl) throw new Error("No result image to save");
+
+      const promptText = String(item?.prompt || "").trim();
+      const explanationText = String(item?.explanation || "").trim();
+
+      // ✅ Title: short + safe
+      const title =
+        (promptText ? promptText.replace(/\s+/g, " ").trim().slice(0, 40) : "") || "AI Design";
+
+      // ✅ 1) Save to Projects (THIS is the "real success")
+      const saved = await saveResultToProjects({
+        uid,
+        title,
+        imageUrl,
+        inputImageUrl: safeFirestoreImage(item?.inputImage) || null,
+        prompt: promptText || "Saved design",
+        explanation: explanationText || "",
+        mode: String(item?.mode || MODE.DESIGN),
+      });
+
+      const projectId = saved?.id || saved || null;
+
+      // ✅ 2) Update UI immediately
+      setMessages((prev) =>
+        prev.map((m) => {
+          const sameDoc = item?._docId && m?._docId && m._docId === item._docId;
+          const sameFallback =
+            m?.role === "ai" &&
+            m?.image &&
+            item?.image &&
+            m.image === item.image &&
+            String(m?.prompt || "") === String(item?.prompt || "");
+
+          if (sameDoc || sameFallback) {
+            return { ...m, savedToProjects: true, projectId: projectId || m.projectId || null };
+          }
+          return m;
+        })
+      );
+
+      // ✅ 3) Persist saved flag back to chat message doc (BEST-EFFORT)
+      try {
+        const messagesColRef = getMessagesCollectionRef();
+        if (messagesColRef && item?._docId) {
+          await updateDoc(doc(messagesColRef, item._docId), {
+            savedToProjects: true,
+            projectId: projectId || null,
+          });
+        }
+      } catch (e2) {
+        console.warn("⚠️ updateDoc(savedToProjects) failed (non-blocking):", e2?.message || e2);
+      }
+
+      // ✅ 4) Show success modal
+      showSaveResult(true, "Saved to Projects.");
+    } catch (e) {
+      console.warn("Manual save failed:", e?.message || e);
+      showSaveResult(false, e?.message || "Manual save failed.");
+    } finally {
+      savingProjectRef.current = false;
+    }
+  };
+
   const renderMessage = ({ item }) => {
     const isAi = item.role === "ai";
     const paletteColors = Array.isArray(item?.palette?.colors) ? item.palette.colors : [];
     const layoutSuggestions = Array.isArray(item?.layoutSuggestions) ? item.layoutSuggestions : [];
     const furnitureMatches = Array.isArray(item?.furnitureMatches) ? item.furnitureMatches : [];
-
-    const showSaveOutline = isAi && item?.mode === MODE.DESIGN && !!safeFirestoreImage(item?.image);
 
     return (
       <View style={[styles.messageRow, isAi ? styles.aiRow : styles.userRow]}>
@@ -1333,9 +978,7 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
                   <Image
                     source={{ uri: item.inputImage }}
                     style={styles.previewImage}
-                    onError={(e) =>
-                      console.log("❌ Original image load failed:", item.inputImage, e?.nativeEvent)
-                    }
+                    onError={(e) => console.log("❌ Original image load failed:", item.inputImage, e?.nativeEvent)}
                   />
                 </View>
               )}
@@ -1346,20 +989,36 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
                   <Image
                     source={{ uri: item.image }}
                     style={styles.previewImage}
-                    onError={(e) =>
-                      console.log("❌ Result image load failed:", item.image, e?.nativeEvent)
-                    }
+                    onError={(e) => console.log("❌ Result image load failed:", item.image, e?.nativeEvent)}
                   />
                 </View>
               )}
             </View>
           )}
 
-          {isAi && item.mode && (
-            <View style={{ marginBottom: 8, alignSelf: "flex-start" }}>
-              <Text style={{ fontSize: 11, fontWeight: "800", color: "#64748B" }}>
-                Mode: {item.mode === MODE.CUSTOMIZE ? "Customize" : "Design"}
+          {isAi && (
+            <View style={styles.modeRow}>
+              <Text style={styles.modeText}>
+                Mode: {(item.mode || MODE.DESIGN) === MODE.CUSTOMIZE ? "Customize" : "Design"}
               </Text>
+
+              {item?.savedToProjects === true ? (
+                <View style={styles.savedBadge}>
+                  <Feather name="check-circle" size={14} color="#16A34A" />
+                  <Text style={styles.savedBadgeText}>Saved</Text>
+                </View>
+              ) : (
+                !!item?.image && (
+                  <TouchableOpacity
+                    onPress={() => handleManualSave(item)}
+                    activeOpacity={0.9}
+                    style={styles.saveOutlineBtnSmall}
+                  >
+                    <Feather name="bookmark" size={14} color="#0F172A" />
+                    <Text style={styles.saveOutlineTextSmall}>Save</Text>
+                  </TouchableOpacity>
+                )
+              )}
             </View>
           )}
 
@@ -1399,21 +1058,6 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
                   <Text style={styles.bulletText}>{tip}</Text>
                 </View>
               ))}
-            </View>
-          )}
-
-          {showSaveOutline && (
-            <View style={styles.section}>
-              <TouchableOpacity
-                style={[styles.saveOutlineBtn, item?.savedToProjects === true && { opacity: 0.65 }]}
-                onPress={() => handleSaveOutline(item)}
-                disabled={item?.savedToProjects === true}
-              >
-                <Feather name="bookmark" size={14} color="#0F172A" />
-                <Text style={styles.saveOutlineText}>
-                  {item?.savedToProjects === true ? "Saved to Projects" : "Save to Projects"}
-                </Text>
-              </TouchableOpacity>
             </View>
           )}
 
@@ -1479,8 +1123,7 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
   };
 
   const chipsToShow = uploadedImage ? imageQuickPrompts : quickPrompts;
-
-  const sendEnabled = !isLocked && validatePromptUI(input, { strict: true }).ok;
+  const sendEnabled = !isLocked && String(input || "").trim().length > 0;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -1518,186 +1161,135 @@ setUploadedImageBase64(asset.base64 ? `data:image/jpeg;base64,${asset.base64}` :
             <MaterialCommunityIcons name="shield-check" size={18} color="#38BDF8" />
           </View>
         </View>
+
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-  <FlatList
-    ref={flatListRef}
-    data={messages}
-    renderItem={renderMessage}
-    keyExtractor={(_, i) => i.toString()}
-    contentContainerStyle={styles.scrollArea}
-  />
+          <PromptFilters
+            onSubmit={(promptText) => {
+              const clean = String(promptText || "").trim();
+              const forcedDesignPrompt = `NEW DESIGN. DESIGN MODE. ${clean}`;
+              sendMessage(forcedDesignPrompt, { forceMode: MODE.DESIGN });
+            }}
+          />
 
-  {isTyping && (
-    <View style={styles.typingWrap}>
-      <View style={styles.typingBubble}>
-        <View style={styles.typingDot} />
-        <View style={styles.typingDot} />
-        <View style={styles.typingDot} />
-        <Text style={styles.typingText}>Generating…</Text>
-      </View>
-    </View>
-  )}
+          <FlatList
+            ref={flatListRef}
+            data={messages}
+            renderItem={renderMessage}
+            keyExtractor={(_, i) => i.toString()}
+            contentContainerStyle={styles.scrollArea}
+          />
 
-  {/* ✅ FOOTER DOCK (permanent bottom) */}
-  <View style={styles.footerDock}>
-    {/* ✅ Upgrade banner when locked */}
-    {isLocked && (
-      <TouchableOpacity
-        style={styles.upgradeBanner}
-        onPress={() => router.push("/User/UpdateInfo")}
-        activeOpacity={0.9}
-      >
-        <View style={styles.upgradeLeft}>
-          <MaterialCommunityIcons name="crown" size={18} color="#0F172A" />
-          <View style={{ marginLeft: 10 }}>
-            <Text style={styles.upgradeTitle}>Upgrade to Pro</Text>
-            <Text style={styles.upgradeSub}>
-              Unlimited generations • Furniture Matches • Layout Suggestions
-            </Text>
+          {isTyping && (
+            <View style={styles.typingWrap}>
+              <View style={styles.typingBubble}>
+                <ActivityIndicator size="small" color="#64748B" />
+                <Text style={styles.typingText}>Generating…</Text>
+              </View>
+            </View>
+          )}
+
+          {/* ✅ FOOTER DOCK (permanent bottom) */}
+          <View style={styles.footerDock}>
+            {isLocked && (
+              <TouchableOpacity
+                style={styles.upgradeBanner}
+                onPress={() => router.push("/User/UpdateInfo")}
+                activeOpacity={0.9}
+              >
+                <View style={styles.upgradeLeft}>
+                  <MaterialCommunityIcons name="crown" size={18} color="#0F172A" />
+                  <View style={{ marginLeft: 10 }}>
+                    <Text style={styles.upgradeTitle}>Upgrade to Pro</Text>
+                    <Text style={styles.upgradeSub}>
+                      Unlimited generations • Furniture Matches • Layout Suggestions
+                    </Text>
+                  </View>
+                </View>
+                <Feather name="chevron-right" size={18} color="#0F172A" />
+              </TouchableOpacity>
+            )}
+
+            {!isLocked && (
+              <View style={styles.chipsWrap}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
+                  {chipsToShow.map((c) => (
+                    <TouchableOpacity key={c} style={styles.chip} onPress={() => setInput(c)}>
+                      <Text style={styles.chipText}>{c}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            {!!uploadedImage && (
+              <View style={styles.attachmentBar}>
+                <View style={styles.attachmentLeft}>
+                  <Image source={{ uri: uploadedImage }} style={styles.attachmentThumb} />
+                  <View style={{ marginLeft: 10, flex: 1 }}>
+                    <Text style={styles.attachmentTitle} numberOfLines={1}>
+                      Reference ready
+                    </Text>
+                    <Text style={styles.attachmentSub} numberOfLines={1}>
+                      This will be used for Customize (same room reference)
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity onPress={clearAttachment} style={styles.attachmentClearBtn}>
+                  <Feather name="x" size={16} color="#0F172A" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={styles.inputBar}>
+              <TouchableOpacity
+                onPress={pickImage}
+                style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
+                disabled={isLocked}
+              >
+                <Feather name="image" size={18} color="#0F172A" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={takePhoto}
+                style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
+                disabled={isLocked}
+              >
+                <Feather name="camera" size={18} color="#0F172A" />
+              </TouchableOpacity>
+
+              <View style={styles.textBox}>
+                <TextInput
+                  value={input}
+                  onChangeText={(t) => setInput(t)}
+                  placeholder={isLocked ? "Upgrade to continue…" : "Describe what you want to change or design…"}
+                  placeholderTextColor="#94A3B8"
+                  style={styles.textInput}
+                  editable={!isLocked}
+                  multiline
+                />
+              </View>
+
+              <TouchableOpacity
+                onPress={() => sendMessage()}
+                style={[styles.sendBtn, !sendEnabled && { opacity: 0.5 }]}
+                disabled={!sendEnabled}
+              >
+                <Feather name="send" size={18} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
-        <Feather name="chevron-right" size={18} color="#0F172A" />
-      </TouchableOpacity>
-    )}
+        </KeyboardAvoidingView>
 
-    {/* ✅ Prompt chips (quick prompts) */}
-    {!isLocked && (
-      <View style={styles.chipsWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
-          {chipsToShow.map((c) => (
-            <TouchableOpacity
-              key={c}
-              style={styles.chip}
-              onPress={() => {
-                setInput(c);
-                const v = validatePromptUI(c, { strict: false });
-                setPromptError(v.ok ? "" : v.error || "");
-                setPromptWarn(v.warn || "");
-                setPromptSuggestions(getPromptSuggestions(c));
-              }}
-            >
-              <Text style={styles.chipText}>{c}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-    )}
-
-    {/* ✅ Attachment preview */}
-    {!!uploadedImage && (
-      <View style={styles.attachmentBar}>
-        <View style={styles.attachmentLeft}>
-          <Image source={{ uri: uploadedImage }} style={styles.attachmentThumb} />
-          <View style={{ marginLeft: 10, flex: 1 }}>
-            <Text style={styles.attachmentTitle} numberOfLines={1}>
-              Reference ready
-            </Text>
-            <Text style={styles.attachmentSub} numberOfLines={1}>
-              This will be used for Customize (same room reference)
-            </Text>
-          </View>
-        </View>
-
-        <TouchableOpacity onPress={clearAttachment} style={styles.attachmentClearBtn}>
-          <Feather name="x" size={16} color="#0F172A" />
-        </TouchableOpacity>
-      </View>
-    )}
-
-    {/* ✅ Prompt filtration feedback */}
-    {(!!promptError || !!promptWarn) && (
-      <View style={styles.promptFeedbackWrap}>
-        {!!promptError && (
-          <View style={[styles.promptFeedbackCard, styles.promptErrorCard]}>
-            <Feather name="alert-circle" size={14} color="#991B1B" />
-            <Text style={styles.promptErrorText}>{promptError}</Text>
-          </View>
-        )}
-
-        {!promptError && !!promptWarn && (
-          <View style={[styles.promptFeedbackCard, styles.promptWarnCard]}>
-            <Feather name="info" size={14} color="#0F172A" />
-            <Text style={styles.promptWarnText}>{promptWarn}</Text>
-          </View>
-        )}
-      </View>
-    )}
-
-    {/* ✅ Prompt suggestions ABOVE the footer (input bar) */}
-    {!!promptSuggestions.length && !isLocked && !!String(input || "").trim() && (
-      <View style={styles.promptFilterWrap}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {promptSuggestions.map((s) => (
-            <TouchableOpacity
-              key={s}
-              style={styles.promptFilterChip}
-              onPress={() => {
-                setInput((prev) => applySuggestion(prev, s));
-                setPromptSuggestions([]);
-              }}
-            >
-              <Text style={styles.promptFilterText}>{s}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-    )}
-
-    {/* ✅ Footer input bar (permanent bottom) */}
-    <View style={styles.inputBar}>
-      <TouchableOpacity
-        onPress={pickImage}
-        style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
-        disabled={isLocked}
-      >
-        <Feather name="image" size={18} color="#0F172A" />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        onPress={takePhoto}
-        style={[styles.iconBtn, isLocked && { opacity: 0.55 }]}
-        disabled={isLocked}
-      >
-        <Feather name="camera" size={18} color="#0F172A" />
-      </TouchableOpacity>
-
-      <View style={styles.textBox}>
-        <TextInput
-          value={input}
-          onChangeText={(t) => {
-            setInput(t);
-
-            const v = validatePromptUI(t, { strict: false });
-            setPromptError(v.ok ? "" : v.error || "");
-            setPromptWarn(v.warn || "");
-
-            const nextSug = getPromptSuggestions(t);
-            setPromptSuggestions(nextSug);
-          }}
-          placeholder={isLocked ? "Upgrade to continue…" : "Describe what you want to change or design…"}
-          placeholderTextColor="#94A3B8"
-          style={styles.textInput}
-          editable={!isLocked}
-          multiline
-          maxLength={PROMPT_MAX + 50}
+        {/* ✅ CenterMessageModal mounted ONCE at screen level */}
+        <CenterMessageModal
+          visible={msgVisible}
+          type={msgType}
+          title={msgTitle}
+          body={msgBody}
+          autoHideMs={msgAutoHideMs}
+          onClose={closeMessage}
         />
-
-        <Text style={styles.counterText}>
-          {Math.min(String(input || "").length, PROMPT_MAX)}/{PROMPT_MAX}
-        </Text>
-      </View>
-
-      <TouchableOpacity
-        onPress={() => sendMessage()}
-        style={[styles.sendBtn, !sendEnabled && { opacity: 0.5 }]}
-        disabled={!sendEnabled}
-      >
-        <Feather name="send" size={18} color="#FFFFFF" />
-      </TouchableOpacity>
-    </View>
-  </View>
-</KeyboardAvoidingView>
-
       </View>
     </SafeAreaView>
   );
@@ -1756,8 +1348,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
   },
 
-  // IMPORTANT: give space for the docked footer (chips + banners + input)
-  scrollArea: { padding: 14, paddingBottom: 360 },
+  scrollArea: { padding: 14, paddingTop: 10, paddingBottom: 360 },
 
   messageRow: { flexDirection: "row", marginBottom: 12, alignItems: "flex-end" },
   aiRow: { justifyContent: "flex-start" },
@@ -1792,6 +1383,39 @@ const styles = StyleSheet.create({
   imageBlock: { gap: 6 },
   imageLabel: { fontSize: 11, fontWeight: "800", color: "#64748B" },
 
+  saveOutlineBtnSmall: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1.2,
+    borderColor: "#0F172A",
+    backgroundColor: "#FFFFFF",
+  },
+  saveOutlineTextSmall: { fontSize: 11, fontWeight: "900", color: "#0F172A" },
+
+  modeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  modeText: { fontSize: 11, fontWeight: "800", color: "#64748B" },
+  savedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#BBF7D0",
+  },
+  savedBadgeText: { fontSize: 11, fontWeight: "900", color: "#166534" },
+
   section: { marginTop: 8 },
   sectionHeaderRow: {
     flexDirection: "row",
@@ -1817,6 +1441,7 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
     backgroundColor: "#FFFFFF",
   },
+
   swatch: { height: 30, borderRadius: 10, marginBottom: 8 },
   swatchLabel: { fontSize: 11, fontWeight: "800", color: "#0F172A" },
   swatchHex: { fontSize: 10, fontWeight: "900", color: "#64748B", marginTop: 2 },
@@ -1832,12 +1457,7 @@ const styles = StyleSheet.create({
   furnitureName: { fontSize: 13, fontWeight: "900", color: "#0F172A" },
   furniturePlacement: { fontSize: 12, fontWeight: "700", color: "#475569", marginTop: 6 },
   furnitureLinksRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
-  furniturePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-    backgroundColor: "#E2E8F0",
-  },
+  furniturePill: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, backgroundColor: "#E2E8F0" },
   furniturePillText: { fontSize: 11, fontWeight: "900", color: "#0F172A" },
 
   saveOutlineBtn: {
@@ -1853,21 +1473,20 @@ const styles = StyleSheet.create({
   },
   saveOutlineText: { fontSize: 12, fontWeight: "900", color: "#0F172A" },
 
-  typingWrap: { paddingHorizontal: 14, paddingBottom: 10 },
+  typingWrap: { paddingHorizontal: 14, paddingBottom: 8 },
   typingBubble: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 10,
     alignSelf: "flex-start",
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 999,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  typingDot: { width: 6, height: 6, borderRadius: 999, backgroundColor: "#94A3B8" },
-  typingText: { marginLeft: 6, fontSize: 11, fontWeight: "900", color: "#64748B" },
+  typingText: { fontSize: 11, fontWeight: "900", color: "#64748B" },
 
   upgradeBanner: {
     marginHorizontal: 14,
@@ -1923,37 +1542,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#E2E8F0",
   },
 
-  promptFeedbackWrap: { paddingHorizontal: 14, paddingBottom: 8 },
-  promptFeedbackCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    padding: 10,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
-  promptErrorCard: { backgroundColor: "#FEE2E2", borderColor: "#FCA5A5" },
-  promptWarnCard: { backgroundColor: "#E2E8F0", borderColor: "#CBD5E1" },
-  promptErrorText: { flex: 1, fontSize: 12, fontWeight: "900", color: "#991B1B" },
-  promptWarnText: { flex: 1, fontSize: 12, fontWeight: "900", color: "#0F172A" },
-
-  // ✅ Prompt suggestions row (above input bar)
-  promptFilterWrap: {
-    paddingHorizontal: 14,
-    paddingBottom: 8,
-  },
-  promptFilterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "#E0F2FE",
-    borderWidth: 1,
-    borderColor: "#38BDF8",
-    marginRight: 8,
-  },
-  promptFilterText: { fontSize: 12, fontWeight: "900", color: "#075985" },
-
-  // ✅ Dock container at bottom
   footerDock: {
     position: "absolute",
     left: 0,
@@ -1965,10 +1553,9 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
 
-  // ✅ Input row
   inputBar: {
     flexDirection: "row",
-    alignItems: "center", // keep icons + input aligned
+    alignItems: "center",
     gap: 10,
     paddingHorizontal: 14,
     paddingTop: 10,
@@ -1987,7 +1574,6 @@ const styles = StyleSheet.create({
     borderColor: "#E2E8F0",
   },
 
-  // ✅ Lowered to match icon height
   textBox: {
     flex: 1,
     borderRadius: 16,
@@ -2000,23 +1586,14 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 
-  // ✅ Critical fix: maxHeight must be ~40, not 110
   textInput: {
     fontSize: 13,
     color: "#0F172A",
     fontWeight: "400",
     lineHeight: 18,
-    maxHeight: 15,
+    maxHeight: 150,
     paddingTop: 0,
     paddingBottom: 0,
-  },
-
-  counterText: {
-    alignSelf: "flex-end",
-    marginTop: 4,
-    fontSize: 10,
-    fontWeight: "400",
-    color: "#94A3B8",
   },
 
   sendBtn: {
@@ -2028,4 +1605,3 @@ const styles = StyleSheet.create({
     backgroundColor: "#0EA5E9",
   },
 });
-

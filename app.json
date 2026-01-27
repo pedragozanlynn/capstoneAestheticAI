@@ -22,13 +22,18 @@
     "android": {
       "package": "com.pedragozanlynn.aestheticai",
       "icon": "./assets/icons.png",
-      
       "adaptiveIcon": {
         "foregroundImage": "./assets/icons.png",
         "backgroundColor": "#FFFFFF"
       },
       "edgeToEdgeEnabled": true,
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "READ_MEDIA_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -37,7 +42,8 @@
       "backgroundColor": "#FFFFFF"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-media-library"
     ],
     "experiments": {
       "typedRoutes": true
