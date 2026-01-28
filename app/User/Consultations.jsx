@@ -11,6 +11,8 @@ import {
   where,
   updateDoc,
   serverTimestamp,
+  addDoc, // ✅ add this
+
 } from "firebase/firestore";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -21,6 +23,8 @@ import {
   TouchableOpacity,
   View,
   StatusBar,
+  Platform, // ✅ add
+
 } from "react-native";
 import { db } from "../../config/firebase";
 import PaymentModal from "../components/PaymentModal";
@@ -194,6 +198,57 @@ export default function Consultations() {
     return () => unsub && unsub();
   }, []);
 
+  const notifyConsultantCancelled = async (appointment) => {
+    try {
+      const consultantId = String(appointment?.consultantId || "").trim();
+      const appointmentId = String(appointment?.id || "").trim();
+      const userId = String(appointment?.userId || "").trim();
+  
+      if (!consultantId || !appointmentId || !userId) {
+        console.log("notifyConsultantCancelled: missing fields", {
+          consultantId,
+          appointmentId,
+          userId,
+        });
+        return;
+      }
+  
+      const start =
+        appointment?.appointmentAt?.toDate?.() ||
+        parseLegacyDateTime(appointment?.date, appointment?.time);
+  
+      const whenText = start
+        ? `${start.toLocaleDateString?.()} ${start.toLocaleTimeString?.()}`
+        : `${appointment?.date || ""} ${appointment?.time || ""}`.trim();
+  
+      // ✅ Create notification for consultant
+      await addDoc(collection(db, "notifications"), {
+        // target
+        recipientId: consultantId,     // ✅ consultant who should receive
+        recipientRole: "consultant",
+  
+        // source
+        senderId: userId,
+        senderRole: "user",
+  
+        // context
+        type: "appointment_cancelled",
+        appointmentId,
+  
+        title: "Appointment Cancelled",
+        body: whenText
+          ? `The user cancelled the appointment scheduled at ${whenText}.`
+          : "The user cancelled the appointment.",
+  
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.log("notifyConsultantCancelled error:", e?.message || e);
+    }
+  };
+  
+
   // -----------------------------
   // 💳 PAYMENT CHECK
   // -----------------------------
@@ -220,12 +275,14 @@ export default function Consultations() {
     }
   };
 
-  const handleCancel = async (id) => {
+  const handleCancel = async (item) => {
+    const id = item?.id;
+  
     if (!id) {
       Alert.alert("Error", "Invalid appointment.");
       return;
     }
-
+  
     Alert.alert("Cancel Appointment", "Are you sure you want to cancel this appointment?", [
       { text: "No", style: "cancel" },
       {
@@ -233,11 +290,16 @@ export default function Consultations() {
         style: "destructive",
         onPress: async () => {
           try {
+            // ✅ 1) update appointment status
             await updateDoc(doc(db, "appointments", id), {
               status: "cancelled",
               cancelledAt: serverTimestamp(),
               cancelledBy: "user",
             });
+  
+            // ✅ 2) notify consultant (best-effort)
+            await notifyConsultantCancelled(item);
+  
             Alert.alert("Cancelled", "Appointment cancelled successfully.");
           } catch (e) {
             console.log("Cancel error:", e?.message || e);
@@ -247,6 +309,7 @@ export default function Consultations() {
       },
     ]);
   };
+  
 
   const openChat = async (item) => {
     try {
@@ -362,7 +425,7 @@ export default function Consultations() {
         )}
 
         {status === "upcoming" && (
-          <TouchableOpacity style={styles.cancelBtn} onPress={() => handleCancel(item.id)}>
+          <TouchableOpacity style={styles.cancelBtn} onPress={() => handleCancel(item)}>
             <Text style={styles.cancelBtnText}>Cancel Appointment</Text>
           </TouchableOpacity>
         )}
@@ -455,10 +518,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    paddingTop: 40,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 10 : 16, // ✅ lower but safe
     paddingBottom: 20,
   },
-  headerTitle: { fontSize: 26, fontWeight: "900", color: "#0F3E48" },
+  
+  headerTitle: { fontSize: 25, fontWeight: "600", color: "#0F3E48" },
   headerSubtitle: { fontSize: 14, color: "#64748B", marginTop: -2 },
   headerActions: { flexDirection: "row", gap: 10 },
   actionBtn: {

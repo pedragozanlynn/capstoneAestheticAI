@@ -259,7 +259,12 @@ export default function Step1Register() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
-      <StatusBar barStyle="light-content" />
+      {/* ✅ ADDED: StatusBar background + style (no other changes) */}
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle="light-content"
+      />
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}

@@ -18,16 +18,10 @@ import {
 import { db } from "../../config/firebase";
 import Button from "../components/Button";
 
-const USER_ID_KEY = "aestheticai:current-user-id";
+// ✅ Central modal from components
+import CenterMessageModal from "../components/CenterMessageModal";
 
-/**
- * ✅ REQUESTED UPDATES:
- * 1) If user taps Save but did NOT edit anything -> show error/message ("No changes to save.")
- * 2) If update succeeds -> show success message ("Profile updated successfully.")
- * 3) Avoid the “biglang lumalabas sa taas” popup feel by using a top toast (no OK button)
- *    - Still uses Alert only for truly blocking/session cases if needed.
- * ✅ No unrelated UI changes.
- */
+const USER_ID_KEY = "aestheticai:current-user-id";
 
 export default function EditProfile() {
   const router = useRouter();
@@ -45,48 +39,48 @@ export default function EditProfile() {
   });
 
   // ✅ baseline snapshot (for "no edits" detection)
-  const initialRef = useRef({
-    name: "",
-    gender: "",
-  });
+  const initialRef = useRef({ name: "", gender: "" });
 
   // ✅ inline validation state
-  const [errors, setErrors] = useState({
-    name: "",
-    gender: "",
-  });
+  const [errors, setErrors] = useState({ name: "", gender: "" });
 
   // ✅ guard to avoid repeated session warnings
   const didWarnNoUser = useRef(false);
 
-  // ✅ Toast (TOP) — no OK button
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  // ✅ CenterMessageModal state
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info", // "success" | "error" | "info" | "warning"
+    title: "Notice",
+    message: "",
+    // optional: afterClose action control
+    nextRoute: null,
+  });
 
   const safeStr = (v) => String(v ?? "").trim();
   const isNonEmpty = (v) => safeStr(v).length > 0;
 
-  const showToast = (text, type = "info", ms = 2200) => {
-    try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
-    } catch {}
+  const openCenterModal = (message, type = "info", title = "Notice", nextRoute = null) => {
+    setCenterModal({
+      visible: true,
+      type,
+      title,
+      message: String(message || ""),
+      nextRoute,
+    });
   };
 
-  useEffect(() => {
-    return () => {
-      try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      } catch {}
-    };
-  }, []);
+  const closeCenterModal = () => {
+    const route = centerModal.nextRoute;
+    setCenterModal((m) => ({ ...m, visible: false, nextRoute: null }));
+    if (route) {
+      // ✅ navigate after user closes modal
+      router.replace(route);
+    }
+  };
 
   const clearErrors = () => setErrors({ name: "", gender: "" });
-  const setFieldError = (field, msg) =>
-    setErrors((prev) => ({ ...prev, [field]: msg }));
+  const setFieldError = (field, msg) => setErrors((prev) => ({ ...prev, [field]: msg }));
 
   const hasAnyError = useMemo(() => !!(errors.name || errors.gender), [errors]);
 
@@ -94,7 +88,7 @@ export default function EditProfile() {
     const next = { name: "", gender: "" };
 
     if (!isNonEmpty(userId)) {
-      showToast("Session required. Please sign in again.", "error");
+      openCenterModal("Session required. Please sign in again.", "error", "Session Required", "/Login");
       return false;
     }
 
@@ -112,7 +106,7 @@ export default function EditProfile() {
     setErrors(next);
 
     if (next.name || next.gender) {
-      showToast("Please correct the highlighted fields.", "error");
+      openCenterModal("Please correct the highlighted fields.", "error", "Validation Error");
       return false;
     }
 
@@ -122,10 +116,8 @@ export default function EditProfile() {
   const hasNoChanges = () => {
     const baseName = safeStr(initialRef.current?.name);
     const baseGender = safeStr(initialRef.current?.gender);
-
     const curName = safeStr(form.name);
     const curGender = safeStr(form.gender);
-
     return baseName === curName && baseGender === curGender;
   };
 
@@ -141,7 +133,7 @@ export default function EditProfile() {
           setUserId(null);
           if (!didWarnNoUser.current) {
             didWarnNoUser.current = true;
-            // keep Alert for session-required (blocking)
+            // ✅ keep Alert for blocking/session cases
             Alert.alert("Session Required", "Please sign in to edit your profile.");
           }
           router.replace("/Login");
@@ -163,9 +155,7 @@ export default function EditProfile() {
         let formattedDate = "N/A";
         try {
           if (data.createdAt) {
-            const date = data.createdAt?.toDate
-              ? data.createdAt.toDate()
-              : new Date(data.createdAt);
+            const date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
             if (!Number.isNaN(date.getTime())) {
               formattedDate = date.toLocaleDateString("en-US", {
                 month: "long",
@@ -191,7 +181,7 @@ export default function EditProfile() {
         });
       } catch (e) {
         console.log("Load profile error:", e?.message || e);
-        showToast("Failed to load your profile. Please try again.", "error");
+        openCenterModal("Failed to load your profile. Please try again.", "error", "Error");
       } finally {
         setLoading(false);
       }
@@ -203,17 +193,15 @@ export default function EditProfile() {
 
   /* ================= SAVE ================= */
   const handleSave = async () => {
-    // ✅ prevent double-tap
     if (saving) return;
 
     clearErrors();
 
-    // ✅ validations
     if (!validateBeforeSave()) return;
 
-    // ✅ requested: if no edits -> show error message
+    // ✅ requested: if no edits -> show message (central modal)
     if (hasNoChanges()) {
-      showToast("No changes to save. Please edit your profile first.", "info");
+      openCenterModal("No changes to save. Please edit your profile first.", "info", "No Changes");
       return;
     }
 
@@ -228,19 +216,19 @@ export default function EditProfile() {
         gender: cleanGender,
       });
 
-      // ✅ requested: show success message after update
-      showToast("Profile updated successfully.", "success", 1400);
-
-      // ✅ update baseline so if user stays on page, it becomes the new “saved”
+      // ✅ update baseline
       initialRef.current = { name: cleanName, gender: cleanGender };
 
-      // navigate after a short delay (no blocking popup)
-      setTimeout(() => {
-        router.replace("/User/Profile");
-      }, 900);
+      // ✅ success message then go back to Profile after close
+      openCenterModal(
+        "Profile updated successfully.",
+        "success",
+        "Success",
+        "/User/Profile"
+      );
     } catch (e) {
       console.log("Update profile error:", e?.message || e);
-      showToast("Failed to update profile. Please try again.", "error");
+      openCenterModal("Failed to update profile. Please try again.", "error", "Error");
     } finally {
       setSaving(false);
     }
@@ -270,6 +258,7 @@ export default function EditProfile() {
             <TouchableOpacity
               style={styles.profileHeaderAvatar}
               onPress={router.back}
+              disabled={saving}
             >
               <Ionicons name="arrow-back" size={20} color="#0F3E48" />
             </TouchableOpacity>
@@ -417,20 +406,14 @@ export default function EditProfile() {
         </View>
       </ScrollView>
 
-      {/* ✅ TOP TOAST (NO OK BUTTON) */}
-      {toast.visible && (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.toast,
-            toast.type === "success" && styles.toastSuccess,
-            toast.type === "error" && styles.toastError,
-            toast.type === "info" && styles.toastInfo,
-          ]}
-        >
-          <Text style={styles.toastText}>{toast.text}</Text>
-        </View>
-      )}
+      {/* ✅ CenterMessageModal */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeCenterModal}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -444,8 +427,7 @@ const styles = StyleSheet.create({
   profileHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingTop: 30,
-    paddingBottom: 20,
+    paddingTop: 50,
   },
   profileHeaderLeft: { flexDirection: "row", alignItems: "center" },
   profileHeaderAvatar: {
@@ -565,27 +547,4 @@ const styles = StyleSheet.create({
 
   buttonWrapper: { marginTop: 5 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
-
-  // ✅ TOP TOAST
-  toast: {
-    position: "absolute",
-    left: 18,
-    right: 18,
-    top: Platform.OS === "ios" ? 60 : 25,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.95,
-    elevation: 8,
-  },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });

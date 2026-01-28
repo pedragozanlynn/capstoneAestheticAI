@@ -71,6 +71,9 @@ export default function Step2Details() {
     experience: "", // ✅ optional
     licenseNumber: "", // ✅ optional
 
+    // ✅ NEW: rate
+    rate: "",
+
     idFrontUrl: "",
     idBackUrl: "",
     selfieUrl: "",
@@ -285,7 +288,6 @@ export default function Step2Details() {
       return showToast("Please select a day before adding.", "warning");
     }
 
-    // ✅ normalize compare (case-safe)
     const exists = (formData.availability || []).some(
       (d) => safeStr(d).toLowerCase() === day.toLowerCase()
     );
@@ -338,6 +340,22 @@ export default function Step2Details() {
     }
     if (!specialization) {
       showToast("Please select your specialization.", "warning");
+      return false;
+    }
+
+    // ✅ REQUIRED: salary rate
+    const rate = safeStr(formData.rate);
+    if (!rate) {
+      showToast("Please enter your salary rate.", "warning");
+      return false;
+    }
+    const rateNum = Number(rate);
+    if (!Number.isFinite(rateNum) || rateNum <= 0) {
+      showToast("Salary rate must be a valid amount.", "warning");
+      return false;
+    }
+    if (rateNum > 1_000_000) {
+      showToast("Salary rate looks too high. Please check it.", "warning");
       return false;
     }
 
@@ -407,7 +425,7 @@ export default function Step2Details() {
 
         {/* CARD */}
         <View style={styles.card}>
-          {/* EDUCATION */}
+          <Text style={styles.fieldLabel}>Education *</Text>
           <View style={styles.pickerBox}>
             <Picker selectedValue={formData.education} onValueChange={(v) => handleInputChange("education", v)}>
               <Picker.Item label="Select degree" value="" />
@@ -417,7 +435,7 @@ export default function Step2Details() {
             </Picker>
           </View>
 
-          {/* SPECIALIZATION */}
+          <Text style={styles.fieldLabel}>Specialization *</Text>
           <View style={styles.pickerBox}>
             <Picker
               selectedValue={formData.specialization}
@@ -436,22 +454,30 @@ export default function Step2Details() {
             </Picker>
           </View>
 
-          {/* OPTIONAL */}
+          <Input
+            label="Salary Rate (₱) *"
+            keyboardType="numeric"
+            value={formData.rate}
+            onChangeText={(v) => handleInputChange("rate", v)}
+            placeholder="Input your salary rate"
+          />
+
           <Input
             label="Experience (Years) (Optional)"
             keyboardType="numeric"
             value={formData.experience}
             onChangeText={(v) => handleInputChange("experience", v)}
-            placeholder="e.g. 3"
+            placeholder="Enter years experience (optional)"
           />
+
           <Input
             label="License Number (Optional)"
             value={formData.licenseNumber}
             onChangeText={(v) => handleInputChange("licenseNumber", v)}
-            placeholder="Enter license number"
+            placeholder="Enter license number (optional)"
           />
 
-          {/* AVAILABILITY */}
+          <Text style={styles.fieldLabel}>Availability Day *</Text>
           <View style={styles.pickerBox}>
             <Picker selectedValue={formData.day} onValueChange={(v) => handleInputChange("day", v)}>
               <Picker.Item label="Select availability" value="" />
@@ -477,7 +503,7 @@ export default function Step2Details() {
             </View>
           ))}
 
-          {/* VALID ID FRONT */}
+          <Text style={styles.fieldLabel}>Valid ID (Front) *</Text>
           <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("front")}>
             <Ionicons
               name={formData.idFrontUrl ? "checkmark-circle" : "card-outline"}
@@ -497,7 +523,7 @@ export default function Step2Details() {
             </View>
           ) : null}
 
-          {/* VALID ID BACK */}
+          <Text style={styles.fieldLabel}>Valid ID (Back) *</Text>
           <TouchableOpacity style={styles.uploadCard} onPress={() => uploadId("back")}>
             <Ionicons
               name={formData.idBackUrl ? "checkmark-circle" : "card-outline"}
@@ -517,7 +543,7 @@ export default function Step2Details() {
             </View>
           ) : null}
 
-          {/* SELFIE (CAMERA ONLY) */}
+          <Text style={styles.fieldLabel}>Selfie Verification *</Text>
           <TouchableOpacity style={styles.uploadCard} onPress={handleUploadSelfie}>
             <Ionicons
               name={formData.selfieUrl ? "checkmark-circle" : "camera-outline"}
@@ -535,12 +561,10 @@ export default function Step2Details() {
             </View>
           ) : null}
 
-          {/* NEXT */}
           <Button title="Next" onPress={handleNext} style={styles.nextBtn} />
         </View>
       </ScrollView>
 
-      {/* ✅ MESSAGE MODAL OVERLAY (Login style) */}
       <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
         <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
           <Pressable
@@ -576,7 +600,6 @@ export default function Step2Details() {
 }
 
 /* ===================== STYLES ===================== */
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#fff" },
 
@@ -608,6 +631,15 @@ const styles = StyleSheet.create({
     backgroundColor: "#FAF9F6",
     borderTopLeftRadius: 40,
     borderTopRightRadius: 40,
+  },
+
+  fieldLabel: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#0F3E48",
+    marginBottom: 6,
+    marginTop: 4,
+    paddingLeft: 2,
   },
 
   pickerBox: {
@@ -678,9 +710,9 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  nextBtn: { marginTop: 10 },
+// Replace your nextBtn style with this:
+nextBtn: { marginTop: 10, marginBottom: 50 },
 
-  /* ===== Login-style message modal styles ===== */
   msgBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15,23,42,0.28)",

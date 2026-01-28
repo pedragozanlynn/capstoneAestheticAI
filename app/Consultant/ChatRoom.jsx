@@ -20,6 +20,7 @@ import {
   Pressable,
 } from "react-native";
 
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as ImagePicker from "expo-image-picker";
 import { doc, onSnapshot, updateDoc, Timestamp } from "firebase/firestore";
 import { db } from "../../config/firebase";
@@ -56,6 +57,7 @@ const MSG_COLORS = {
 export default function ChatRoom() {
   const router = useRouter();
   const { roomId, userId: routeUserId } = useLocalSearchParams();
+  const insets = useSafeAreaInsets();
 
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
@@ -384,6 +386,10 @@ export default function ChatRoom() {
     );
   };
 
+  // ✅ FIX: make footer safe from device navigation / gesture area
+  const footerPadBottom = Math.max(insets.bottom, Platform.OS === "ios" ? 12 : 12);
+  const listPadBottom = 20 + 70 + footerPadBottom; // 70 ≈ footer height incl. input row
+
   return (
     <View style={styles.mainContainer}>
       <StatusBar translucent backgroundColor="transparent" barStyle="dark-content" />
@@ -435,7 +441,7 @@ export default function ChatRoom() {
               data={chatMessages}
               renderItem={renderMsg}
               keyExtractor={(i) => i.id || `${i.createdAt?.toMillis?.() || Math.random()}`}
-              contentContainerStyle={styles.listContent}
+              contentContainerStyle={[styles.listContent, { paddingBottom: listPadBottom }]}
               inverted
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
@@ -444,7 +450,7 @@ export default function ChatRoom() {
         </View>
 
         {/* FOOTER */}
-        <View style={styles.footer}>
+        <View style={[styles.footer, { paddingBottom: footerPadBottom }]}>
           <View style={styles.inputWrapper}>
             <TouchableOpacity
               disabled={isCompleted || isSending}
@@ -634,8 +640,9 @@ const styles = StyleSheet.create({
     borderTopColor: "#E9ECEF",
     paddingHorizontal: 10,
     paddingTop: 10,
-    paddingBottom: Platform.OS === "ios" ? 35 : 15,
-    minHeight: Platform.OS === "ios" ? 100 : 80,
+    // ✅ removed fixed huge paddingBottom; now handled by safe-area in inline style
+    paddingBottom: 12,
+    minHeight: 80,
     justifyContent: "center",
   },
   inputWrapper: {

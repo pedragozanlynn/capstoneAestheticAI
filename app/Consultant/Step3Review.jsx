@@ -6,14 +6,14 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Image,
   Linking,
+  Modal,
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Platform,
-  Modal,
-  Pressable,
 } from "react-native";
 import { auth, db } from "../../config/firebase";
 import Button from "../components/Button";
@@ -155,6 +155,22 @@ export default function Step3Review() {
       return false;
     }
 
+    // ✅ NEW: Rate required
+    const rate = safeStr(step2.rate);
+    if (!rate) {
+      showToast("Salary Rate is missing. Please go back to Step 2.", "warning");
+      return false;
+    }
+    const rateNum = Number(rate);
+    if (!Number.isFinite(rateNum) || rateNum <= 0) {
+      showToast("Salary Rate must be a valid amount. Please go back to Step 2.", "warning");
+      return false;
+    }
+    if (rateNum > 1_000_000) {
+      showToast("Salary Rate looks too high. Please check it in Step 2.", "warning");
+      return false;
+    }
+
     // Availability: require at least 1 day
     const avail = Array.isArray(step2.availability) ? step2.availability : [];
     if (avail.length < 1) {
@@ -200,62 +216,67 @@ export default function Step3Review() {
   /* ===========================
      ✅ Submit
      =========================== */
-  const handleSubmit = async () => {
-    if (loading) return;
-
-    if (!validateBeforeSubmit()) return;
-
-    setLoading(true);
-
-    try {
-      showToast("Submitting your registration…", "info", 1200);
-
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        String(data.email || "").trim(),
-        String(data.password || "")
-      );
-
-      const user = userCredential.user;
-
+     const handleSubmit = async () => {
+      if (loading) return;
+      if (!validateBeforeSubmit()) return;
+    
+      setLoading(true);
+    
       try {
-        await updateProfile(user, { displayName: safeStr(data.fullName) });
-      } catch {}
-
-      await setDoc(doc(db, "consultants", user.uid), {
-        fullName: safeStr(data.fullName),
-        email: safeStr(data.email).toLowerCase(),
-        address: safeStr(data.address),
-        gender: safeStr(data.gender),
-
-        specialization: safeStr(step2.specialization),
-        education: safeStr(step2.education),
-
-        experience: safeStr(step2.experience),
-        licenseNumber: safeStr(step2.licenseNumber),
-
-        availability: Array.isArray(step2.availability) ? step2.availability : [],
-
-        idFrontUrl: step2.idFrontUrl || null,
-        idBackUrl: step2.idBackUrl || null,
-        selfieUrl: step2.selfieUrl || null,
-
-        submittedAt: serverTimestamp(),
-        status: "pending",
-      });
-
-      showToast("Submitted successfully. Pending admin approval.", "success", 1400);
-
-      setTimeout(() => {
-        router.replace("/Consultant/PendingApproval");
-      }, 900);
-    } catch (error) {
-      console.error("Submission error:", error);
-      showToast(friendlyAuthError(error), "error", 3200);
-    } finally {
-      setLoading(false);
-    }
-  };
+        showToast("Submitting your registration…", "info", 1200);
+    
+        const userCredential = await createUserWithEmailAndPassword(
+          auth,
+          String(data.email || "").trim(),
+          String(data.password || "")
+        );
+    
+        const user = userCredential.user;
+    
+        try {
+          await updateProfile(user, { displayName: safeStr(data.fullName) });
+        } catch {}
+    
+        await setDoc(doc(db, "consultants", user.uid), {
+          fullName: safeStr(data.fullName),
+          email: safeStr(data.email).toLowerCase(),
+          address: safeStr(data.address),
+          gender: safeStr(data.gender),
+    
+          specialization: safeStr(step2.specialization),
+          education: safeStr(step2.education),
+    
+          experience: safeStr(step2.experience),
+          licenseNumber: safeStr(step2.licenseNumber),
+    
+          rate: Number(safeStr(step2.rate)),
+    
+          availability: Array.isArray(step2.availability) ? step2.availability : [],
+    
+          idFrontUrl: step2.idFrontUrl || null,
+          idBackUrl: step2.idBackUrl || null,
+          selfieUrl: step2.selfieUrl || null,
+    
+          submittedAt: serverTimestamp(),
+          status: "pending",
+        });
+    
+        // ✅ refresh token using the new user object (stable)
+        await user.getIdToken(true);
+    
+        showToast("Submitted successfully. Pending admin approval.", "success", 1200);
+    
+        setTimeout(() => {
+          router.replace("/Consultant/PendingApproval");
+        }, 500);
+      } catch (error) {
+        console.error("Submission error:", error);
+        showToast(friendlyAuthError(error), "error", 3200);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
 
   const openLink = async (url) => {
     if (!url) return;
@@ -326,6 +347,15 @@ export default function Step3Review() {
               <Text style={styles.value}>{step2.education || "-"}</Text>
             </View>
 
+            {/* ✅ NEW: Rate row */}
+            <View style={styles.infoRow}>
+              <Ionicons name="cash" size={20} color={iconColor} style={styles.icon} />
+              <Text style={styles.label}>Salary Rate</Text>
+              <Text style={styles.value}>
+                {step2.rate ? `₱${Number(step2.rate).toLocaleString()}` : "-"}
+              </Text>
+            </View>
+
             <View style={styles.infoRow}>
               <Ionicons name="time" size={20} color={iconColor} style={styles.icon} />
               <Text style={styles.label}>Experience</Text>
@@ -337,7 +367,9 @@ export default function Step3Review() {
             <View style={styles.infoRow}>
               <Ionicons name="card" size={20} color={iconColor} style={styles.icon} />
               <Text style={styles.label}>License Number</Text>
-              <Text style={styles.value}>{step2.licenseNumber ? step2.licenseNumber : "Not specified"}</Text>
+              <Text style={styles.value}>
+                {step2.licenseNumber ? step2.licenseNumber : "Not specified"}
+              </Text>
             </View>
           </View>
 

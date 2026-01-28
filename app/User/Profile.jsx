@@ -22,6 +22,9 @@ import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
 import Button from "../components/Button";
 
+// ✅ ADD: central modal component (same one you used earlier)
+import CenterMessageModal from "../components/CenterMessageModal";
+
 const USER_ID_KEY = "aestheticai:current-user-id";
 
 export default function Profile() {
@@ -31,6 +34,17 @@ export default function Profile() {
   const [userName, setUserName] = useState("Guest");
   const [gender, setGender] = useState("male");
   const [logoutVisible, setLogoutVisible] = useState(false);
+
+  // ✅ Central modal state (for logout success / session messages if needed)
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "success",
+    title: "Success",
+    message: "",
+  });
+
+  const closeCenterModal = () =>
+    setCenterModal((m) => ({ ...m, visible: false }));
 
   const loadUserFromDB = useCallback(async () => {
     try {
@@ -94,14 +108,32 @@ export default function Profile() {
 
       setLogoutVisible(false);
 
-      // ✅ Reset navigation stack so BACK won't return to Profile
+      // ✅ Show central success modal (requested)
+      setCenterModal({
+        visible: true,
+        type: "success",
+        title: "Logged Out",
+        message: "You have been logged out successfully.",
+      });
+
+      // ✅ Reset navigation stack so BACK won't return to Profile / inside app
       try {
         if (typeof router.dismissAll === "function") router.dismissAll();
       } catch {}
 
-      router.replace("/Login");
+      // ✅ Replace to Login after a tiny delay (modal still shows; user can tap OK)
+      setTimeout(() => {
+        router.replace("/Login");
+      }, 200);
     } catch (err) {
       console.log("Logout error:", err);
+      setLogoutVisible(false);
+      setCenterModal({
+        visible: true,
+        type: "error",
+        title: "Logout Failed",
+        message: "Unable to logout right now. Please try again.",
+      });
     }
   };
 
@@ -186,6 +218,7 @@ export default function Profile() {
 
       <BottomNavbar subType={subType} />
 
+      {/* ✅ Logout confirm modal (kept as-is) */}
       <Modal visible={logoutVisible} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalBox}>
@@ -210,6 +243,15 @@ export default function Profile() {
           </View>
         </View>
       </Modal>
+
+      {/* ✅ Central modal (requested) */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeCenterModal}
+      />
     </View>
   );
 }
@@ -218,9 +260,10 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
 
   header: {
-    paddingTop: Platform.OS === "ios" ? 60 : 50,
+    paddingTop: Platform.OS === "ios" ? 60 : 60,
     paddingHorizontal: 25,
-    paddingBottom: 35,
+    // ✅ FIX: bawas margin/padding bottom (from 35 -> 18)
+    paddingBottom: 18,
     backgroundColor: "#01579B",
     elevation: 10,
     shadowColor: "#000",
@@ -235,8 +278,8 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   avatarImage: {
-    width: 70,
-    height: 70,
+    width: 50,
+    height: 50,
     borderRadius: 24,
     backgroundColor: "rgba(255,255,255,0.2)",
     borderWidth: 2,
@@ -257,7 +300,7 @@ const styles = StyleSheet.create({
     marginLeft: 18,
   },
   headerTitle: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: "900",
     color: "#FFFFFF",
   },
@@ -277,7 +320,7 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
     textTransform: "uppercase",
     letterSpacing: 1,
-    marginTop: 35,
+    marginTop: 20, // ✅ maliit na bawas para sumunod sa reduced header bottom
     marginBottom: 15,
   },
 
@@ -353,18 +396,3 @@ const styles = StyleSheet.create({
   },
   confirmText: { color: "#fff", fontWeight: "700" },
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

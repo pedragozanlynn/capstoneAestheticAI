@@ -1,5 +1,5 @@
 import { doc, getDoc, updateDoc } from "firebase/firestore";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Linking,
   Modal,
@@ -8,11 +8,13 @@ import {
   Text,
   TouchableOpacity,
   View,
-  Platform,
   ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { db } from "../../config/firebase";
+
+// ✅ ADD: use your reusable CenterMessageModal component
+import CenterMessageModal from "../components/CenterMessageModal";
 
 export default function ConsultantDetailsModal({
   visible,
@@ -27,28 +29,27 @@ export default function ConsultantDetailsModal({
   const [docData, setDocData] = useState(null);
 
   /* ===========================
-     ✅ TOAST (TOP, NO OK BUTTON)
+     ✅ CENTER MESSAGE MODAL
      =========================== */
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  const [centerMsg, setCenterMsg] = useState({
+    visible: false,
+    type: "info", // "success" | "error" | "info" | "warning"
+    title: "",
+    message: "",
+  });
 
-  const showToast = (text, type = "info", ms = 2200) => {
-    try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
-    } catch {}
+  const openCenterMsg = (type, title, message) => {
+    setCenterMsg({
+      visible: true,
+      type: String(type || "info"),
+      title: String(title || ""),
+      message: String(message || ""),
+    });
   };
 
-  useEffect(() => {
-    return () => {
-      try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      } catch {}
-    };
-  }, []);
+  const closeCenterMsg = () => {
+    setCenterMsg((m) => ({ ...m, visible: false }));
+  };
 
   /* ================= HELPERS ================= */
   const safeStr = (v) => (v == null ? "" : String(v).trim());
@@ -74,12 +75,38 @@ export default function ConsultantDetailsModal({
 
   const openLink = async (url) => {
     const err = validateBeforeOpenLink(url);
-    if (err) return showToast(err, "error");
+    if (err) return openCenterMsg("error", "Invalid Link", err);
     try {
       await Linking.openURL(url);
     } catch {
-      showToast("Unable to open the file link.", "error");
+      openCenterMsg("error", "Open Failed", "Unable to open the file link.");
     }
+  };
+
+  // ✅ safe fallback render helpers
+  const showVal = (v, fallback = "—") => {
+    const s = safeStr(v);
+    return s ? s : fallback;
+  };
+
+  // ✅ NEW: Rate formatter + rate getter (supports different field names)
+  const formatPeso = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return showVal(v);
+    return `₱${n.toLocaleString()}`;
+  };
+
+  const getRateDisplay = (obj) => {
+    // try common keys: rate, fee, consultationFee, consultation_rate, hourlyRate
+    const raw =
+      obj?.rate ??
+      obj?.fee ??
+      obj?.consultationFee ??
+      obj?.consultation_rate ??
+      obj?.hourlyRate;
+
+    if (raw == null || String(raw).trim() === "") return "—";
+    return formatPeso(raw);
   };
 
   /* ===========================
@@ -103,16 +130,19 @@ export default function ConsultantDetailsModal({
         if (cancelled) return;
 
         if (!snap.exists()) {
-          // fallback to passed data
           setDocData(data || null);
-          showToast("Consultant record not found in Firestore.", "error", 2600);
+          openCenterMsg(
+            "error",
+            "Not Found",
+            "Consultant record not found in Firestore."
+          );
         } else {
           setDocData({ id: consultantId, ...snap.data() });
         }
       } catch (e) {
         if (cancelled) return;
         setDocData(data || null);
-        showToast("Unable to load consultant details.", "error", 2600);
+        openCenterMsg("error", "Load Failed", "Unable to load consultant details.");
       } finally {
         if (!cancelled) setLoadingDoc(false);
       }
@@ -144,7 +174,7 @@ export default function ConsultantDetailsModal({
   const handleUpdate = async (statusRaw) => {
     const status = normalizeStatus(statusRaw);
     const err = validateBeforeUpdate(status);
-    if (err) return showToast(err, "error");
+    if (err) return openCenterMsg("error", "Cannot Update", err);
 
     setUpdating(true);
 
@@ -159,12 +189,12 @@ export default function ConsultantDetailsModal({
         onStatusUpdated?.(consultantId, status);
       } catch {}
 
-      showToast(
+      openCenterMsg(
+        "success",
+        "Updated",
         status === "accepted"
           ? "Consultant approved successfully."
-          : "Consultant application rejected.",
-        "success",
-        1400
+          : "Consultant application rejected."
       );
 
       setTimeout(() => {
@@ -174,7 +204,7 @@ export default function ConsultantDetailsModal({
       }, 350);
     } catch (error) {
       console.error("Firestore update error:", error);
-      showToast("Unable to update status. Please try again.", "error");
+      openCenterMsg("error", "Update Failed", "Unable to update status. Please try again.");
     } finally {
       setUpdating(false);
     }
@@ -202,16 +232,13 @@ export default function ConsultantDetailsModal({
 
   const badgeLabel = currentStatus.toUpperCase();
 
-  // ✅ safe fallback render helpers
-  const showVal = (v, fallback = "—") => {
-    const s = safeStr(v);
-    return s ? s : fallback;
-  };
-
   const availabilityArr = useMemo(() => {
     const a = viewData?.availability;
     return Array.isArray(a) ? a.filter(Boolean) : [];
   }, [viewData]);
+
+  // ✅ NEW: computed rate label (called/displayed in UI)
+  const rateDisplay = useMemo(() => getRateDisplay(viewData), [viewData]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true}>
@@ -267,7 +294,12 @@ export default function ConsultantDetailsModal({
                   </View>
 
                   <View style={[styles.infoRow, { marginTop: 15 }]}>
-                    <Ionicons name="male-female" size={18} color="#01579B" style={styles.iconSpace} />
+                    <Ionicons
+                      name="male-female"
+                      size={18}
+                      color="#01579B"
+                      style={styles.iconSpace}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text style={styles.fieldLabel}>Gender</Text>
                       <Text style={styles.fieldValue}>{showVal(viewData.gender)}</Text>
@@ -280,12 +312,18 @@ export default function ConsultantDetailsModal({
               <View style={styles.section}>
                 <Text style={styles.sectionLabel}>Professional Credentials</Text>
                 <View style={styles.infoCard}>
+                  {/* ✅ UPDATED: show Specialization + Rate side-by-side */}
                   <View style={styles.detailGrid}>
-                    <View style={styles.gridItem}>
+                    <View style={[styles.gridItem, { paddingRight: 10 }]}>
                       <Text style={styles.fieldLabel}>Specialization</Text>
                       <Text style={styles.fieldValueBold}>
                         {showVal(viewData.specialization)}
                       </Text>
+                    </View>
+
+                    <View style={[styles.gridItem, { alignItems: "flex-end" }]}>
+                      <Text style={styles.fieldLabel}>Rate</Text>
+                      <Text style={styles.fieldValueBold}>{rateDisplay}</Text>
                     </View>
                   </View>
 
@@ -294,7 +332,7 @@ export default function ConsultantDetailsModal({
                     <Text style={styles.fieldValue}>{showVal(viewData.education)}</Text>
                   </View>
 
-                  {(viewData.experience || viewData.licenseNumber) ? (
+                  {viewData.experience || viewData.licenseNumber ? (
                     <View
                       style={[
                         styles.detailGrid,
@@ -313,7 +351,7 @@ export default function ConsultantDetailsModal({
                         </Text>
                       </View>
 
-                      <View style={styles.gridItem}>
+                      <View style={[styles.gridItem, { alignItems: "flex-end" }]}>
                         <Text style={styles.fieldLabel}>License No.</Text>
                         <Text style={styles.fieldValue}>
                           {showVal(viewData.licenseNumber, "N/A")}
@@ -442,22 +480,16 @@ export default function ConsultantDetailsModal({
               </View>
             </ScrollView>
           )}
-
-          {/* ✅ TOAST OVERLAY */}
-          {toast.visible && (
-            <View
-              pointerEvents="none"
-              style={[
-                styles.toast,
-                toast.type === "success" && styles.toastSuccess,
-                toast.type === "error" && styles.toastError,
-                toast.type === "info" && styles.toastInfo,
-              ]}
-            >
-              <Text style={styles.toastText}>{toast.text}</Text>
-            </View>
-          )}
         </View>
+
+        {/* ✅ CENTER MESSAGE MODAL */}
+        <CenterMessageModal
+          visible={centerMsg.visible}
+          type={centerMsg.type}
+          title={centerMsg.title}
+          message={centerMsg.message}
+          onClose={closeCenterMsg}
+        />
       </View>
     </Modal>
   );
@@ -524,8 +556,10 @@ const styles = StyleSheet.create({
   },
   fieldValue: { fontSize: 15, color: "#334155", fontWeight: "500", marginTop: 2 },
   fieldValueBold: { fontSize: 15, color: "#01579B", fontWeight: "700", marginTop: 2 },
+
   detailGrid: { flexDirection: "row", justifyContent: "space-between", paddingBottom: 10 },
   gridItem: { flex: 1 },
+
   availabilityContainer: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   dayBadge: {
     backgroundColor: "#E0F2F1",
@@ -536,6 +570,7 @@ const styles = StyleSheet.create({
     borderColor: "#B2DFDB",
   },
   dayText: { color: "#00695C", fontSize: 13, fontWeight: "700" },
+
   portfolioBtn: {
     backgroundColor: "#01579B",
     borderRadius: 15,
@@ -548,6 +583,7 @@ const styles = StyleSheet.create({
   portfolioContent: { flexDirection: "row", alignItems: "center" },
   portfolioBtnText: { color: "#FFF", fontSize: 16, fontWeight: "700" },
   portfolioBtnSub: { color: "rgba(255,255,255,0.7)", fontSize: 12 },
+
   statusBadge: {
     alignSelf: "flex-start",
     paddingHorizontal: 10,
@@ -556,6 +592,7 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   statusText: { fontSize: 10, fontWeight: "800" },
+
   footerAction: { marginTop: 10, gap: 12 },
   actionBtn: {
     paddingVertical: 16,
@@ -597,27 +634,4 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
   },
-
-  toast: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    top: Platform.OS === "ios" ? 16 : 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.96,
-    elevation: 10,
-    zIndex: 9999,
-  },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });

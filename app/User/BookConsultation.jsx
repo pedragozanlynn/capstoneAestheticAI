@@ -7,7 +7,7 @@ import {
   serverTimestamp,
   Timestamp,
 } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   StyleSheet,
@@ -16,10 +16,14 @@ import {
   View,
   ScrollView,
   SafeAreaView,
-  Platform,
+  StatusBar, // ✅ ADDED
+  Platform,  // ✅ ADDED
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { auth, db } from "../../config/firebase";
+
+// ✅ CenterMessageModal
+import CenterMessageModal from "../components/CenterMessageModal";
 
 const PRIMARY = "#2c4f4f";
 const ACCENT = "#01579B";
@@ -34,36 +38,25 @@ export default function BookConsultation() {
 
   const appointmentDate = appointmentAt ? new Date(appointmentAt) : null;
 
-  /* ===========================
-     ✅ TOAST (TOP, NO OK BUTTON)
-     =========================== */
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  // ✅ CenterMessageModal state
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgType, setMsgType] = useState("info");
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
 
-  const showToast = (text, type = "info", ms = 2200) => {
-    try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
-    } catch {}
+  const showMsg = (type, title, body = "") => {
+    setMsgType(type);
+    setMsgTitle(title);
+    setMsgBody(body);
+    setMsgOpen(true);
   };
-
-  useEffect(() => {
-    return () => {
-      try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      } catch {}
-    };
-  }, []);
 
   /* ================= LOAD CONSULTANT ================= */
   useEffect(() => {
     const fetchConsultant = async () => {
       try {
         if (!consultantId) {
-          showToast("Missing consultant information.", "error");
+          showMsg("error", "Missing Info", "Missing consultant information.");
           setLoading(false);
           return;
         }
@@ -74,11 +67,11 @@ export default function BookConsultation() {
         if (snap.exists()) {
           setConsultant({ id: snap.id, ...snap.data() });
         } else {
-          showToast("Consultant not found.", "error");
+          showMsg("error", "Not Found", "Consultant not found.");
         }
       } catch (error) {
         console.log("❌ Error fetching consultant:", error);
-        showToast("Failed to load consultant details.", "error");
+        showMsg("error", "Load Failed", "Failed to load consultant details.");
       } finally {
         setLoading(false);
       }
@@ -92,31 +85,37 @@ export default function BookConsultation() {
     const userId = auth.currentUser?.uid;
 
     if (!userId) {
-      showToast("You are not signed in. Please sign in again.", "error");
+      showMsg(
+        "error",
+        "Sign-in Required",
+        "You are not signed in. Please sign in again."
+      );
       return false;
     }
 
     if (!consultant?.id) {
-      showToast("Consultant details are missing.", "error");
+      showMsg("error", "Missing Info", "Consultant details are missing.");
       return false;
     }
 
     if (!appointmentDate || Number.isNaN(appointmentDate.getTime())) {
-      showToast("Invalid appointment date/time.", "error");
+      showMsg("error", "Invalid Schedule", "Invalid appointment date/time.");
       return false;
     }
 
-    // Optional: prevent booking in the past
     const now = new Date();
     if (appointmentDate <= now) {
-      showToast("Please choose a future schedule.", "error");
+      showMsg(
+        "error",
+        "Schedule Expired",
+        "This schedule is already past. Please go back and choose a future schedule."
+      );
       return false;
     }
 
-    // Fee validation
     const feeNum = Number(fee);
     if (!Number.isFinite(feeNum) || feeNum < 0) {
-      showToast("Invalid consultation fee.", "error");
+      showMsg("error", "Invalid Fee", "Invalid consultation fee.");
       return false;
     }
 
@@ -145,14 +144,18 @@ export default function BookConsultation() {
         createdAt: serverTimestamp(),
       });
 
-      showToast("Appointment booked successfully.", "success", 1400);
+      showMsg("success", "Booked!", "Appointment booked successfully.");
 
       setTimeout(() => {
         router.replace("/User/Home");
-      }, 1400);
+      }, 900);
     } catch (err) {
       console.log("❌ Error saving appointment:", err);
-      showToast("Failed to book appointment. Please try again.", "error");
+      showMsg(
+        "error",
+        "Booking Failed",
+        "Failed to book appointment. Please try again."
+      );
     } finally {
       setSaving(false);
     }
@@ -161,6 +164,11 @@ export default function BookConsultation() {
   if (loading) {
     return (
       <View style={styles.center}>
+        <StatusBar
+          translucent={false}
+          backgroundColor="#F8FAFC"
+          barStyle="dark-content"
+        />
         <ActivityIndicator size="large" color={PRIMARY} />
       </View>
     );
@@ -168,6 +176,13 @@ export default function BookConsultation() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* ✅ IMPORTANT: make sure status bar area is visible (battery/time icons) */}
+      <StatusBar
+        translucent={false}
+        backgroundColor="#F8FAFC"
+        barStyle="dark-content"
+      />
+
       <ScrollView
         contentContainerStyle={styles.container}
         showsVerticalScrollIndicator={false}
@@ -195,9 +210,14 @@ export default function BookConsultation() {
             <Text style={styles.sectionTitle}>Consultant Information</Text>
           </View>
           <View style={styles.divider} />
-          <Info label="Name" value={consultant?.fullName || consultant?.name || "—"} />
-          <Info label="Specialization" value={consultant?.specialization || "—"} />
-          <Info label="Type" value={consultant?.consultantType || "—"} />
+          <Info
+            label="Name"
+            value={consultant?.fullName || consultant?.name || "—"}
+          />
+          <Info
+            label="Specialization"
+            value={consultant?.specialization || "—"}
+          />
         </View>
 
         {/* SCHEDULE CARD */}
@@ -239,11 +259,15 @@ export default function BookConsultation() {
           <Text style={styles.paymentTitle}>Payment Summary</Text>
           <View style={styles.priceRow}>
             <Text style={styles.priceLabel}>Consultation Fee</Text>
-            <Text style={styles.priceValue}>₱{Number(fee || 0).toFixed(2)}</Text>
+            <Text style={styles.priceValue}>
+              ₱{Number(fee || 0).toFixed(2)}
+            </Text>
           </View>
           <View style={[styles.priceRow, { marginTop: 8 }]}>
             <Text style={styles.totalLabel}>Total Amount</Text>
-            <Text style={styles.totalValue}>₱{Number(fee || 0).toFixed(2)}</Text>
+            <Text style={styles.totalValue}>
+              ₱{Number(fee || 0).toFixed(2)}
+            </Text>
           </View>
           <View style={styles.infoBox}>
             <Ionicons name="time-outline" size={16} color="#0369A1" />
@@ -273,20 +297,14 @@ export default function BookConsultation() {
         </TouchableOpacity>
       </ScrollView>
 
-      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
-      {toast.visible && (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.toast,
-            toast.type === "success" && styles.toastSuccess,
-            toast.type === "error" && styles.toastError,
-            toast.type === "info" && styles.toastInfo,
-          ]}
-        >
-          <Text style={styles.toastText}>{toast.text}</Text>
-        </View>
-      )}
+      {/* ✅ CenterMessageModal */}
+      <CenterMessageModal
+        visible={msgOpen}
+        type={msgType}
+        title={msgTitle}
+        message={msgBody}
+        onClose={() => setMsgOpen(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -299,8 +317,16 @@ const Info = ({ label, value, isNotes }) => (
 );
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#F8FAFC" },
-  container: { padding: 20 },
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
+    // ✅ ensures content doesn't sit under status bar on Android
+    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 0 : 0,
+  },
+
+  // ✅ keep padding so bottom button is fully visible
+  container: { padding: 30, paddingBottom: 44 },
+
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
 
   header: {
@@ -413,28 +439,4 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   buttonText: { color: "#fff", fontSize: 17, fontWeight: "800" },
-
-  /* ===== TOAST (TOP, NO OK) ===== */
-  toast: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    top: Platform.OS === "ios" ? 58 : 18,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.96,
-    elevation: 10,
-    zIndex: 9999,
-  },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });

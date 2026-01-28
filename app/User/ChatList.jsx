@@ -1,8 +1,6 @@
-// ✅ UPDATED ONLY (validation-related changes):
-// 1) Validate required room fields before querying payments / opening modal
-// 2) Validate consultantId + appointmentId before fetching docs
-// 3) Validate appointmentAt exists before showing PaymentModal
-// 4) Add minimal user-facing Alert messages + logs for validation failures
+// ✅ UPDATED ONLY (Unread per-room badge + mark as read on open):
+// - Show unread badge per chat room using chatRooms.unreadForUser
+// - When opening a room, set unreadForUser = 0 (best-effort, doesn't block open)
 // ❗ No other UI/layout/logic changes
 
 import { Ionicons } from "@expo/vector-icons";
@@ -17,6 +15,7 @@ import {
   orderBy,
   query,
   where,
+  updateDoc, // ✅ added (for mark as read)
 } from "firebase/firestore";
 import React, { useEffect, useState } from "react";
 import {
@@ -27,7 +26,7 @@ import {
   View,
   StatusBar,
   SafeAreaView,
-  Alert, // ✅ added
+  Alert,
 } from "react-native";
 import { db } from "../../config/firebase";
 import PaymentModal from "../components/PaymentModal";
@@ -120,7 +119,6 @@ export default function ChatList() {
 
   const checkPayment = async (room) => {
     try {
-      // ✅ validate required fields before querying
       const err = validateRoomForPayment(room);
       if (err) {
         console.log("⚠️ Validation failed (checkPayment):", err, room);
@@ -151,6 +149,19 @@ export default function ChatList() {
     }
   };
 
+  // ✅ NEW: mark this room as read for USER (best-effort)
+  const markRoomReadForUser = async (roomId) => {
+    try {
+      if (!isNonEmpty(roomId)) return;
+      await updateDoc(doc(db, "chatRooms", String(roomId)), {
+        unreadForUser: 0,
+      });
+    } catch (e) {
+      // do not block open; just log
+      console.log("⚠️ markRoomReadForUser failed:", e?.message || e);
+    }
+  };
+
   const openChatWithPaymentCheck = async (room) => {
     try {
       console.log("👉 Pressed room:", {
@@ -159,7 +170,6 @@ export default function ChatList() {
         appointmentId: room?.appointmentId,
       });
 
-      // ✅ validate room first
       const roomErr = validateRoomForPayment(room);
       if (roomErr) {
         console.log("⚠️ Validation failed (openChatWithPaymentCheck):", roomErr, room);
@@ -175,7 +185,6 @@ export default function ChatList() {
           fetchConsultantInfo(room.consultantId),
         ]);
 
-        // ✅ validate appointmentAt before opening PaymentModal
         const appointmentAt = appointment?.appointmentAt || null;
         if (!appointmentAt) {
           console.log("⚠️ Validation: appointmentAt missing for appointmentId:", room.appointmentId);
@@ -204,6 +213,9 @@ export default function ChatList() {
         console.log("✅ Modal set to visible:", true);
         return;
       }
+
+      // ✅ mark read first (best-effort), then open
+      markRoomReadForUser(room.id);
 
       console.log("✅ Already paid. Opening chat…");
       router.push({
@@ -301,40 +313,53 @@ export default function ChatList() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContainer}
         showsVerticalScrollIndicator={false}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.chatCard}
-            onPress={() => openChatWithPaymentCheck(item)}
-            activeOpacity={0.8}
-          >
-            <View style={styles.avatar}>
-              <Text style={styles.avatarText}>{item.consultantName?.[0]}</Text>
-            </View>
+        renderItem={({ item }) => {
+          const unread = Number(item?.unreadForUser || 0);
 
-            <View style={styles.chatInfo}>
-              <View style={styles.nameRow}>
-                <Text style={styles.name}>{item.consultantName}</Text>
-                <Text style={styles.timeText}>
-                  {item.lastMessageAt
-                    ? new Date(item.lastMessageAt.toDate()).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : ""}
+          return (
+            <TouchableOpacity
+              style={styles.chatCard}
+              onPress={() => openChatWithPaymentCheck(item)}
+              activeOpacity={0.8}
+            >
+              <View style={styles.avatar}>
+                <Text style={styles.avatarText}>{item.consultantName?.[0]}</Text>
+
+                {/* ✅ NEW: unread badge per room */}
+                {unread > 0 && (
+                  <View style={styles.unreadBadge} pointerEvents="none">
+                    <Text style={styles.unreadBadgeText}>
+                      {unread > 99 ? "99+" : String(unread)}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              <View style={styles.chatInfo}>
+                <View style={styles.nameRow}>
+                  <Text style={styles.name}>{item.consultantName}</Text>
+                  <Text style={styles.timeText}>
+                    {item.lastMessageAt
+                      ? new Date(item.lastMessageAt.toDate()).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })
+                      : ""}
+                  </Text>
+                </View>
+                <Text style={styles.lastMessage} numberOfLines={1}>
+                  {item.lastMessage || "No messages yet"}
                 </Text>
               </View>
-              <Text style={styles.lastMessage} numberOfLines={1}>
-                {item.lastMessage || "No messages yet"}
-              </Text>
-            </View>
 
-            <Ionicons
-              name={activeTab === "ongoing" ? "chevron-forward" : "checkmark-circle"}
-              size={16}
-              color={activeTab === "ongoing" ? "#CBD5E1" : "#10B981"}
-            />
-          </TouchableOpacity>
-        )}
+              <Ionicons
+                name={activeTab === "ongoing" ? "chevron-forward" : "checkmark-circle"}
+                size={16}
+                color={activeTab === "ongoing" ? "#CBD5E1" : "#10B981"}
+              />
+            </TouchableOpacity>
+          );
+        }}
         ListEmptyComponent={
           <View style={styles.emptyBox}>
             <Ionicons name="chatbubbles-outline" size={50} color="#CBD5E1" />
@@ -343,7 +368,6 @@ export default function ChatList() {
         }
       />
 
-      {/* ✅ Render modal by paymentModalVisible so it shows reliably */}
       <PaymentModal
         {...(currentPaymentData || {})}
         visible={paymentModalVisible}
@@ -352,6 +376,9 @@ export default function ChatList() {
           setPaymentModalVisible(false);
 
           if (!currentPaymentData) return;
+
+          // ✅ mark read best-effort
+          markRoomReadForUser(currentPaymentData.id);
 
           router.push({
             pathname: "/User/ChatRoom",
@@ -371,8 +398,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
   header: {
     backgroundColor: THEME.primary,
-    paddingTop: 30,
-    paddingBottom: 20,
+    paddingTop: 40,
+    paddingBottom: 10,
   },
   headerContent: { paddingHorizontal: 15, paddingTop: 10 },
   headerTopRow: { flexDirection: "row", alignItems: "center" },
@@ -443,8 +470,32 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     marginRight: 15,
+    position: "relative", // ✅ for badge
   },
   avatarText: { color: THEME.avatarText, fontWeight: "bold", fontSize: 20 },
+
+  // ✅ NEW: per-room unread badge
+  unreadBadge: {
+    position: "absolute",
+    right: -6,
+    top: -6,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 999,
+    backgroundColor: "#EF4444",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#F8FAFC",
+  },
+  unreadBadgeText: {
+    color: "#FFF",
+    fontSize: 10,
+    fontWeight: "900",
+    lineHeight: 12,
+  },
+
   chatInfo: { flex: 1, marginRight: 10 },
   nameRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   name: { fontSize: 16, fontWeight: "700", color: THEME.textDark },

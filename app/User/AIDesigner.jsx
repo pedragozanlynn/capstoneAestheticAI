@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   ActivityIndicator,
   Alert,
+  Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import useSubscriptionType from "../../services/useSubscriptionType";
@@ -25,9 +26,13 @@ import {
   orderBy,
   query,
   where,
+  deleteDoc,
+  doc,
 } from "firebase/firestore";
 import { getApp } from "firebase/app";
 import { db } from "../../config/firebase";
+import CenterMessageModal from "../components/CenterMessageModal";
+
 
 function formatChatDate(tsLike) {
   try {
@@ -66,6 +71,25 @@ export default function AIDesigner() {
   // fallback mode tracker
   const usedFallbackRef = useRef(false);
 
+  // ✅ menu state (with position)
+  const [menuChat, setMenuChat] = useState(null); // chat object
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 }); // dropdown position
+  const moreBtnRefs = useRef(new Map()); // chatId -> ref
+
+  // ✅ CenterMessageModal state
+const [msgOpen, setMsgOpen] = useState(false);
+const [msgType, setMsgType] = useState("info"); // "success" | "error" | "info"
+const [msgTitle, setMsgTitle] = useState("");
+const [msgBody, setMsgBody] = useState("");
+
+const showMsg = (type, title, body = "") => {
+  setMsgType(type);
+  setMsgTitle(title);
+  setMsgBody(body);
+  setMsgOpen(true);
+};
+
+
   // ✅ NEW CHAT
   const openChatScreen = () => {
     router.push({
@@ -87,6 +111,71 @@ export default function AIDesigner() {
       },
     });
   };
+
+  const closeChatMenu = () => {
+    setMenuChat(null);
+  };
+
+  // ✅ open menu near pressed button
+  const openChatMenu = (chat) => {
+    const ref = moreBtnRefs.current.get(chat.id);
+    if (ref?.measureInWindow) {
+      ref.measureInWindow((x, y, w, h) => {
+        setMenuPos({ x: x + w - 170, y: y + h + 8 }); // 170 = menu width
+        setMenuChat(chat);
+      });
+    } else {
+      // fallback position
+      setMenuPos({ x: 22, y: 250 });
+      setMenuChat(chat);
+    }
+  };
+  const handleDeleteChat = (chat) => {
+    if (!uid || !chat?.id) return;
+  
+    Alert.alert(
+      "Delete chat?",
+      "This will permanently remove this chat.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const src = chat.source === "user" ? "user" : "root";
+  
+              const convoRef =
+                src === "user"
+                  ? doc(db, "users", uid, "aiConversations", chat.id)
+                  : doc(db, "aiConversations", chat.id);
+  
+              await deleteDoc(convoRef);
+  
+              const key = `${src}::${chat.id}`;
+              const unsub = messageUnsubsRef.current.get(key);
+              if (unsub) {
+                try { unsub(); } catch {}
+                messageUnsubsRef.current.delete(key);
+              }
+  
+              setChatSummaries((prev) => prev.filter((c) => c.id !== chat.id));
+  
+              // ✅ SUCCESS MESSAGE
+              showMsg("success", "Deleted", "Chat removed successfully.");
+            } catch (e) {
+              console.warn("Delete chat failed:", e?.message || e);
+  
+              // ✅ ERROR MESSAGE
+              showMsg("error", "Delete failed", "Unable to delete chat right now.");
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+  
 
   // ✅ Alert when project is saved (via params.saved)
   useEffect(() => {
@@ -216,10 +305,7 @@ export default function AIDesigner() {
         );
       },
       (err) => {
-        console.warn(
-          "Message enrich snapshot error:",
-          err?.message || String(err)
-        );
+        console.warn("Message enrich snapshot error:", err?.message || String(err));
       }
     );
 
@@ -227,9 +313,7 @@ export default function AIDesigner() {
   };
 
   const attachMainListener = ({ useFallback }) => {
-    const basePath = useFallback
-      ? `users/${uid}/aiConversations`
-      : "aiConversations";
+    const basePath = useFallback ? `users/${uid}/aiConversations` : "aiConversations";
 
     const conversationsCol =
       basePath === "aiConversations"
@@ -335,19 +419,11 @@ export default function AIDesigner() {
     });
   }, [chatSummaries, uid]);
 
-  const historyList = useMemo(
-    () => chatSummaries.map((c) => ({ ...c })),
-    [chatSummaries]
-  );
+  const historyList = useMemo(() => chatSummaries.map((c) => ({ ...c })), [chatSummaries]);
 
   return (
     <View style={styles.page}>
-      <StatusBar
-        barStyle="dark-content"
-        backgroundColor="#F8FAFC"
-        translucent={false}
-      />
-
+      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={false} />
       <SafeAreaView style={styles.safeTop} />
 
       <ScrollView
@@ -359,24 +435,16 @@ export default function AIDesigner() {
           <Text style={styles.sectionHint}>Create a new design session</Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.primaryCard}
-          onPress={openChatScreen}
-          activeOpacity={0.92}
-        >
+        <TouchableOpacity style={styles.primaryCard} onPress={openChatScreen} activeOpacity={0.92}>
           <View style={styles.primaryCardTop}>
             <View style={styles.primaryIconWrap}>
-              <Image
-                source={require("../../assets/design.png")}
-                style={styles.primaryIcon}
-              />
+              <Image source={require("../../assets/design.png")} style={styles.primaryIcon} />
             </View>
 
             <View style={styles.primaryTextWrap}>
               <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
               <Text style={styles.primaryDesc} numberOfLines={2}>
-                Generate layouts, refine styles, and modify furniture using a
-                conversational interface.
+                Generate layouts, refine styles, and modify furniture using a conversational interface.
               </Text>
             </View>
           </View>
@@ -388,11 +456,7 @@ export default function AIDesigner() {
                 <Text style={styles.miniPillText}>Image-based</Text>
               </View>
               <View style={styles.miniPill}>
-                <Ionicons
-                  name="chatbubble-ellipses"
-                  size={14}
-                  color="#0F3E48"
-                />
+                <Ionicons name="chatbubble-ellipses" size={14} color="#0F3E48" />
                 <Text style={styles.miniPillText}>Prompt-driven</Text>
               </View>
             </View>
@@ -407,9 +471,7 @@ export default function AIDesigner() {
         <View style={styles.historyHeaderRow}>
           <View>
             <Text style={styles.historyTitle}>Recent Chats</Text>
-            <Text style={styles.historySubtitle}>
-              Resume your previous design sessions
-            </Text>
+            <Text style={styles.historySubtitle}>Resume your previous design sessions</Text>
           </View>
         </View>
 
@@ -426,16 +488,12 @@ export default function AIDesigner() {
         ) : !uid ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>Sign in required</Text>
-            <Text style={styles.emptySubtitle}>
-              Please sign in to view your chat history.
-            </Text>
+            <Text style={styles.emptySubtitle}>Please sign in to view your chat history.</Text>
           </View>
         ) : historyList.length === 0 ? (
           <View style={styles.emptyWrap}>
             <Text style={styles.emptyTitle}>No recent chats</Text>
-            <Text style={styles.emptySubtitle}>
-              Start a new session to see it appear here.
-            </Text>
+            <Text style={styles.emptySubtitle}>Start a new session to see it appear here.</Text>
           </View>
         ) : (
           <View style={styles.historyList}>
@@ -463,38 +521,72 @@ export default function AIDesigner() {
                   </Text>
                 </View>
 
-                <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+                <View style={styles.historyActions}>
+                  <TouchableOpacity
+                    ref={(r) => {
+                      if (r) moreBtnRefs.current.set(chat.id, r);
+                    }}
+                    onPress={() => openChatMenu(chat)}
+                    style={styles.moreBtn}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="ellipsis-horizontal" size={18} color="#64748B" />
+                  </TouchableOpacity>
+                </View>
               </TouchableOpacity>
             ))}
           </View>
         )}
       </ScrollView>
 
-      {/* ✅ Footer lifted up */}
+      {/* ✅ ONE footer only */}
       <SafeAreaView style={styles.safeBottom}>
         <View style={styles.footerLift}>
           <BottomNavbar subType={subType} />
         </View>
       </SafeAreaView>
+
+      {/* 🔽 DROPDOWN MENU */}
+      {menuChat && (
+        <View style={styles.menuOverlay}>
+          <Pressable style={styles.menuBackdrop} onPress={closeChatMenu} />
+
+          <View style={[styles.chatMenu, { left: menuPos.x, top: menuPos.y }]}>
+            <TouchableOpacity
+              style={styles.chatMenuItem}
+              onPress={() => {
+                closeChatMenu();
+                handleDeleteChat(menuChat);
+              }}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="trash-outline" size={18} color="#EF4444" />
+              <Text style={styles.chatMenuTextDelete}>Delete chat</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+<CenterMessageModal
+  visible={msgOpen}
+  type={msgType}
+  title={msgTitle}
+  message={msgBody}
+  onClose={() => setMsgOpen(false)}
+/>
+
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
-
   safeTop: { backgroundColor: "#F8FAFC" },
   safeBottom: { backgroundColor: "#F8FAFC" },
-
   container: { flex: 1 },
-
-  // keep content clear above the lifted footer
   scrollContent: { paddingHorizontal: 22, paddingBottom: 150 },
 
-  // ✅ how much to lift the footer upward
-  footerLift: {
-    paddingBottom: 14, // increase this if you want it higher
-  },
+  footerLift: { paddingBottom: 14 },
 
   sectionHeadRow: {
     flexDirection: "row",
@@ -503,12 +595,7 @@ const styles = StyleSheet.create({
     marginTop: 60,
     paddingBottom: 20,
   },
-  sectionHint: {
-    fontSize: 12,
-    color: "#94A3B8",
-    fontWeight: "700",
-    marginBottom: 5,
-  },
+  sectionHint: { fontSize: 12, color: "#94A3B8", fontWeight: "700", marginBottom: 5 },
 
   primaryCard: {
     marginTop: 12,
@@ -572,12 +659,7 @@ const styles = StyleSheet.create({
 
   historyHeaderRow: { marginTop: 26, marginBottom: 12 },
   historyTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48" },
-  historySubtitle: {
-    fontSize: 12,
-    color: "#94A3B8",
-    marginTop: 3,
-    fontWeight: "700",
-  },
+  historySubtitle: { fontSize: 12, color: "#94A3B8", marginTop: 3, fontWeight: "700" },
 
   historyList: { gap: 12 },
   historyItem: {
@@ -617,6 +699,18 @@ const styles = StyleSheet.create({
   historyItemDate: { fontSize: 11, color: "#94A3B8", fontWeight: "800" },
   historyItemSnippet: { fontSize: 12, color: "#64748B" },
 
+  historyActions: { marginLeft: 10, justifyContent: "center", alignItems: "center" },
+  moreBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+  },
+
   loadingWrap: { paddingVertical: 18, alignItems: "center" },
   loadingText: { marginTop: 8, fontSize: 12, color: "#64748B", fontWeight: "700" },
 
@@ -629,11 +723,45 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
   },
   emptyTitle: { fontSize: 13, fontWeight: "900", color: "#0F3E48" },
-  emptySubtitle: {
-    marginTop: 6,
-    fontSize: 12,
-    color: "#64748B",
-    fontWeight: "700",
-    lineHeight: 16,
+  emptySubtitle: { marginTop: 6, fontSize: 12, color: "#64748B", fontWeight: "700", lineHeight: 16 },
+
+  // ✅ menu overlay
+  menuOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  menuBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(15, 23, 42, 0.08)",
+  },
+  chatMenu: {
+    position: "absolute",
+    width: 170,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    paddingVertical: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 10,
+  },
+  chatMenuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  chatMenuTextDelete: {
+    fontSize: 13,
+    fontWeight: "800",
+    color: "#EF4444",
   },
 });

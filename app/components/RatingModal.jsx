@@ -11,6 +11,9 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
+// ✅ CenterMessageModal (adjust path if needed)
+import CenterMessageModal from "./CenterMessageModal";
+
 /* ---------------- CONSTANTS ---------------- */
 const THEME = {
   primary: "#01579B", // Ang iyong consistent Deep Blue
@@ -50,6 +53,19 @@ export default function RatingModal({
     } catch {}
   };
 
+  // ✅ CenterMessageModal state (ADDED ONLY)
+  const [cmOpen, setCmOpen] = useState(false);
+  const [cmType, setCmType] = useState("info"); // "success" | "error" | "info"
+  const [cmTitle, setCmTitle] = useState("");
+  const [cmBody, setCmBody] = useState("");
+
+  const showCenterMsg = (type, title, body = "") => {
+    setCmType(type);
+    setCmTitle(String(title || ""));
+    setCmBody(String(body || ""));
+    setCmOpen(true);
+  };
+
   useEffect(() => {
     if (visible) {
       setRating(0);
@@ -57,6 +73,12 @@ export default function RatingModal({
       setLoading(false);
       sendingRef.current = false;
       setMsg({ visible: false, text: "", type: "info" });
+
+      // ✅ reset CenterMessageModal (ADDED ONLY)
+      setCmOpen(false);
+      setCmType("info");
+      setCmTitle("");
+      setCmBody("");
     }
   }, [visible]);
 
@@ -85,7 +107,12 @@ export default function RatingModal({
 
   const handleSubmit = async () => {
     const err = validate();
-    if (err) return showMessage(err, "error");
+
+    // ✅ use CenterMessageModal for validation errors (ADDED ONLY)
+    if (err) {
+      showCenterMsg("error", "Cannot submit", err);
+      return showMessage(err, "error");
+    }
 
     sendingRef.current = true;
     setLoading(true);
@@ -103,10 +130,17 @@ export default function RatingModal({
 
       // ✅ if onSubmit returns false -> treat as failure (keeps your behavior)
       if (result === false) {
+        showCenterMsg(
+          "error",
+          "Submit failed",
+          "Failed to submit rating. Please try again."
+        );
         showMessage("Failed to submit rating. Please try again.", "error");
         return;
       }
 
+      // ✅ success (ADDED ONLY)
+      showCenterMsg("success", "Thank you!", "Your rating was submitted.");
       showMessage("Thank you! Your rating was submitted.", "success", 1200);
 
       // close after short delay so message is seen
@@ -117,6 +151,14 @@ export default function RatingModal({
       }, 450);
     } catch (err) {
       console.log("Rating submit error:", err?.message || err);
+
+      // ✅ error (ADDED ONLY)
+      showCenterMsg(
+        "error",
+        "Something went wrong",
+        "Please try again."
+      );
+
       showMessage("Something went wrong. Please try again.", "error");
     } finally {
       setLoading(false);
@@ -125,104 +167,115 @@ export default function RatingModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.overlay}>
-        <View style={styles.card}>
-          {/* HEADER SECTION */}
-          <View style={styles.iconContainer}>
-            <View style={styles.iconCircle}>
-              <Ionicons name="star" size={30} color={THEME.starActive} />
+    <>
+      <Modal visible={visible} transparent animationType="fade">
+        <View style={styles.overlay}>
+          <View style={styles.card}>
+            {/* HEADER SECTION */}
+            <View style={styles.iconContainer}>
+              <View style={styles.iconCircle}>
+                <Ionicons name="star" size={30} color={THEME.starActive} />
+              </View>
+            </View>
+
+            <Text style={styles.title}>How was your consultation?</Text>
+            <Text style={styles.subtitle}>
+              Your feedback helps us provide better service for you ✨
+            </Text>
+
+            {/* ⭐ STAR RATING */}
+            <View style={styles.starsRow}>
+              {[1, 2, 3, 4, 5].map((num) => (
+                <TouchableOpacity
+                  key={num}
+                  disabled={loading}
+                  activeOpacity={0.6}
+                  onPress={() => {
+                    if (loading) return;
+                    setRating(num);
+                    if (msg.visible) setMsg((m) => ({ ...m, visible: false }));
+                  }}
+                  style={styles.starTouch}
+                >
+                  <Ionicons
+                    name={rating >= num ? "star" : "star-outline"}
+                    size={42}
+                    color={rating >= num ? THEME.starActive : THEME.starInactive}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* 📝 FEEDBACK INPUT */}
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.input}
+                placeholder="Share your experience (optional)..."
+                placeholderTextColor={THEME.textGray}
+                value={feedback}
+                onChangeText={(t) => {
+                  // ✅ enforce maxLength safely even if pasted
+                  const next = String(t || "");
+                  setFeedback(next.length > 300 ? next.slice(0, 300) : next);
+                }}
+                multiline
+                maxLength={300}
+                editable={!loading}
+                textAlignVertical="top"
+              />
+              <Text style={styles.counter}>{feedback.length}/300</Text>
+            </View>
+
+            {/* ✅ messages (no alert/toast, minimal) */}
+            {msg.visible ? (
+              <Text
+                style={[
+                  styles.inlineMsg,
+                  msg.type === "success" && styles.inlineMsgSuccess,
+                  msg.type === "error" && styles.inlineMsgError,
+                ]}
+              >
+                {msg.text}
+              </Text>
+            ) : null}
+
+            {/* ACTIONS */}
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={[
+                  styles.submitBtn,
+                  (loading || rating === 0) && styles.disabledBtn,
+                ]}
+                disabled={loading || rating === 0}
+                onPress={handleSubmit}
+                activeOpacity={0.85}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Text style={styles.submitText}>Submit Feedback</Text>
+                )}
+              </TouchableOpacity>
+
+              {!loading && (
+                <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+                  <Text style={styles.cancelText}>Maybe later</Text>
+                </TouchableOpacity>
+              )}
             </View>
           </View>
-
-          <Text style={styles.title}>How was your consultation?</Text>
-          <Text style={styles.subtitle}>
-            Your feedback helps us provide better service for you ✨
-          </Text>
-
-          {/* ⭐ STAR RATING */}
-          <View style={styles.starsRow}>
-            {[1, 2, 3, 4, 5].map((num) => (
-              <TouchableOpacity
-                key={num}
-                disabled={loading}
-                activeOpacity={0.6}
-                onPress={() => {
-                  if (loading) return;
-                  setRating(num);
-                  if (msg.visible) setMsg((m) => ({ ...m, visible: false }));
-                }}
-                style={styles.starTouch}
-              >
-                <Ionicons
-                  name={rating >= num ? "star" : "star-outline"}
-                  size={42}
-                  color={rating >= num ? THEME.starActive : THEME.starInactive}
-                />
-              </TouchableOpacity>
-            ))}
-          </View>
-
-          {/* 📝 FEEDBACK INPUT */}
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={styles.input}
-              placeholder="Share your experience (optional)..."
-              placeholderTextColor={THEME.textGray}
-              value={feedback}
-              onChangeText={(t) => {
-                // ✅ enforce maxLength safely even if pasted
-                const next = String(t || "");
-                setFeedback(next.length > 300 ? next.slice(0, 300) : next);
-              }}
-              multiline
-              maxLength={300}
-              editable={!loading}
-              textAlignVertical="top"
-            />
-            <Text style={styles.counter}>{feedback.length}/300</Text>
-          </View>
-
-          {/* ✅ messages (no alert/toast, minimal) */}
-          {msg.visible ? (
-            <Text
-              style={[
-                styles.inlineMsg,
-                msg.type === "success" && styles.inlineMsgSuccess,
-                msg.type === "error" && styles.inlineMsgError,
-              ]}
-            >
-              {msg.text}
-            </Text>
-          ) : null}
-
-          {/* ACTIONS */}
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={[
-                styles.submitBtn,
-                (loading || rating === 0) && styles.disabledBtn,
-              ]}
-              disabled={loading || rating === 0}
-              onPress={handleSubmit}
-              activeOpacity={0.85}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFF" />
-              ) : (
-                <Text style={styles.submitText}>Submit Feedback</Text>
-              )}
-            </TouchableOpacity>
-
-            {!loading && (
-              <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
-                <Text style={styles.cancelText}>Maybe later</Text>
-              </TouchableOpacity>
-            )}
-          </View>
         </View>
-      </View>
-    </Modal>
+      </Modal>
+
+      {/* ✅ CenterMessageModal (ADDED ONLY) */}
+      <CenterMessageModal
+        visible={cmOpen}
+        type={cmType}
+        title={cmTitle}
+        message={cmBody}
+        onClose={() => setCmOpen(false)}
+      />
+    </>
   );
 }
 

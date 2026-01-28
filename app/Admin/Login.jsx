@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -18,6 +18,9 @@ import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../../config/firebase";
 import { Ionicons } from "@expo/vector-icons";
 
+// ✅ Center modal component
+import CenterMessageModal from "../components/CenterMessageModal";
+
 export default function Login() {
   const router = useRouter();
 
@@ -27,16 +30,21 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [touched, setTouched] = useState({ email: false, password: false });
 
-  // -----------------------------
-  // ✅ Helpers
-  // -----------------------------
-  const safeStr = (v) => (v == null ? "" : String(v).trim());
+  // ✅ Center modal state
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info", // "success" | "error" | "info" | "warning"
+    title: "",
+    message: "",
+    nextRoute: null, // optional: navigate after close
+  });
 
+  // ✅ Helpers
+  const safeStr = (v) => (v == null ? "" : String(v).trim());
   const normalizeEmail = (v) => safeStr(v).toLowerCase();
 
   const isValidEmail = (v) => {
     const s = normalizeEmail(v);
-    // practical email check (not overly strict)
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
   };
 
@@ -70,13 +78,32 @@ export default function Login() {
 
   const markAllTouched = () => setTouched({ email: true, password: true });
 
+  const openModal = (type, title, message, nextRoute = null) => {
+    setCenterModal({
+      visible: true,
+      type,
+      title: String(title || ""),
+      message: String(message || ""),
+      nextRoute,
+    });
+  };
+
+  const closeModal = () => {
+    const next = centerModal.nextRoute;
+    setCenterModal((m) => ({ ...m, visible: false, nextRoute: null }));
+    if (next) {
+      // slight delay to let modal close animation feel smooth
+      setTimeout(() => router.replace(next), 200);
+    }
+  };
+
   const handleAdminLogin = async () => {
-    // ✅ inline validations first (no UI redesign changes)
     markAllTouched();
 
     const e = normalizeEmail(email);
     const p = safeStr(password);
 
+    // ✅ keep Alerts for simple blocking validation (as requested)
     if (!e || !p) {
       Alert.alert("Missing fields", "Please enter your email and password.");
       return;
@@ -100,15 +127,20 @@ export default function Login() {
       const adminDoc = await getDoc(doc(db, "admin", uid));
 
       if (adminDoc.exists()) {
-        Alert.alert("Success", "Admin login successful!");
-        router.replace("/Admin/Dashboard");
+        // ✅ Center modal success, then navigate
+        openModal(
+          "success",
+          "Success",
+          "Admin login successful!",
+          "/Admin/Dashboard"
+        );
       } else {
-        Alert.alert("Unauthorized", "You are not authorized as admin.");
+        // ✅ Center modal unauthorized (and optional sign out could be done elsewhere)
+        openModal("error", "Unauthorized", "You are not authorized as admin.");
       }
     } catch (error) {
       console.error(error);
 
-      // ✅ friendly auth messages (still safe)
       const code = String(error?.code || "");
       let message = "Something went wrong. Please try again.";
 
@@ -121,7 +153,8 @@ export default function Login() {
         message = "Too many attempts. Please try again later.";
       else if (error?.message) message = String(error.message);
 
-      Alert.alert("Error", message);
+      // ✅ Center modal error
+      openModal("error", "Login Failed", message);
     } finally {
       setSubmitting(false);
     }
@@ -132,10 +165,16 @@ export default function Login() {
       style={{ flex: 1 }}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        contentContainerStyle={{ flexGrow: 1 }}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Header with background image */}
         <View style={styles.header}>
-          <Image source={require("../../assets/new_background.jpg")} style={styles.image} />
+          <Image
+            source={require("../../assets/new_background.jpg")}
+            style={styles.image}
+          />
 
           <TouchableOpacity
             onPress={() => router.replace("/")}
@@ -186,7 +225,9 @@ export default function Login() {
               returnKeyType="done"
               onSubmitEditing={handleAdminLogin}
             />
-            {!!passwordError && <Text style={styles.errorText}>{passwordError}</Text>}
+            {!!passwordError && (
+              <Text style={styles.errorText}>{passwordError}</Text>
+            )}
           </View>
 
           <TouchableOpacity
@@ -198,7 +239,9 @@ export default function Login() {
             {submitting ? (
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <ActivityIndicator size="small" color="#fff" />
-                <Text style={[styles.buttonText, { marginLeft: 10 }]}>Logging in...</Text>
+                <Text style={[styles.buttonText, { marginLeft: 10 }]}>
+                  Logging in...
+                </Text>
               </View>
             ) : (
               <Text style={styles.buttonText}>Login</Text>
@@ -206,6 +249,15 @@ export default function Login() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* ✅ CENTER MESSAGE MODAL */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeModal}
+      />
     </KeyboardAvoidingView>
   );
 }

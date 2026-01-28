@@ -175,15 +175,16 @@ export default function Consultantst() {
 
   return (
     <View style={styles.mainContainer}>
-    {/* FIXED HEADER */}
-<View style={styles.header}>
-  <SafeAreaView>
-    <Text style={styles.headerTitle}>Consultants</Text>
-    <Text style={styles.headerSubtitle}>
-      Manage consultants verifications
-    </Text>
-  </SafeAreaView>
-</View>
+      {/* FIXED HEADER (same as Withdrawals) */}
+      <View style={styles.header}>
+        {/* ✅ CHANGED: edges top-only (prevents extra bottom safe padding) */}
+        <SafeAreaView edges={["top"]}>
+          <Text style={styles.headerTitle}>Consultants</Text>
+          <Text style={styles.headerSubtitle}>
+            Manage consultants verifications
+          </Text>
+        </SafeAreaView>
+      </View>
 
       {/* ✅ Tabs */}
       <View style={styles.filterWrapper}>
@@ -358,7 +359,6 @@ export default function Consultantst() {
         />
       )}
 
-      {/* ✅ Footer stable: we already padded scrollContent enough */}
       <BottomNavbar role="admin" />
     </View>
   );
@@ -376,26 +376,19 @@ const stylesVars = {
 const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: stylesVars.bg },
 
+  // ✅ HEADER (same as Withdrawals)
   header: {
     backgroundColor: "#01579B",
-    paddingHorizontal: 20,
-  
-    // ✅ fixed layout (no insets math)
-    paddingTop: 56,     // stable top spacing
-    paddingBottom: 22,  // stable bottom spacing
-  
-    // ✅ prevents shrinking in production builds
-    minHeight: 110,
-  
-    justifyContent: "flex-end",
+    paddingTop: 28,        // ✅ lowered (was 34)
+    paddingHorizontal: 16,
+    paddingBottom: 20,      // ✅ lowest
   },
-  headerTitle: { fontSize: 26, fontWeight: "800", color: "#FFF" },
+  headerTitle: { fontSize: 24, fontWeight: "800", color: "#FFF" },
   headerSubtitle: {
-    fontSize: 14,
+    fontSize: 12,
     color: "rgba(255,255,255,0.7)",
     marginTop: 4,
   },
-  
 
   /** Tabs */
   filterWrapper: { paddingHorizontal: 16, marginTop: 12, marginBottom: 6 },
@@ -437,7 +430,6 @@ const styles = StyleSheet.create({
   /** List */
   scrollContent: {
     padding: 16,
-    // ✅ THIS is what keeps content from going under BottomNavbar after install
     paddingBottom: 140,
   },
 

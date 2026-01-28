@@ -26,6 +26,9 @@ import { auth, db } from "../../config/firebase";
 import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
 
+// ✅ ADD: safe area insets to keep end-of-scroll above navbar / home indicator
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 const { width } = Dimensions.get("window");
 const CARD_WIDTH = width * 0.75;
 const PROFILE_KEY_PREFIX = "aestheticai:user-profile:";
@@ -74,6 +77,9 @@ export default function Home() {
   const didWarnNotifRoute = useRef(false);
   const didWarnOpenProject = useRef(false);
 
+  // ✅ ADD: safe area insets
+  const insets = useSafeAreaInsets();
+
   const carouselImages = [
     require("../../assets/carousel1.jpg"),
     require("../../assets/carousel2.jpg"),
@@ -97,9 +103,6 @@ export default function Home() {
       if (snap.exists()) {
         const data = snap.data();
         setProfile(data);
-
-        // ✅ success/info message (optional, non-intrusive) — NOT shown as alert to avoid spam
-        // console.log("✅ Profile loaded");
 
         await AsyncStorage.setItem(
           `${PROFILE_KEY_PREFIX}${uid}`,
@@ -187,9 +190,6 @@ export default function Home() {
             .slice(0, 10);
 
           setRooms(list);
-
-          // ✅ info message if empty (avoid alerts; just log)
-          // if (list.length === 0) console.log("ℹ️ No recent projects.");
         },
         (err) => {
           console.log("Recent projects listener error:", err);
@@ -229,8 +229,6 @@ export default function Home() {
         (err) => {
           console.log("Notifications badge listener error:", err);
           setUnreadNotif(0);
-          // ✅ lightweight error message (avoid constant alerts)
-          // Alert.alert("Error", "Failed to load notifications.");
         }
       );
 
@@ -256,7 +254,6 @@ export default function Home() {
       }
     } catch (e) {
       console.log("loadTipOfTheDay error:", e);
-      // ✅ no alert spam; tip is non-critical
       setTipOfTheDay(null);
     }
   };
@@ -358,9 +355,6 @@ export default function Home() {
           project: JSON.stringify(project || {}),
         },
       });
-
-      // ✅ optional success/info message (avoid alert spam)
-      // console.log("✅ Opening project:", project.id);
     } catch (e) {
       console.log("openProject error:", e);
       Alert.alert("Error", "Failed to open project. Please try again.");
@@ -378,9 +372,6 @@ export default function Home() {
 
       // Make sure your screen file is: app/User/Notifications.jsx (route: /User/Notifications)
       router.push("/User/Notifications");
-
-      // ✅ optional info message (avoid alert spam)
-      // console.log("✅ Navigating to Notifications");
     } catch (e) {
       console.log("goToNotifications error:", e);
       if (!didWarnNotifRoute.current) {
@@ -390,10 +381,18 @@ export default function Home() {
     }
   };
 
+  // ✅ FIX: extra bottom space so last content is ABOVE BottomNavbar when scrolling
+  const bottomScrollSpace = Math.max(insets.bottom, 0) + 130;
+
   return (
     <View style={styles.page}>
       <StatusBar barStyle="light-content" />
-      <ScrollView showsVerticalScrollIndicator={false} bounces={false}>
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+        // ✅ ADD: guaranteed space at end of scroll (prevents BottomNavbar overlap)
+        contentContainerStyle={{ paddingBottom: bottomScrollSpace }}
+      >
         {/* ===== HEADER ===== */}
         <View style={styles.header}>
           <View style={styles.headerTop}>
@@ -403,7 +402,10 @@ export default function Home() {
                 onPress={() => {
                   // ✅ validation: profile access requires signed-in user
                   if (!auth.currentUser?.uid) {
-                    Alert.alert("Session Required", "Please sign in to view your profile.");
+                    Alert.alert(
+                      "Session Required",
+                      "Please sign in to view your profile."
+                    );
                     return;
                   }
                   router.push("/User/Profile");
@@ -484,7 +486,10 @@ export default function Home() {
               onPress={() => {
                 // ✅ validation: require signed-in user (if your chat needs auth)
                 if (!auth.currentUser?.uid) {
-                  Alert.alert("Session Required", "Please sign in to use AI Assistant.");
+                  Alert.alert(
+                    "Session Required",
+                    "Please sign in to use AI Assistant."
+                  );
                   return;
                 }
                 router.push("/User/AIDesignerChat");
@@ -498,7 +503,10 @@ export default function Home() {
               onPress={() => {
                 // ✅ validation: require signed-in user (consult flow typically needs uid)
                 if (!auth.currentUser?.uid) {
-                  Alert.alert("Session Required", "Please sign in to consult an expert.");
+                  Alert.alert(
+                    "Session Required",
+                    "Please sign in to consult an expert."
+                  );
                   return;
                 }
                 router.push("/User/Consultants");
@@ -529,7 +537,10 @@ export default function Home() {
               onPress={() => {
                 // ✅ validation
                 if (!auth.currentUser?.uid) {
-                  Alert.alert("Session Required", "Please sign in to view your projects.");
+                  Alert.alert(
+                    "Session Required",
+                    "Please sign in to view your projects."
+                  );
                   return;
                 }
                 router.push("/User/Projects");
@@ -573,7 +584,6 @@ export default function Home() {
                 </TouchableOpacity>
               ))
             ) : (
-              // ✅ validation/info message when empty (no UI redesign; minimal text)
               <View style={{ paddingLeft: 25, paddingVertical: 10 }}>
                 <Text style={{ color: "#94A3B8", fontWeight: "700" }}>
                   No recent projects yet.
@@ -789,6 +799,7 @@ const styles = StyleSheet.create({
   },
   tipContent: { fontSize: 13, color: "#64748B", lineHeight: 20 },
 
+  // (kept)
   projectsSection: { marginBottom: 100 },
   sectionHeader: {
     flexDirection: "row",

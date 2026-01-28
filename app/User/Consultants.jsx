@@ -1,10 +1,7 @@
 // Consultation.jsx
-// ✅ UPDATED ONLY (Validation + validation/success messages):
-// - Validate user profile loaded (AsyncStorage)
-// - Validate Firestore fetch errors with user-friendly messages
-// - Validate search/category selection (safe + optional info message)
-// - Success/info messages where appropriate (navigation + refreshed data state)
-// - Avoid repeated popup spam (guards)
+// ✅ UPDATED ONLY (Unread badge on chat icon):
+// - Listen to unread using chatRooms.unreadForUser (sum across rooms for this user)
+// - Show badge count on the chat icon in header
 // ❗ No other UI/layout/logic changes
 
 import { Ionicons } from "@expo/vector-icons";
@@ -17,6 +14,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -37,22 +35,25 @@ const safeLower = (val) => (typeof val === "string" ? val.toLowerCase() : "");
 
 export default function Consultation() {
   const router = useRouter();
+  const [authUid, setAuthUid] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [consultants, setConsultants] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const subType = useSubscriptionType();
   const [user, setUser] = useState(null);
 
-  // ✅ validation/info message state (kept minimal - alerts + optional banner text)
+  // ✅ validation/info message state
   const [pageError, setPageError] = useState("");
   const [infoMsg, setInfoMsg] = useState("");
 
-  // track first load to avoid repeated popups
+  // ✅ unread badge count (NEW)
+  const [unreadCount, setUnreadCount] = useState(0);
+  const unreadUnsubRef = useRef(null);
+
   const didShowUserWarn = useRef(false);
   const didShowFetchErr = useRef(false);
   const ratingsUnsubRef = useRef(null);
 
-  // avoid repeated "No matches" info spam while typing
   const noMatchToastTimerRef = useRef(null);
   const lastNoMatchKeyRef = useRef("");
 
@@ -92,7 +93,6 @@ export default function Consultation() {
   };
 
   const showNoMatchInfo = (msg, key) => {
-    // prevent repeating the same message while typing
     if (lastNoMatchKeyRef.current === key) return;
     lastNoMatchKeyRef.current = key;
 
@@ -103,14 +103,21 @@ export default function Consultation() {
     }, 1500);
   };
 
+  useEffect(() => {
+    const auth = getAuth();
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setAuthUid(String(u?.uid || "").trim());
+    });
+    return () => unsub();
+  }, []);
+  
+
   /* ================= LOAD USER ================= */
   useEffect(() => {
     const loadUser = async () => {
       try {
         const keys = await AsyncStorage.getAllKeys();
-        const profileKey = keys.find((k) =>
-          k.startsWith("aestheticai:user-profile:")
-        );
+        const profileKey = keys.find((k) => k.startsWith("aestheticai:user-profile:"));
 
         if (!profileKey) {
           setUser(null);
@@ -160,6 +167,51 @@ export default function Consultation() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    // cleanup old listener
+    try {
+      unreadUnsubRef.current && unreadUnsubRef.current();
+    } catch {}
+    unreadUnsubRef.current = null;
+  
+    const uid = safeStr(authUid);
+    if (!uid) {
+      setUnreadCount(0);
+      return;
+    }
+  
+    // chatRooms fields (based on your doc):
+    // - userId
+    // - unreadForUser (boolean)
+    const qRooms = query(collection(db, "chatRooms"), where("userId", "==", uid));
+  
+    unreadUnsubRef.current = onSnapshot(
+      qRooms,
+      (snap) => {
+        let total = 0;
+  
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          // unreadForUser is boolean → count 1 per room if true
+          if (data.unreadForUser === true) total += 1;
+        });
+  
+        setUnreadCount(total);
+      },
+      (err) => {
+        console.log("❌ unread rooms listener error:", err?.message || err);
+        setUnreadCount(0);
+      }
+    );
+  
+    return () => {
+      try {
+        unreadUnsubRef.current && unreadUnsubRef.current();
+      } catch {}
+      unreadUnsubRef.current = null;
+    };
+  }, [authUid]);
+  
   /* ================= LOAD CONSULTANTS + RATINGS ================= */
   useEffect(() => {
     const fetchConsultantsAndRatings = async () => {
@@ -180,12 +232,10 @@ export default function Consultation() {
           reviewCount: 0,
         }));
 
-        // ✅ If no consultants found, show a gentle info message (not an error)
         if (tempConsultants.length === 0) {
           showInfoOnce("No accepted consultants available yet.");
           setConsultants([]);
 
-          // cleanup ratings subscription if any
           try {
             ratingsUnsubRef.current && ratingsUnsubRef.current();
           } catch {}
@@ -193,7 +243,6 @@ export default function Consultation() {
           return;
         }
 
-        // Initial ratings aggregation
         let ratingsByConsultant = {};
         try {
           const ratingsSnap = await getDocs(collection(db, "ratings"));
@@ -218,7 +267,6 @@ export default function Consultation() {
           })
         );
 
-        // ✅ realtime ratings updates (avoid multiple subscriptions)
         if (ratingsUnsubRef.current) {
           try {
             ratingsUnsubRef.current();
@@ -286,7 +334,6 @@ export default function Consultation() {
       })
       .filter((c) => safeLower(c.fullName).includes(safeLower(searchQuery)));
 
-    // ✅ subtle info (no popup spam)
     if (isNonEmpty(searchQuery) && list.length === 0) {
       showNoMatchInfo("No matches found for your search.", `${selectedCategory}|${searchQuery}`);
     }
@@ -296,17 +343,14 @@ export default function Consultation() {
   }, [consultants, selectedCategory, searchQuery]);
 
   const handleSelectCategory = (cat) => {
-    // ✅ safe category selection (defensive)
     const next = categories.includes(cat) ? cat : "All";
     setSelectedCategory(next);
 
-    // ✅ optional info message
     if (next !== "All") showInfoOnce(`Filtered by: ${next}`);
     else showInfoOnce("Showing all categories");
   };
 
   const handleOpenConsultant = (c) => {
-    // ✅ ensure user session exists before navigating
     const uErr = validateUserLoaded(user);
     if (uErr) {
       setPageError("Your session is incomplete. Please sign in again.");
@@ -320,7 +364,6 @@ export default function Consultation() {
       return;
     }
 
-    // ✅ optional success/info message
     showInfoOnce("Opening consultant profile...");
     router.push(`/User/ConsultantProfile?consultantId=${c.id}`);
   };
@@ -335,16 +378,29 @@ export default function Consultation() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="chevron-back" size={28} color="#FFF" />
           </TouchableOpacity>
+
           <View style={styles.headerActions}>
+            {/* ✅ Chat icon with unread badge (CONNECTED to chatRooms unreadForUser sum) */}
             <TouchableOpacity
               onPress={() => router.push("/User/ChatList")}
               style={styles.iconBtn}
+              activeOpacity={0.9}
             >
               <Ionicons name="chatbubbles" size={22} color="#FFF" />
+
+              {unreadCount > 0 && (
+                <View style={styles.badgeWrap} pointerEvents="none">
+                  <Text style={styles.badgeText}>
+                    {unreadCount > 99 ? "99+" : String(unreadCount)}
+                  </Text>
+                </View>
+              )}
             </TouchableOpacity>
+
             <TouchableOpacity
               onPress={() => router.push("/User/Consultations")}
               style={styles.iconBtn}
+              activeOpacity={0.9}
             >
               <Ionicons name="calendar" size={22} color="#FFF" />
             </TouchableOpacity>
@@ -370,7 +426,6 @@ export default function Consultation() {
           />
         </View>
 
-        {/* ✅ inline validation/info messages (minimal UI addition) */}
         {!!pageError ? <Text style={styles.bannerError}>{pageError}</Text> : null}
         {!!infoMsg ? <Text style={styles.bannerInfo}>{infoMsg}</Text> : null}
       </View>
@@ -390,9 +445,7 @@ export default function Consultation() {
                 onPress={() => handleSelectCategory(cat)}
                 style={[styles.categoryChip, active && styles.categoryChipActive]}
               >
-                <Text
-                  style={[styles.categoryText, active && styles.categoryTextActive]}
-                >
+                <Text style={[styles.categoryText, active && styles.categoryTextActive]}>
                   {cat}
                 </Text>
               </TouchableOpacity>
@@ -494,6 +547,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.15)",
     justifyContent: "center",
     alignItems: "center",
+    position: "relative",
   },
   backBtn: { marginLeft: -5 },
   headerTitle: { fontSize: 26, fontWeight: "900", color: "#FFF" },
@@ -518,7 +572,6 @@ const styles = StyleSheet.create({
   },
   searchInput: { flex: 1, marginLeft: 10, fontSize: 15, color: "#1E293B" },
 
-  // ✅ tiny inline banners (validation/info)
   bannerError: {
     marginTop: 10,
     color: "#FEE2E2",
@@ -530,6 +583,27 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.9)",
     fontWeight: "800",
     fontSize: 12,
+  },
+
+  badgeWrap: {
+    position: "absolute",
+    right: -4,
+    top: -4,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 999,
+    backgroundColor: "#EF4444",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: "#01579B",
+  },
+  badgeText: {
+    color: "#FFF",
+    fontSize: 10,
+    fontWeight: "900",
+    lineHeight: 12,
   },
 
   categoryBar: { paddingVertical: 15, backgroundColor: "#F8FAFC" },

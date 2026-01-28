@@ -266,7 +266,6 @@ export default function ConsultantProfile() {
               label="Consultation Fee"
               value={`₱${consultant.rate || "0"}.00`}
             />
-            <InfoRow icon="briefcase-outline" label="Type" value={consultant.consultantType} />
             <InfoRow icon="school-outline" label="Education" value={consultant.education || "Not provided"} />
             <InfoRow icon="people-outline" label="Gender" value={consultant.gender} />
             <InfoRow icon="mail-outline" label="Email" value={consultant.email} />

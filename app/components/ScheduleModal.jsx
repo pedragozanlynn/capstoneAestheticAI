@@ -13,6 +13,11 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
+// ✅ CenterMessageModal
+// NOTE: If your file path is different, adjust this import.
+// If ScheduleModal.jsx is inside `app/User/components/`, this is correct.
+import CenterMessageModal from "./CenterMessageModal";
+
 /* ---------------- CONSTANTS ---------------- */
 const THEME = {
   primary: "#01579B",
@@ -76,18 +81,29 @@ export default function ScheduleModal({
   const [notes, setNotes] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
 
+  // ✅ CenterMessageModal state
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgType, setMsgType] = useState("info"); // "success" | "error" | "info"
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+
+  const showMsg = (type, title, body = "") => {
+    setMsgType(type);
+    setMsgTitle(title);
+    setMsgBody(body);
+    setMsgOpen(true);
+  };
+
   const formatTime = (t) =>
     t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-  const getDayName = (d) =>
-    d.toLocaleDateString("en-US", { weekday: "long" });
+  const getDayName = (d) => d.toLocaleDateString("en-US", { weekday: "long" });
 
   /* ---------------- VALIDATION ---------------- */
   useEffect(() => {
-    // ✅ NEW: If date is today, time must not be earlier than current time
-    // Example: now = 5:50 PM, selected = 4:30 PM => error
     const now = new Date();
     const selectedDateTime = combineDateAndTime(date, startTime);
+
     if (isSameDay(date, now) && selectedDateTime < now) {
       setErrorMsg("Selected time must be later than the current time.");
       return;
@@ -97,6 +113,7 @@ export default function ScheduleModal({
       setErrorMsg("Consultant has no available schedule.");
       return;
     }
+
     const dayName = getDayName(date);
     const match = availability.find((a) =>
       typeof a === "string"
@@ -129,12 +146,19 @@ export default function ScheduleModal({
       const e = toDateTime(pm.end);
       if (s && e && start >= s && start <= e) valid = true;
     }
+
     setErrorMsg(valid ? "" : "Choose a time within consultant availability.");
   }, [date, startTime, availability]);
 
   const handleContinue = () => {
-    if (errorMsg) return;
+    // ✅ Use CenterMessageModal for validation feedback
+    if (errorMsg) {
+      showMsg("error", "Invalid schedule", errorMsg);
+      return;
+    }
+
     const appointmentAt = combineDateAndTime(date, startTime);
+
     onClose();
     router.push(
       `/User/BookConsultation?consultantId=${consultantId}&appointmentAt=${appointmentAt.toISOString()}&notes=${encodeURIComponent(
@@ -144,122 +168,133 @@ export default function ScheduleModal({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade">
-      <View style={styles.overlay}>
-        <View style={styles.modalBox}>
-          {/* DRAG INDICATOR */}
-          <View style={styles.dragIndicator} />
+    <>
+      <Modal visible={visible} transparent animationType="fade">
+        <View style={styles.overlay}>
+          <View style={styles.modalBox}>
+            {/* DRAG INDICATOR */}
+            <View style={styles.dragIndicator} />
 
-          <View style={styles.header}>
-            <Text style={styles.title}>Schedule Consultation</Text>
-            <Text style={styles.subtitle}>Set your preferred date and time</Text>
-          </View>
-
-          {/* DATE PICKER */}
-          <TouchableOpacity
-            style={styles.input}
-            onPress={() => setShowDatePicker(true)}
-          >
-            <View style={styles.iconCircle}>
-              <Ionicons name="calendar" size={18} color={THEME.primary} />
+            <View style={styles.header}>
+              <Text style={styles.title}>Schedule Consultation</Text>
+              <Text style={styles.subtitle}>Set your preferred date and time</Text>
             </View>
-            <View>
-              <Text style={styles.label}>Select Date</Text>
-              <Text style={styles.inputText}>{date.toDateString()}</Text>
-            </View>
-          </TouchableOpacity>
 
-          {showDatePicker && (
-            <DateTimePicker
-              value={date}
-              mode="date"
-              minimumDate={new Date()}
-              onChange={(e, selected) => {
-                setShowDatePicker(false);
-                if (selected) setDate(selected);
-              }}
-            />
-          )}
-
-          {/* TIME PICKER */}
-          <TouchableOpacity
-            style={styles.input}
-            onPress={() => setShowStartPicker(true)}
-          >
-            <View style={styles.iconCircle}>
-              <Ionicons name="time" size={18} color={THEME.primary} />
-            </View>
-            <View>
-              <Text style={styles.label}>Select Time</Text>
-              <Text style={styles.inputText}>{formatTime(startTime)}</Text>
-            </View>
-          </TouchableOpacity>
-
-          {showStartPicker && (
-            <DateTimePicker
-              value={startTime}
-              mode="time"
-              onChange={(e, selected) => {
-                setShowStartPicker(false);
-                if (selected) setStartTime(selected);
-              }}
-            />
-          )}
-
-          {/* NOTES */}
-          <TextInput
-            style={styles.textArea}
-            placeholder="Notes for consultant (optional)..."
-            placeholderTextColor={THEME.textGray}
-            value={notes}
-            onChangeText={setNotes}
-            multiline
-          />
-
-          {/* INFO BOX - NGAYON AY GUMAGAMIT NA NG DYNAMIC RATE */}
-          <View style={styles.feeReminder}>
-            <Ionicons
-              name="information-circle"
-              size={20}
-              color={THEME.primary}
-            />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.feeDesc}>
-                A session fee of{" "}
-                <Text style={styles.bold}>₱{sessionFee}.00</Text> applies.
-              </Text>
-              <Text style={styles.feeDesc}>
-                The chat remains open for <Text style={styles.bold}>12 hours</Text>{" "}
-                after payment.
-              </Text>
-            </View>
-          </View>
-
-          {/* ERROR DISPLAY */}
-          {!!errorMsg && (
-            <View style={styles.errorBox}>
-              <Ionicons name="alert-circle" size={18} color={THEME.error} />
-              <Text style={styles.errorText}>{errorMsg}</Text>
-            </View>
-          )}
-
-          {/* BUTTONS */}
-          <View style={styles.row}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-
+            {/* DATE PICKER */}
             <TouchableOpacity
-              style={[styles.continueBtn, errorMsg && styles.disabledBtn]}
-              disabled={!!errorMsg}
-              onPress={handleContinue}
+              style={styles.input}
+              onPress={() => setShowDatePicker(true)}
             >
-              <Text style={styles.continueText}>Continue</Text>
+              <View style={styles.iconCircle}>
+                <Ionicons name="calendar" size={18} color={THEME.primary} />
+              </View>
+              <View>
+                <Text style={styles.label}>Select Date</Text>
+                <Text style={styles.inputText}>{date.toDateString()}</Text>
+              </View>
             </TouchableOpacity>
+
+            {showDatePicker && (
+              <DateTimePicker
+                value={date}
+                mode="date"
+                minimumDate={new Date()}
+                onChange={(e, selected) => {
+                  setShowDatePicker(false);
+                  if (selected) setDate(selected);
+                }}
+              />
+            )}
+
+            {/* TIME PICKER */}
+            <TouchableOpacity
+              style={styles.input}
+              onPress={() => setShowStartPicker(true)}
+            >
+              <View style={styles.iconCircle}>
+                <Ionicons name="time" size={18} color={THEME.primary} />
+              </View>
+              <View>
+                <Text style={styles.label}>Select Time</Text>
+                <Text style={styles.inputText}>{formatTime(startTime)}</Text>
+              </View>
+            </TouchableOpacity>
+
+            {showStartPicker && (
+              <DateTimePicker
+                value={startTime}
+                mode="time"
+                onChange={(e, selected) => {
+                  setShowStartPicker(false);
+                  if (selected) setStartTime(selected);
+                }}
+              />
+            )}
+
+            {/* NOTES */}
+            <TextInput
+              style={styles.textArea}
+              placeholder="Notes for consultant (optional)..."
+              placeholderTextColor={THEME.textGray}
+              value={notes}
+              onChangeText={setNotes}
+              multiline
+            />
+
+            {/* INFO BOX - DYNAMIC RATE */}
+            <View style={styles.feeReminder}>
+              <Ionicons
+                name="information-circle"
+                size={20}
+                color={THEME.primary}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.feeDesc}>
+                  A session fee of <Text style={styles.bold}>₱{sessionFee}.00</Text>{" "}
+                  applies.
+                </Text>
+                <Text style={styles.feeDesc}>
+                  The chat remains open for <Text style={styles.bold}>12 hours</Text>{" "}
+                  after payment.
+                </Text>
+              </View>
+            </View>
+
+            {/* ERROR DISPLAY (kept) */}
+            {!!errorMsg && (
+              <View style={styles.errorBox}>
+                <Ionicons name="alert-circle" size={18} color={THEME.error} />
+                <Text style={styles.errorText}>{errorMsg}</Text>
+              </View>
+            )}
+
+            {/* BUTTONS */}
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.continueBtn, errorMsg && styles.disabledBtn]}
+                disabled={!!errorMsg}
+                onPress={handleContinue}
+              >
+                <Text style={styles.continueText}>Continue</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      </View>
-    </Modal>
+      </Modal>
+
+      {/* ✅ CenterMessageModal */}
+      <CenterMessageModal
+        visible={msgOpen}
+        type={msgType}
+        title={msgTitle}
+        message={msgBody}
+        onClose={() => setMsgOpen(false)}
+      />
+    </>
   );
 }
 
@@ -356,22 +391,33 @@ const styles = StyleSheet.create({
   },
   errorText: { color: THEME.error, fontWeight: "700", fontSize: 13 },
 
-  row: { flexDirection: "row", justifyContent: "space-between", gap: 12 },
-  cancelBtn: {
-    flex: 1,
-    paddingVertical: 16,
-    borderRadius: 16,
-    backgroundColor: "#F1F5F9",
-    alignItems: "center",
-  },
-  continueBtn: {
-    flex: 2,
-    paddingVertical: 16,
-    borderRadius: 16,
-    backgroundColor: "#2c4f4f",
-    alignItems: "center",
-    elevation: 4,
-  },
+// ✅ BUTTON ROW (pantay)
+row: {
+  flexDirection: "row",
+  justifyContent: "space-between",
+  gap: 12,
+  marginBottom: 30,
+},
+
+// ✅ Cancel = same width as Continue
+cancelBtn: {
+  flex: 1,
+  paddingVertical: 16,
+  borderRadius: 16,
+  backgroundColor: "#F1F5F9",
+  alignItems: "center",
+},
+
+// ✅ Continue = same width as Cancel
+continueBtn: {
+  flex: 1, // ✅ from 2 -> 1 (pantay na)
+  paddingVertical: 16,
+  borderRadius: 16,
+  backgroundColor: "#2c4f4f",
+  alignItems: "center",
+  elevation: 4,
+},
+
   disabledBtn: { backgroundColor: "#94A3B8", elevation: 0 },
 
   cancelText: { fontSize: 15, fontWeight: "700", color: THEME.textGray },

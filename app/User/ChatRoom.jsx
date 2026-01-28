@@ -1,7 +1,9 @@
-// ✅ UPDATED ONLY (validation + validation messages):
-// - Added inline validation state + inline messages under input
-// - Added user-friendly Alert messages for file/camera/context validation
-// - No UI/layout changes aside from small inline text under the input box
+// ✅ UPDATED ONLY (header + footer safe-area / navbar overlap fix):
+// - Header now respects top safe area (Android status bar / iOS notch)
+// - Footer now respects bottom safe area (Android nav bar / iOS home indicator)
+// - Uses react-native-safe-area-context insets
+// - No logic changes, no UI redesign; only spacing/padding to prevent overlap
+// - Keeps existing look/feel; just ensures header/footer are not covered after install
 
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -34,6 +36,8 @@ import {
   View,
 } from "react-native";
 
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { db } from "../../config/firebase";
 import { listenToMessages, markUserChatAsRead } from "../../services/chatService";
 import { pickFile } from "../../services/fileUploadService";
@@ -54,6 +58,8 @@ export default function ChatRoom() {
   const { roomId, userId, consultantId } = useLocalSearchParams();
   const auth = getAuth();
 
+  const insets = useSafeAreaInsets();
+
   const [user, setUser] = useState(null);
   const [consultant, setConsultant] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -65,7 +71,6 @@ export default function ChatRoom() {
   const [showFileTray, setShowFileTray] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
-  // ✅ inline validation message (for text input)
   const [textError, setTextError] = useState("");
 
   const flatListRef = useRef(null);
@@ -88,8 +93,6 @@ export default function ChatRoom() {
     if (s.length < 1) return "Message cannot be empty.";
     if (s.length > 2000) return "Message is too long (max 2000 characters).";
 
-    // Optional: avoid sending only emoji/whitespace edge cases
-    // (kept light; no strict rules beyond trimming)
     return "";
   };
 
@@ -167,7 +170,6 @@ export default function ChatRoom() {
   const handleSend = async () => {
     if (isChatLocked || isSending) return;
 
-    // ✅ context validation + messages
     const ctxErr = validateChatContext();
     if (ctxErr) {
       console.log("⚠️ Validation (chat context):", ctxErr, {
@@ -182,7 +184,6 @@ export default function ChatRoom() {
       return;
     }
 
-    // ✅ text validation + inline message
     const msg = safeStr(text);
     const err = validateTextMessage(msg);
     if (err) {
@@ -221,7 +222,7 @@ export default function ChatRoom() {
 
     try {
       const file = await pickFile(type);
-      if (!file) return; // user cancelled
+      if (!file) return;
 
       const fileErr = validateFile(file);
       if (fileErr) {
@@ -364,11 +365,17 @@ export default function ChatRoom() {
     );
   };
 
+  // ✅ ADD: computed top padding for header (keeps original sizing, prevents notch/status overlap)
+  const headerTopPad = Platform.OS === "android"
+    ? Math.max(insets.top, StatusBar.currentHeight || 0)
+    : insets.top;
+
   return (
     <View style={styles.mainContainer}>
       <StatusBar translucent={false} backgroundColor="#FFFFFF" barStyle="dark-content" />
 
-      <View style={styles.header}>
+      {/* ✅ FIX: header now has guaranteed top clearance */}
+      <View style={[styles.header, { paddingTop: headerTopPad }]}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Ionicons name="chevron-back" size={28} color="#0F3E48" />
         </TouchableOpacity>
@@ -414,7 +421,13 @@ export default function ChatRoom() {
           )}
         </View>
 
-        <View style={styles.footer}>
+        {/* ✅ FIX: footer now has guaranteed bottom clearance */}
+        <View
+          style={[
+            styles.footer,
+            { paddingBottom: Math.max(insets.bottom, Platform.OS === "ios" ? 35 : 15) },
+          ]}
+        >
           <View style={styles.inputWrapper}>
             <TouchableOpacity
               disabled={isChatLocked}
@@ -544,17 +557,22 @@ export default function ChatRoom() {
 
 const styles = StyleSheet.create({
   mainContainer: { flex: 1, backgroundColor: THEME.bg },
+
   header: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 15,
-    height: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 60 : 0,
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 80 : 20,
-    paddingBottom: 20,
+
+    // ✅ DO NOT use StatusBar.currentHeight inside styles (we now apply via insets inline)
+    // ✅ Keep original layout height feel: allow natural height + paddingBottom
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 0) : 20,
+    paddingBottom: 10,
+
     borderBottomWidth: 1,
     borderBottomColor: "#E2E8F0",
     backgroundColor: "#FFF",
   },
+
   backBtn: { padding: 5 },
   avatar: { width: 42, height: 42, borderRadius: 21, marginLeft: 5 },
   headerInfo: { marginLeft: 12 },
@@ -562,8 +580,10 @@ const styles = StyleSheet.create({
   statusRow: { flexDirection: "row", alignItems: "center", marginTop: 2 },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 5 },
   statusText: { fontSize: 12, color: "#64748B" },
+
   chatArea: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingVertical: 20 },
+
   messageWrapper: { marginVertical: 6, flexDirection: "row" },
   myWrapper: { justifyContent: "flex-end" },
   theirWrapper: { justifyContent: "flex-start" },
@@ -588,12 +608,15 @@ const styles = StyleSheet.create({
     borderTopColor: "#E2E8F0",
     paddingHorizontal: 12,
     paddingTop: 10,
+    // ✅ keep original baseline; final bottom padding is applied inline using insets
     paddingBottom: Platform.OS === "ios" ? 35 : 15,
     minHeight: Platform.OS === "ios" ? 100 : 80,
     justifyContent: "center",
   },
+
   inputWrapper: { flexDirection: "row", alignItems: "flex-end" },
   directCameraBtn: { marginLeft: 5 },
+
   textInput: {
     flex: 1,
     marginLeft: 8,

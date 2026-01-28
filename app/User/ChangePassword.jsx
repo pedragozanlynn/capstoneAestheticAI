@@ -8,8 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Modal,
-  Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
@@ -23,6 +21,9 @@ import {
 import Button from "../components/Button";
 import Input from "../components/Input";
 
+// ✅ ADD: use your reusable center modal
+import CenterMessageModal from "../components/CenterMessageModal";
+
 export default function ChangePassword() {
   const router = useRouter();
   const auth = getAuth();
@@ -33,13 +34,7 @@ export default function ChangePassword() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ success modal state
-  const [successVisible, setSuccessVisible] = useState(false);
-  const [successMsg, setSuccessMsg] = useState(
-    "Your password has been updated successfully!"
-  );
-
-  // ✅ validation error state (inline)
+  // ✅ inline validation error state
   const [errors, setErrors] = useState({
     currentPassword: "",
     newPassword: "",
@@ -47,33 +42,51 @@ export default function ChangePassword() {
   });
 
   /* ===========================
-     ✅ TOAST (TOP, NO OK BUTTON)
+     ✅ CENTER MODAL MESSAGE
      =========================== */
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  const [msgModal, setMsgModal] = useState({
+    visible: false,
+    type: "info", // "info" | "success" | "warning" | "error" (depends on your component)
+    title: "Notice",
+    message: "",
+  });
 
-  const showToast = (text, type = "info", ms = 2200) => {
+  const msgTimerRef = useRef(null);
+
+  const openMsg = (message, type = "info", title = "Notice", autoHideMs = 2200) => {
     try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
+
+    setMsgModal({
+      visible: true,
+      type,
+      title,
+      message: String(message || ""),
+    });
+
+    // ✅ auto-hide for non-blocking feel (like your toast)
+    if (autoHideMs && autoHideMs > 0) {
+      msgTimerRef.current = setTimeout(() => {
+        setMsgModal((m) => ({ ...m, visible: false }));
+      }, autoHideMs);
+    }
+  };
+
+  const closeMsg = () => {
+    try {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    } catch {}
+    setMsgModal((m) => ({ ...m, visible: false }));
   };
 
   useEffect(() => {
     return () => {
       try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
       } catch {}
     };
   }, []);
-
-  const hasAnyError = useMemo(
-    () => !!(errors.currentPassword || errors.newPassword || errors.confirmPassword),
-    [errors]
-  );
 
   const clearErrors = () =>
     setErrors({ currentPassword: "", newPassword: "", confirmPassword: "" });
@@ -99,7 +112,6 @@ export default function ChangePassword() {
     } else if (nw === cur) {
       next.newPassword = "New password must be different from current password.";
     } else {
-      // basic strength checks (optional but good UX)
       if (!/[A-Z]/.test(nw)) next.newPassword = "Include at least 1 uppercase letter.";
       else if (!/[a-z]/.test(nw)) next.newPassword = "Include at least 1 lowercase letter.";
       else if (!/[0-9]/.test(nw)) next.newPassword = "Include at least 1 number.";
@@ -113,11 +125,11 @@ export default function ChangePassword() {
 
     const ok = !(next.currentPassword || next.newPassword || next.confirmPassword);
 
-    // ✅ optional: show top toast summary when invalid
+    // ✅ summary message (replaces top toast)
     if (!ok) {
-      if (next.currentPassword) showToast(next.currentPassword, "error");
-      else if (next.newPassword) showToast(next.newPassword, "error");
-      else if (next.confirmPassword) showToast(next.confirmPassword, "error");
+      if (next.currentPassword) openMsg(next.currentPassword, "error", "Error");
+      else if (next.newPassword) openMsg(next.newPassword, "error", "Error");
+      else if (next.confirmPassword) openMsg(next.confirmPassword, "error", "Error");
     }
 
     return ok;
@@ -135,49 +147,42 @@ export default function ChangePassword() {
       setLoading(true);
 
       if (!user?.email) {
-        showToast("No signed-in user found. Please login again.", "error");
+        openMsg("No signed-in user found. Please login again.", "error", "Session Error", 2400);
         return;
       }
 
-      // A. Create credential for re-authentication
       const credential = EmailAuthProvider.credential(user.email, currentPassword);
 
-      // B. Re-authenticate (Required by Firebase for password changes)
       await reauthenticateWithCredential(user, credential);
-
-      // C. Update the password
       await updatePassword(user, newPassword);
 
-      // ✅ show success modal
-      setSuccessMsg("Your password has been updated successfully!");
-      setSuccessVisible(true);
+      // ✅ success via CenterMessageModal (no custom Modal)
+      openMsg("Your password has been updated successfully!", "success", "Success", 1200);
+
+      // ✅ go back after short delay (non-blocking)
+      setTimeout(() => {
+        router.back();
+      }, 900);
     } catch (e) {
       console.log("Change password error:", e?.code, e?.message);
 
-      // ✅ Friendly error handling
       if (e?.code === "auth/wrong-password" || e?.code === "auth/invalid-credential") {
         setFieldError("currentPassword", "The current password is incorrect.");
-        showToast("The current password is incorrect.", "error");
+        openMsg("The current password is incorrect.", "error", "Error");
       } else if (e?.code === "auth/too-many-requests") {
-        showToast("Too many failed attempts. Please try again later.", "error", 2600);
+        openMsg("Too many failed attempts. Please try again later.", "error", "Error", 2600);
       } else if (e?.code === "auth/requires-recent-login") {
-        // This happens if session is old; user must login again
-        showToast("Please login again to update your password.", "error", 2600);
+        openMsg("Please login again to update your password.", "error", "Session Expired", 2600);
         setTimeout(() => router.replace("/Login"), 1200);
       } else if (e?.code === "auth/weak-password") {
         setFieldError("newPassword", "Password is too weak. Try a stronger password.");
-        showToast("Password is too weak. Try a stronger password.", "error");
+        openMsg("Password is too weak. Try a stronger password.", "error", "Error");
       } else {
-        showToast("Failed to change password. Please try again.", "error");
+        openMsg("Failed to change password. Please try again.", "error", "Error");
       }
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleCloseSuccess = () => {
-    setSuccessVisible(false);
-    router.back();
   };
 
   return (
@@ -224,9 +229,7 @@ export default function ChangePassword() {
             }}
             icon={<Ionicons name="lock-closed-outline" size={18} color="#9CA3AF" />}
           />
-          {!!errors.currentPassword && (
-            <Text style={styles.errorText}>{errors.currentPassword}</Text>
-          )}
+          {!!errors.currentPassword && <Text style={styles.errorText}>{errors.currentPassword}</Text>}
 
           <View style={{ height: 15 }} />
 
@@ -239,7 +242,6 @@ export default function ChangePassword() {
               setNewPassword(v);
               if (errors.newPassword) setFieldError("newPassword", "");
 
-              // quick confirm check
               if (confirmPassword && v !== confirmPassword) {
                 setFieldError("confirmPassword", "Passwords do not match.");
               } else if (errors.confirmPassword) {
@@ -275,7 +277,7 @@ export default function ChangePassword() {
         <Button
           title={loading ? "Updating..." : "Update Password"}
           onPress={handleChangePassword}
-          disabled={loading} // ✅ do not block with hasAnyError; validate on press
+          disabled={loading}
           backgroundColor="#0F3E48"
           textColor="#fff"
           icon={
@@ -288,49 +290,14 @@ export default function ChangePassword() {
         />
       </ScrollView>
 
-      {/* ✅ SUCCESS MODAL */}
-      <Modal
-        visible={successVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={handleCloseSuccess}
-      >
-        <Pressable style={styles.modalBackdrop} onPress={handleCloseSuccess}>
-          <Pressable style={styles.modalCard} onPress={() => {}}>
-            <View style={styles.modalHeader}>
-              <View style={styles.modalIconCircle}>
-                <Ionicons name="checkmark" size={24} color="#16A34A" />
-              </View>
-              <Text style={styles.modalTitle}>Success</Text>
-            </View>
-
-            <Text style={styles.modalMsg}>{successMsg}</Text>
-
-            <TouchableOpacity
-              style={styles.modalBtn}
-              onPress={handleCloseSuccess}
-              activeOpacity={0.9}
-            >
-              <Text style={styles.modalBtnText}>OK</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
-      {toast.visible && (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.toast,
-            toast.type === "success" && styles.toastSuccess,
-            toast.type === "error" && styles.toastError,
-            toast.type === "info" && styles.toastInfo,
-          ]}
-        >
-          <Text style={styles.toastText}>{toast.text}</Text>
-        </View>
-      )}
+      {/* ✅ CENTER MESSAGE MODAL */}
+      <CenterMessageModal
+        visible={msgModal.visible}
+        type={msgModal.type}
+        title={msgModal.title}
+        message={msgModal.message}
+        onClose={closeMsg}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -402,73 +369,4 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
   },
-
-  /* ✅ Success modal styles */
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15,23,42,0.45)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 18,
-  },
-  modalCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    backgroundColor: "#fff",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    padding: 16,
-  },
-  modalHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
-  modalIconCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: "rgba(22,163,74,0.12)",
-    borderWidth: 1,
-    borderColor: "rgba(22,163,74,0.25)",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  modalTitle: { fontSize: 16, fontWeight: "900", color: "#0F172A" },
-  modalMsg: {
-    marginTop: 12,
-    color: "#475569",
-    fontWeight: "700",
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  modalBtn: {
-    marginTop: 16,
-    backgroundColor: "#0F3E48",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
-  },
-  modalBtnText: { color: "#fff", fontWeight: "900" },
-
-  /* ✅ TOAST (TOP) */
-  toast: {
-    position: "absolute",
-    left: 16,
-    right: 16,
-    top: Platform.OS === "ios" ? 58 : 18,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.96,
-    elevation: 10,
-    zIndex: 9999,
-  },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });

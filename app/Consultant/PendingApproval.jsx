@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  StatusBar, // ✅ ADDED
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -49,6 +50,7 @@ export default function PendingApproval() {
       await signOut(auth);
     } catch {}
 
+    // ✅ BACK -> index.jsx (root)
     router.replace("/");
   };
 
@@ -57,9 +59,16 @@ export default function PendingApproval() {
       setLoading(true);
 
       try {
-        const uid =
-          (await AsyncStorage.getItem("consultantUid")) ||
-          (await AsyncStorage.getItem("aestheticai:current-user-id"));
+        // ✅ PRIMARY: firebase auth current user
+        let uid = auth.currentUser?.uid || "";
+
+        // ✅ fallback to storage (if you still want)
+        if (!uid) {
+          uid =
+            (await AsyncStorage.getItem("consultantUid")) ||
+            (await AsyncStorage.getItem("aestheticai:current-user-id")) ||
+            "";
+        }
 
         if (!uid) {
           setLoading(false);
@@ -69,6 +78,12 @@ export default function PendingApproval() {
           return;
         }
 
+        // ✅ optional: cache it so future opens are safe
+        try {
+          await AsyncStorage.setItem("consultantUid", uid);
+          await AsyncStorage.setItem("aestheticai:current-user-id", uid);
+        } catch {}
+
         const ref = doc(db, "consultants", uid);
 
         unsubRef.current = onSnapshot(
@@ -76,7 +91,6 @@ export default function PendingApproval() {
           (snap) => {
             setLoading(false);
 
-            // If doc missing, treat as pending (safe default)
             if (!snap.exists()) {
               setStatus("pending");
               return;
@@ -85,10 +99,8 @@ export default function PendingApproval() {
             const data = snap.data();
             const s = safeLower(data?.status);
 
-            // ✅ Accepted: redirect once
             if (s === "accepted") {
               setStatus("accepted");
-
               if (!redirectedRef.current) {
                 redirectedRef.current = true;
                 cleanup();
@@ -170,12 +182,15 @@ export default function PendingApproval() {
         color="#B91C1C"
         style={styles.icon}
       />
-      <Text style={[styles.title, { color: "#B91C1C" }]}>Application Rejected</Text>
+      <Text style={[styles.title, { color: "#B91C1C" }]}>
+        Application Rejected
+      </Text>
       <Text style={styles.message}>
         Your consultant registration was not approved by the admin.
       </Text>
       <Text style={styles.note}>
-        If you believe this is a mistake, please contact the admin for clarification.
+        If you believe this is a mistake, please contact the admin for
+        clarification.
       </Text>
 
       <TouchableOpacity
@@ -198,6 +213,9 @@ export default function PendingApproval() {
 
   return (
     <View style={styles.container}>
+      {/* ✅ ADDED STATUS BAR (no other UI/logic changes) */}
+      <StatusBar barStyle="dark-content" backgroundColor="#faf9f6" />
+
       {loading ? (
         <View style={styles.card}>
           <ActivityIndicator

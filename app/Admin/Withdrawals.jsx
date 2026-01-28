@@ -6,7 +6,7 @@ import {
   serverTimestamp,
   writeBatch,
 } from "firebase/firestore";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -23,6 +23,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 
+// ✅ ADD: Center modal component (same as your other screens)
+import CenterMessageModal from "../components/CenterMessageModal";
+
 export default function Withdrawals() {
   const [loading, setLoading] = useState(true);
   const [payouts, setPayouts] = useState([]);
@@ -31,34 +34,71 @@ export default function Withdrawals() {
   const [selectedPayout, setSelectedPayout] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
+  // ✅ CenterMessageModal state
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info", // success | error | info | warning
+    title: "",
+    message: "",
+  });
+
+  const showCenterModal = (type, title, message) => {
+    setCenterModal({
+      visible: true,
+      type,
+      title: String(title || ""),
+      message: String(message || ""),
+    });
+  };
+
+  const closeCenterModal = () => {
+    setCenterModal((m) => ({ ...m, visible: false }));
+  };
+
+  // ✅ guard: avoid setState when unmounted
+  const mountedRef = useRef(true);
+
   useEffect(() => {
+    mountedRef.current = true;
+
     const unsub = onSnapshot(collection(db, "payouts"), async (snapshot) => {
-      const list = [];
+      try {
+        const list = [];
 
-      for (const docSnap of snapshot.docs) {
-        const data = docSnap.data();
-        let consultantName = "Unknown";
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data();
+          let consultantName = "Unknown";
 
-        if (data.consultantId) {
-          const cRef = await getDoc(doc(db, "consultants", data.consultantId));
-          if (cRef.exists()) consultantName = cRef.data().fullName;
+          if (data.consultantId) {
+            const cRef = await getDoc(doc(db, "consultants", data.consultantId));
+            if (cRef.exists()) consultantName = cRef.data().fullName;
+          }
+
+          list.push({
+            id: docSnap.id,
+            consultantId: data.consultantId,
+            consultantName,
+            amount: data.amount,
+            gcash_number: data.gcash_number,
+            status: data.status || "pending",
+          });
         }
 
-        list.push({
-          id: docSnap.id,
-          consultantId: data.consultantId,
-          consultantName,
-          amount: data.amount,
-          gcash_number: data.gcash_number,
-          status: data.status || "pending",
-        });
+        if (!mountedRef.current) return;
+        setPayouts(list);
+        setLoading(false);
+      } catch (e) {
+        console.log("Withdrawals snapshot error:", e?.message || e);
+        if (!mountedRef.current) return;
+        setLoading(false);
+        showCenterModal("error", "Load Failed", "Unable to load payouts. Please try again.");
       }
-
-      setPayouts(list);
-      setLoading(false);
     });
 
-    return () => unsub();
+    return () => {
+      mountedRef.current = false;
+      unsub();
+    };
   }, []);
 
   const filteredPayouts = useMemo(() => {
@@ -111,9 +151,20 @@ export default function Withdrawals() {
       });
 
       await batch.commit();
+
+      // ✅ show success via CenterMessageModal (no UI redesign)
+      showCenterModal(
+        "success",
+        "Updated",
+        newStatus === "approved"
+          ? "Withdrawal approved successfully."
+          : "Withdrawal declined successfully."
+      );
+
       closeModal();
     } catch (err) {
       console.error("Action error:", err);
+      showCenterModal("error", "Action Failed", "Unable to update payout. Please try again.");
     } finally {
       setActionLoading(false);
     }
@@ -134,13 +185,11 @@ export default function Withdrawals() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
 
-      {/* 🔒 HEADER — UNCHANGED */}
+      {/* 🔒 HEADER — ONLY SMALLER HEIGHT/PADDING */}
       <View style={styles.header}>
         <SafeAreaView>
           <Text style={styles.headerTitle}>Withdrawals</Text>
-          <Text style={styles.headerSubtitle}>
-            Manage consultant payout requests
-          </Text>
+          <Text style={styles.headerSubtitle}>Manage consultant payout requests</Text>
         </SafeAreaView>
       </View>
 
@@ -183,10 +232,7 @@ export default function Withdrawals() {
           renderItem={({ item }) => {
             const statusStyle = getStatusConfig(item.status);
             return (
-              <TouchableOpacity
-                style={styles.card}
-                onPress={() => openPayoutModal(item)}
-              >
+              <TouchableOpacity style={styles.card} onPress={() => openPayoutModal(item)}>
                 <View style={styles.cardTop}>
                   <View style={styles.profileCircle}>
                     <Text style={styles.profileLetter}>
@@ -195,26 +241,12 @@ export default function Withdrawals() {
                   </View>
 
                   <View style={{ flex: 1, marginLeft: 12 }}>
-                    <Text style={styles.consultantName}>
-                      {item.consultantName}
-                    </Text>
-                    <Text style={styles.gcashLabel}>
-                      GCash: {item.gcash_number}
-                    </Text>
+                    <Text style={styles.consultantName}>{item.consultantName}</Text>
+                    <Text style={styles.gcashLabel}>GCash: {item.gcash_number}</Text>
                   </View>
 
-                  <View
-                    style={[
-                      styles.statusChip,
-                      { backgroundColor: statusStyle.bg },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.statusText,
-                        { color: statusStyle.text },
-                      ]}
-                    >
+                  <View style={[styles.statusChip, { backgroundColor: statusStyle.bg }]}>
+                    <Text style={[styles.statusText, { color: statusStyle.text }]}>
                       {item.status}
                     </Text>
                   </View>
@@ -227,11 +259,7 @@ export default function Withdrawals() {
                       ₱{Number(item.amount).toLocaleString()}
                     </Text>
                   </View>
-                  <Ionicons
-                    name={statusStyle.icon}
-                    size={24}
-                    color={statusStyle.text}
-                  />
+                  <Ionicons name={statusStyle.icon} size={24} color={statusStyle.text} />
                 </View>
               </TouchableOpacity>
             );
@@ -244,23 +272,19 @@ export default function Withdrawals() {
         visible={modalVisible}
         transparent
         animationType="slide"
-        onRequestClose={closeModal} // ✅ Android back button support
+        onRequestClose={closeModal}
       >
         <View style={styles.modalOverlay}>
-          {/* ✅ Tap outside to close (optional common behavior) */}
           <Pressable style={styles.backdrop} onPress={closeModal} />
 
           <SafeAreaView edges={["bottom"]} style={styles.modalSafe}>
-            {/* stop propagation so tap inside doesn't close */}
             <Pressable style={styles.modalBox} onPress={() => {}}>
               <View style={styles.modalHandle} />
               <Text style={styles.modalTitle}>Payout Action</Text>
 
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Recipient</Text>
-                <Text style={styles.infoValue}>
-                  {selectedPayout?.consultantName}
-                </Text>
+                <Text style={styles.infoValue}>{selectedPayout?.consultantName}</Text>
               </View>
 
               <View style={styles.infoRow}>
@@ -270,7 +294,6 @@ export default function Withdrawals() {
                 </Text>
               </View>
 
-              {/* ✅ SAME SIZE BUTTONS */}
               <View style={styles.modalButtons}>
                 <TouchableOpacity
                   style={[
@@ -299,13 +322,26 @@ export default function Withdrawals() {
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity style={styles.closeBtn} onPress={closeModal} disabled={actionLoading}>
+              <TouchableOpacity
+                style={styles.closeBtn}
+                onPress={closeModal}
+                disabled={actionLoading}
+              >
                 <Text style={styles.closeBtnText}>Close</Text>
               </TouchableOpacity>
             </Pressable>
           </SafeAreaView>
         </View>
       </Modal>
+
+      {/* ✅ CENTER MESSAGE MODAL */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeCenterModal}
+      />
 
       <BottomNavbar role="admin" />
     </View>
@@ -317,21 +353,21 @@ const styles = StyleSheet.create({
   centerLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
   loadingText: { marginTop: 10, color: "#64748B" },
 
-  /* 🔒 HEADER STYLES — UNCHANGED */
+  /* ✅ HEADER: reduced paddingBottom only */
   header: {
     backgroundColor: "#01579B",
-    paddingTop: 50,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingTop: 34,
+    paddingHorizontal: 16,
   },
-  headerTitle: { fontSize: 26, fontWeight: "800", color: "#FFF" },
+  headerTitle: { fontSize: 25, fontWeight: "800", color: "#FFF",  },
   headerSubtitle: {
-    fontSize: 14,
+    fontSize: 12,
     color: "rgba(255,255,255,0.7)",
     marginTop: 4,
+    marginBottom: -15,
   },
 
-  filterWrapper: { paddingHorizontal: 20, marginVertical: 10 },
+  filterWrapper: { paddingHorizontal: 16, marginVertical: 10 },
   filterContainer: {
     flexDirection: "row",
     backgroundColor: "#E2E8F0",
@@ -384,7 +420,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.45)",
     justifyContent: "flex-end",
   },
-  backdrop: { ...StyleSheet.absoluteFillObject }, // full-screen clickable area
+  backdrop: { ...StyleSheet.absoluteFillObject },
   modalSafe: { width: "100%" },
 
   modalBox: {

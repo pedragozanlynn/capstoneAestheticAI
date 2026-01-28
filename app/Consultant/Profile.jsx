@@ -2,7 +2,9 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+
 import {
   ActivityIndicator,
   Image,
@@ -36,6 +38,35 @@ export default function ConsultantProfile() {
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [loggingOut, setLoggingOut] = useState(false);
 
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+  
+      const check = async () => {
+        try {
+          const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
+          const role = await AsyncStorage.getItem("aestheticai:current-user-role");
+  
+          // ✅ if not logged in or not consultant, kick to consultant login
+          if (active && (!uid || role !== "consultant")) {
+            router.replace({ pathname: "/Login", params: { role: "consultant" } });
+          }
+        } catch {
+          // ✅ if storage fails, treat as not logged in
+          if (active) {
+            router.replace({ pathname: "/Login", params: { role: "consultant" } });
+          }
+        }
+      };
+  
+      check();
+  
+      return () => {
+        active = false;
+      };
+    }, [router])
+  );
   // ✅ Center message modal
   const [msgVisible, setMsgVisible] = useState(false);
   const [msgType, setMsgType] = useState("info");
@@ -158,9 +189,23 @@ export default function ConsultantProfile() {
       showMessage("success", "Logged out", "You have been signed out.", 900);
 
       setTimeout(() => {
-        try { router.dismissAll(); } catch {}
+        // ✅ Reset history stack so BACK won't return
+        try {
+          if (typeof router.dismissAll === "function") router.dismissAll();
+        } catch {}
+      
+        // ✅ Force to consultant login route
         router.replace({ pathname: "/Login", params: { role: "consultant" } });
+      
+        // ✅ Extra: second replace (Android sometimes keeps one screen in stack)
+        setTimeout(() => {
+          try {
+            if (typeof router.dismissAll === "function") router.dismissAll();
+          } catch {}
+          router.replace({ pathname: "/Login", params: { role: "consultant" } });
+        }, 50);
       }, 250);
+      
       
     } catch (err) {
       console.log("Logout error:", err?.message || err);

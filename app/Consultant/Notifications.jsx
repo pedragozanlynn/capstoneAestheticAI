@@ -10,6 +10,7 @@ import {
   Pressable,
   RefreshControl,
   SafeAreaView,
+  StatusBar, // ✅ added
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -55,6 +56,15 @@ const payoutIcon = (statusOrTitle = "", type = "") => {
     return "time";
   }
 
+  // ✅ appointment cancelled
+  if (
+    t === "appointment_cancelled" ||
+    s.includes("appointment cancelled") ||
+    s.includes("cancelled appointment")
+  ) {
+    return "close-circle";
+  }
+
   return "notifications";
 };
 
@@ -66,6 +76,15 @@ const payoutColor = (statusOrTitle = "", type = "") => {
     if (s.includes("approved") || s.includes("accept")) return THEME.success;
     if (s.includes("declined") || s.includes("rejected") || s.includes("cancel")) return THEME.danger;
     return THEME.warn;
+  }
+
+  // ✅ appointment cancelled
+  if (
+    t === "appointment_cancelled" ||
+    s.includes("appointment cancelled") ||
+    s.includes("cancelled appointment")
+  ) {
+    return THEME.danger;
   }
 
   return THEME.primary;
@@ -106,26 +125,55 @@ const normalizeNotif = (d = {}) => {
     ...d,
     createdAt: createdAt || new Date(),
     read: d?.read === true,
+
+    // existing defaults
     title: d?.title || "Notification",
     message: d?.message || "",
     type: d?.type || "notifications",
     payoutId: d?.payoutId || "",
     amount: d?.amount ?? null,
-    status: d?.status || "", // optional if you store it
+    status: d?.status || "",
+
+    // support fields from "cancel appointment" notification payload
+    body: d?.body || "",
+    senderId: d?.senderId || "",
+    senderRole: d?.senderRole || "",
+    recipientId: d?.recipientId || "",
+    recipientRole: d?.recipientRole || "",
+    appointmentId: d?.appointmentId || "",
+    senderName: d?.senderName || d?.fromName || "",
   };
 };
 
-const buildStatusLine = (type = "", title = "", message = "") => {
+const buildStatusLine = (type = "", title = "", message = "", body = "") => {
   const t = String(type || "").toLowerCase();
   const ti = String(title || "").toLowerCase();
   const m = String(message || "").toLowerCase();
+  const b = String(body || "").toLowerCase();
+
+  // appointment cancelled
+  if (
+    t === "appointment_cancelled" ||
+    ti.includes("appointment cancelled") ||
+    m.includes("appointment cancelled") ||
+    b.includes("cancelled")
+  ) {
+    return "Appointment cancelled";
+  }
 
   if (t === "payout_status" || ti.includes("withdrawal") || m.includes("withdrawal")) {
     if (ti.includes("approved") || m.includes("approved")) return "Withdrawal approved";
-    if (ti.includes("declined") || m.includes("declined") || ti.includes("rejected") || m.includes("rejected"))
+    if (
+      ti.includes("declined") ||
+      m.includes("declined") ||
+      ti.includes("rejected") ||
+      m.includes("rejected")
+    ) {
       return "Withdrawal declined";
+    }
     return "Withdrawal update";
   }
+
   return "Admin update";
 };
 
@@ -139,6 +187,9 @@ export default function ConsultantNotifications() {
 
   const [openItem, setOpenItem] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
+
+  // cache user names for senderId -> display name
+  const [userNameMap, setUserNameMap] = useState({});
 
   const uid = auth.currentUser?.uid;
 
@@ -167,6 +218,74 @@ export default function ConsultantNotifications() {
     await updateDoc(doc(db, "notifications", notifId), { read: true });
   };
 
+  // resolve sender (user) name from users collection (best-effort)
+  const fetchUserNameById = async (userId) => {
+    try {
+      const id = String(userId || "").trim();
+      if (!id) return "User";
+      if (userNameMap[id]) return userNameMap[id];
+
+      const snap = await new Promise((resolve) => {
+        const unsub = onSnapshot(
+          doc(db, "users", id),
+          (d) => {
+            resolve(d);
+            try {
+              unsub && unsub();
+            } catch {}
+          },
+          () => {
+            resolve(null);
+            try {
+              unsub && unsub();
+            } catch {}
+          }
+        );
+      });
+
+      if (!snap || !snap.exists?.()) return "User";
+
+      const data = snap.data() || {};
+      const name =
+        data.fullName ||
+        data.name ||
+        data.displayName ||
+        data.username ||
+        [data.firstName, data.lastName].filter(Boolean).join(" ") ||
+        "User";
+
+      setUserNameMap((prev) => ({ ...prev, [id]: String(name || "User") }));
+      return String(name || "User");
+    } catch (e) {
+      console.log("❌ fetchUserNameById error:", e?.message || e);
+      return "User";
+    }
+  };
+
+  // prefetch sender names for appointment_cancelled notifications
+  const hydrateSenderNames = async (list) => {
+    try {
+      const ids = Array.from(
+        new Set(
+          (list || [])
+            .filter((n) => String(n?.type || "").toLowerCase() === "appointment_cancelled")
+            .map((n) =>
+              String(n?.senderName || n?.fromName || "").trim()
+                ? ""
+                : String(n?.senderId || "").trim()
+            )
+            .filter(Boolean)
+        )
+      );
+
+      if (ids.length === 0) return;
+
+      await Promise.all(ids.map((id) => fetchUserNameById(id)));
+    } catch (e) {
+      console.log("❌ hydrateSenderNames error:", e?.message || e);
+    }
+  };
+
   useEffect(() => {
     if (!uid) {
       setLoading(false);
@@ -177,6 +296,8 @@ export default function ConsultantNotifications() {
       setNotificationsRaw(list || []);
       setLoading(false);
       setRefreshing(false);
+
+      hydrateSenderNames(list || []);
     });
 
     return () => {
@@ -184,6 +305,7 @@ export default function ConsultantNotifications() {
         unsub && unsub();
       } catch {}
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uid]);
 
   const notifications = useMemo(() => notificationsRaw || [], [notificationsRaw]);
@@ -210,6 +332,17 @@ export default function ConsultantNotifications() {
       }
     }
 
+    // if opened notif is appointment_cancelled, ensure sender name is loaded
+    const t = String(item?.type || "").toLowerCase();
+    if (t === "appointment_cancelled") {
+      const senderId = String(item?.senderId || "").trim();
+      if (senderId && !item?.senderName && !userNameMap[senderId]) {
+        try {
+          await fetchUserNameById(senderId);
+        } catch {}
+      }
+    }
+
     setOpenItem(item);
     setModalVisible(true);
   };
@@ -230,8 +363,25 @@ export default function ConsultantNotifications() {
   };
 
   const buildRowText = (item) => {
+    const t = String(item?.type || "").toLowerCase();
+
+    // show who cancelled for appointment_cancelled
+    if (t === "appointment_cancelled") {
+      const senderId = String(item?.senderId || "").trim();
+      const nameFromDoc = String(item?.senderName || "").trim();
+      const cachedName = senderId ? userNameMap[senderId] : "";
+      const who = nameFromDoc || cachedName || "A user";
+
+      const line1 = who;
+      const line2 = buildStatusLine(item?.type, item?.title, item?.message, item?.body);
+      const msg = String(item?.body || item?.message || "").trim();
+      const line3 = msg ? `— ${msg}` : "";
+      return { line1, line2, line3 };
+    }
+
+    // existing behavior
     const line1 = "AestheticAI Admin";
-    const line2 = buildStatusLine(item?.type, item?.title, item?.message);
+    const line2 = buildStatusLine(item?.type, item?.title, item?.message, item?.body);
     const msg = String(item?.message || "").trim();
     const line3 = msg ? `— ${msg}` : "";
     return { line1, line2, line3 };
@@ -240,9 +390,9 @@ export default function ConsultantNotifications() {
   const renderNotifItem = ({ item }) => {
     const isUnread = item?.read !== true;
 
-    // use title/message to decide icon + color
-    const icon = payoutIcon(item?.title || item?.message, item?.type);
-    const iconClr = payoutColor(item?.title || item?.message, item?.type);
+    const hint = item?.title || item?.message || item?.body || "";
+    const icon = payoutIcon(hint, item?.type);
+    const iconClr = payoutColor(hint, item?.type);
 
     const { line1, line2, line3 } = buildRowText(item);
 
@@ -321,6 +471,8 @@ export default function ConsultantNotifications() {
   if (!uid) {
     return (
       <SafeAreaView style={styles.safe}>
+        {/* ✅ STATUS BAR */}
+        <StatusBar barStyle="dark-content" backgroundColor={THEME.bg} />
         <View style={styles.container}>
           <View style={styles.topbar}>
             <Text style={styles.topTitle}>Notifications</Text>
@@ -337,6 +489,8 @@ export default function ConsultantNotifications() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      {/* ✅ STATUS BAR */}
+      <StatusBar barStyle="dark-content" backgroundColor={THEME.bg} />
       <View style={styles.container}>
         {/* TOP BAR */}
         <View style={styles.topbar}>
@@ -383,13 +537,16 @@ export default function ConsultantNotifications() {
                   <View
                     style={[
                       styles.modalIconCircle,
-                      { backgroundColor: payoutColor(openItem?.title || openItem?.message, openItem?.type) + "18" },
+                      {
+                        backgroundColor:
+                          payoutColor(openItem?.title || openItem?.message || openItem?.body, openItem?.type) + "18",
+                      },
                     ]}
                   >
                     <Ionicons
-                      name={payoutIcon(openItem?.title || openItem?.message, openItem?.type)}
+                      name={payoutIcon(openItem?.title || openItem?.message || openItem?.body, openItem?.type)}
                       size={22}
-                      color={payoutColor(openItem?.title || openItem?.message, openItem?.type)}
+                      color={payoutColor(openItem?.title || openItem?.message || openItem?.body, openItem?.type)}
                     />
                   </View>
 
@@ -417,22 +574,18 @@ export default function ConsultantNotifications() {
                 </TouchableOpacity>
               </View>
 
-              {!!openItem?.message && (
-                <Text style={styles.modalMsg}>{openItem.message}</Text>
+              {!!String(openItem?.message || openItem?.body || "").trim() && (
+                <Text style={styles.modalMsg}>{String(openItem?.message || openItem?.body || "").trim()}</Text>
               )}
 
               <View style={styles.modalMeta}>
-                {/* ✅ amount */}
                 {openItem?.amount != null && (
                   <View style={styles.modalMetaRow}>
                     <Ionicons name="cash" size={14} color={THEME.textGray} />
-                    <Text style={styles.modalMetaText}>
-                      ₱{Number(openItem.amount).toLocaleString()}
-                    </Text>
+                    <Text style={styles.modalMetaText}>₱{Number(openItem.amount).toLocaleString()}</Text>
                   </View>
                 )}
 
-                {/* ✅ payout id */}
                 {!!openItem?.payoutId && (
                   <View style={styles.modalMetaRow}>
                     <Ionicons name="document-text" size={14} color={THEME.textGray} />
@@ -440,7 +593,13 @@ export default function ConsultantNotifications() {
                   </View>
                 )}
 
-                {/* ✅ createdAt */}
+                {!!openItem?.appointmentId && (
+                  <View style={styles.modalMetaRow}>
+                    <Ionicons name="calendar" size={14} color={THEME.textGray} />
+                    <Text style={styles.modalMetaText}>Appointment ID: {openItem.appointmentId}</Text>
+                  </View>
+                )}
+
                 {!!openItem?.createdAt && (
                   <View style={styles.modalMetaRow}>
                     <Ionicons name="time" size={14} color={THEME.textGray} />
