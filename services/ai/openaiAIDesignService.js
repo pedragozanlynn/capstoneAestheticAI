@@ -1,8 +1,10 @@
 // services/openaiAIDesignService.js
-// OpenAI Responses API: JSON report + OpenAI image_generation tool
+// OpenAI Responses API: JSON report + image_generation tool
 // IMPORTANT: client keys are NOT secure for production.
 
 const OPENAI_BASE = "https://api.openai.com/v1";
+const DEFAULT_TEXT_MODEL = "gpt-4o-mini"; // ✅ safest default for most keys
+const DEFAULT_TIMEOUT_MS = 90_000; // ✅ mobile networks may be slow
 
 // ------------------------------
 // Extractors (OpenAI Responses API)
@@ -60,8 +62,6 @@ export const normalizeBackendImageToUri = (imageData) => {
 
   if (typeof imageData === "string") {
     const s = imageData.trim();
-
-    // ✅ block common bad values
     if (!s || s === "null" || s === "undefined") return null;
 
     // raw base64 (no prefix)
@@ -91,6 +91,58 @@ export const mergeBackendPayload = (result) => {
 };
 
 // ------------------------------
+// Helpers: timeout + error parsing
+// ------------------------------
+const fetchWithTimeout = async (url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+};
+
+const readErrorMessage = async (res) => {
+  const status = res?.status;
+  let errJson = null;
+  let errText = "";
+
+  try {
+    errJson = await res.json();
+  } catch {
+    try {
+      errText = await res.text();
+    } catch {
+      errText = "";
+    }
+  }
+
+  const msg =
+    errJson?.error?.message ||
+    errJson?.message ||
+    errText ||
+    `HTTP ${status}`;
+
+  return { status, msg, raw: errJson || errText };
+};
+
+const mapBlockedReason = (status, msg) => {
+  const lower = String(msg || "").toLowerCase();
+  if (status === 401 || lower.includes("invalid_api_key")) return "INVALID_KEY";
+  if (status === 403 || lower.includes("insufficient") || lower.includes("billing"))
+    return "BILLING_OR_PERMISSIONS";
+  if (status === 404 || lower.includes("model") && lower.includes("not"))
+    return "MODEL_NOT_FOUND";
+  if (status === 429 || lower.includes("rate limit")) return "RATE_LIMIT";
+  if (lower.includes("must be verified") || lower.includes("verify organization"))
+    return "ORG_NOT_VERIFIED";
+  if (lower.includes("timeout") || lower.includes("aborted")) return "TIMEOUT";
+  return "OPENAI_ERROR";
+};
+
+// ------------------------------
 // OpenAI report call (json_schema)
 // ------------------------------
 export const callOpenAIReport = async ({
@@ -102,6 +154,8 @@ export const callOpenAIReport = async ({
   previousResponseId,
 }) => {
   if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const finalTextModel = String(textModel || "").trim() || DEFAULT_TEXT_MODEL;
 
   const headers = {
     Authorization: `Bearer ${apiKey}`,
@@ -190,7 +244,7 @@ export const callOpenAIReport = async ({
   }
 
   const body = {
-    model: textModel,
+    model: finalTextModel,
     input: [{ role: "user", content }],
     text: {
       format: {
@@ -204,16 +258,28 @@ export const callOpenAIReport = async ({
 
   if (previousResponseId) body.previous_response_id = String(previousResponseId);
 
-  const res = await fetch(`${OPENAI_BASE}/responses`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(`${OPENAI_BASE}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    const msg = String(e?.message || e || "Network error");
+    console.log("❌ OpenAI report fetch failed:", msg);
+    const reason = mapBlockedReason(0, msg);
+    // throw a readable error
+    throw new Error(`OpenAI report failed: ${msg} (${reason})`);
+  }
 
   if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    console.log("❌ OpenAI report error body:", t);
-    throw new Error("OpenAI report error");
+    const { status, msg, raw } = await readErrorMessage(res);
+    console.log("❌ OpenAI report error:", status, raw);
+    const reason = mapBlockedReason(status, msg);
+    const err = new Error(`OpenAI report failed (${status}): ${msg}`);
+    err.blockedReason = reason;
+    throw err;
   }
 
   const json = await res.json();
@@ -247,13 +313,11 @@ export const callOpenAIReport = async ({
 };
 
 // ------------------------------
-// OpenAI image generation/edit call (FIXED FOR RESPONSES API)
-// Key fix: DO NOT set model to gpt-image-* here.
-// Use a mainline text/tool model (hostModel) + image_generation tool.
+// OpenAI image generation/edit call (Responses API tool)
 // ------------------------------
 export const callOpenAIImage = async ({
   apiKey,
-  hostModel, // ✅ mainline model (e.g., "gpt-4.1-mini", "gpt-4o", "gpt-5-mini", etc.)
+  hostModel,
   message,
   mode,
   imageUrl,
@@ -269,10 +333,8 @@ export const callOpenAIImage = async ({
   const MODE = { DESIGN: "design", CUSTOMIZE: "customize" };
   const isCustomizeWithRef = mode === MODE.CUSTOMIZE && !!imageUrl;
 
-  // ✅ Default to a safe tool-capable model if caller forgot
-  const finalHostModel = String(hostModel || "").trim() || "gpt-4.1-mini";
+  const finalHostModel = String(hostModel || "").trim() || DEFAULT_TEXT_MODEL;
 
-  // ✅ Use tool action explicitly
   const toolConfig = {
     type: "image_generation",
     action: isCustomizeWithRef ? "edit" : "generate",
@@ -320,7 +382,7 @@ export const callOpenAIImage = async ({
   }
 
   const body = {
-    model: finalHostModel, // ✅ IMPORTANT: mainline model, NOT gpt-image-*
+    model: finalHostModel,
     input,
     tools: [toolConfig],
     tool_choice: { type: "image_generation" },
@@ -328,34 +390,23 @@ export const callOpenAIImage = async ({
 
   if (previousResponseId) body.previous_response_id = String(previousResponseId);
 
-  const res = await fetch(`${OPENAI_BASE}/responses`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetchWithTimeout(`${OPENAI_BASE}/responses`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    const msg = String(e?.message || e || "Network error");
+    console.log("❌ OpenAI image fetch failed:", msg);
+    return { base64: null, responseId: null, blockedReason: mapBlockedReason(0, msg) };
+  }
 
   if (!res.ok) {
-    let errJson = null;
-    let errText = "";
-    try {
-      errJson = await res.json();
-    } catch {
-      errText = await res.text().catch(() => "");
-    }
-
-    const msg =
-      errJson?.error?.message || errJson?.message || errText || `HTTP ${res.status}`;
-    console.log("❌ OpenAI image error body:", errJson || errText);
-
-    const lower = String(msg).toLowerCase();
-    if (lower.includes("must be verified") || lower.includes("verify organization")) {
-      return { base64: null, responseId: null, blockedReason: "ORG_NOT_VERIFIED" };
-    }
-    if (res.status === 429 || lower.includes("rate limit")) {
-      return { base64: null, responseId: null, blockedReason: "RATE_LIMIT" };
-    }
-
-    return { base64: null, responseId: null, blockedReason: "IMAGE_ERROR" };
+    const { status, msg, raw } = await readErrorMessage(res);
+    console.log("❌ OpenAI image error:", status, raw);
+    return { base64: null, responseId: null, blockedReason: mapBlockedReason(status, msg) };
   }
 
   const json = await res.json();
@@ -375,7 +426,7 @@ export const callPollinationsImage = async ({ prompt }) => {
 };
 
 // ------------------------------
-// Gemini image generation (fail fast for Imagen names)
+// Gemini image generation (disabled / fail fast)
 // ------------------------------
 export const callGeminiImage = async ({
   apiKey,
@@ -385,13 +436,9 @@ export const callGeminiImage = async ({
   if (!apiKey) throw new Error("Missing EXPO_PUBLIC_GEMINI_API_KEY");
 
   const modelLower = String(imageModel || "").toLowerCase();
-
   if (modelLower.includes("imagen")) {
-    throw new Error(
-      `IMAGEN_NOT_SUPPORTED_ON_GENERATIVELANGUAGE: ${String(imageModel)}`
-    );
+    throw new Error(`IMAGEN_NOT_SUPPORTED_ON_GENERATIVELANGUAGE: ${String(imageModel)}`);
   }
-
   throw new Error("GEMINI_IMAGE_MODEL_NOT_CONFIGURED");
 };
 
@@ -408,19 +455,39 @@ export const callAIDesignAPI = async ({
   image,
   sessionId,
   isPro,
-  imageModel, // kept for backward compatibility (no longer used for OpenAI Responses tool)
+  imageModel, // kept for backward compatibility
   useOpenAIForCustomize = true,
 }) => {
   const refUrl = image ? String(image) : null;
 
-  const report = await callOpenAIReport({
-    apiKey,
-    textModel,
-    message,
-    proFlag: isPro,
-    imageUrl: refUrl,
-    previousResponseId: sessionId || null,
-  });
+  let report;
+  try {
+    report = await callOpenAIReport({
+      apiKey,
+      textModel,
+      message,
+      proFlag: isPro,
+      imageUrl: refUrl,
+      previousResponseId: sessionId || null,
+    });
+  } catch (e) {
+    // ✅ surface a structured failure to UI
+    const msg = String(e?.message || e || "OpenAI report failed");
+    console.log("❌ callAIDesignAPI report failed:", msg);
+    return {
+      data: {
+        explanation: msg,
+        tips: [],
+        palette: null,
+        layoutSuggestions: [],
+        furnitureMatches: [],
+        imagePrompt: String(message || "").trim(),
+      },
+      image: null,
+      sessionId: sessionId || null,
+      blockedReason: e?.blockedReason || "REPORT_FAILED",
+    };
+  }
 
   const imagePrompt =
     String(report?.parsed?.imagePrompt || "").trim() || String(message || "").trim();
@@ -434,7 +501,7 @@ export const callAIDesignAPI = async ({
   if (wantsTrueEdit) {
     const img = await callOpenAIImage({
       apiKey,
-      hostModel: textModel || "gpt-4.1-mini", // ✅ mainline model used to run the tool
+      hostModel: String(textModel || "").trim() || DEFAULT_TEXT_MODEL,
       message,
       mode,
       imageUrl: refUrl,

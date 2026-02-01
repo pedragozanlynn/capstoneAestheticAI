@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -118,8 +118,12 @@ const DECORS = [
 
 /* =====================
    COMPONENT
+   ✅ mode: "design" | "customize"
 ===================== */
-export default function PromptFilters({ onSubmit }) {
+export default function PromptFilters({
+  onSubmit,
+  mode = "design", // ✅ IMPORTANT: set to "customize" when you are editing an existing room
+}) {
   const [open, setOpen] = useState(false);
   const [room, setRoom] = useState("Living Room");
   const [style, setStyle] = useState("Modern");
@@ -129,22 +133,40 @@ export default function PromptFilters({ onSubmit }) {
   const [decor, setDecor] = useState(["Plants"]);
   const [notes, setNotes] = useState("");
 
+  const isCustomize = String(mode).toLowerCase() === "customize";
+
+  const headerLine = useMemo(() => {
+    if (isCustomize) {
+      // ✅ This prevents “generate new design”
+      return "CUSTOMIZE MODE. EDIT THE EXISTING ROOM DESIGN. DO NOT GENERATE A NEW ROOM.";
+    }
+    return "NEW DESIGN. DESIGN MODE. GENERATE A NEW ROOM DESIGN.";
+  }, [isCustomize]);
+
   const toggleDecor = (d) => {
-    setDecor((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
+    setDecor((prev) =>
+      prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]
+    );
   };
 
-  // ✅ UPDATED: returns a BULLETED / LINE-BY-LINE prompt for clean message bubble display
+  // ✅ UPDATED: line-by-line prompt; switches behavior by mode
   const buildPrompt = () => {
-    return [
-      "NEW DESIGN. DESIGN MODE. GENERATE A NEW ROOM DESIGN.",
-      `Design a ${style} ${room}.`,
+    const lines = [
+      headerLine,
+      isCustomize
+        ? `Update the existing room into a ${style} ${room} concept. Keep the same room identity and improve it.`
+        : `Design a ${style} ${room}.`,
       `Mood: ${mood}`,
       `Color scheme: ${color}`,
       `Lighting: ${lighting}`,
       `Decorations: ${decor.length ? decor.join(", ") : "None"}`,
       notes ? `Notes: ${notes}` : null,
-      "Provide a cohesive concept with layout ideas and decor tips.",
-    ]
+      isCustomize
+        ? "Return improvements and changes clearly. If an image is provided, edit that exact image/room."
+        : "Provide a cohesive concept with layout ideas and decor tips.",
+    ];
+
+    return lines
       .filter(Boolean)
       .map((line, i) => (i === 0 ? line : `• ${line}`))
       .join("\n");
@@ -153,7 +175,11 @@ export default function PromptFilters({ onSubmit }) {
   const submit = () => {
     const prompt = buildPrompt();
     setOpen(false);
-    onSubmit?.(prompt);
+
+    // ✅ Backward compatible:
+    // - If your handler expects only string -> it still works
+    // - If your handler supports meta -> you can use mode info
+    onSubmit?.(prompt, { mode: isCustomize ? "customize" : "design" });
   };
 
   return (
@@ -168,14 +194,21 @@ export default function PromptFilters({ onSubmit }) {
           <View style={styles.iconCircle}>
             <MaterialCommunityIcons name="auto-fix" size={16} color="#0EA5E9" />
           </View>
-          <View>
-            <Text style={styles.headerTitle}>Design Assistant</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerTitle}>
+              {isCustomize ? "Customize Assistant" : "Design Assistant"}
+            </Text>
             <Text style={styles.headerMeta} numberOfLines={1}>
-              {room} • {style}
+              {room} • {style} • {isCustomize ? "Customize" : "New Design"}
             </Text>
           </View>
         </View>
-        <Feather name={open ? "chevron-up" : "sliders"} size={18} color="#64748B" />
+
+        <Feather
+          name={open ? "chevron-up" : "sliders"}
+          size={18}
+          color="#64748B"
+        />
       </TouchableOpacity>
 
       {/* PANEL */}
@@ -188,14 +221,43 @@ export default function PromptFilters({ onSubmit }) {
             nestedScrollEnabled
             keyboardShouldPersistTaps="handled"
           >
-            <Select label="Room Type" value={room} options={ROOM_TYPES} onChange={setRoom} icon="home-outline" />
-            <Select label="Style" value={style} options={STYLES} onChange={setStyle} icon="palette-outline" />
+            <Select
+              label="Room Type"
+              value={room}
+              options={ROOM_TYPES}
+              onChange={setRoom}
+              icon="home-outline"
+            />
+            <Select
+              label="Style"
+              value={style}
+              options={STYLES}
+              onChange={setStyle}
+              icon="palette-outline"
+            />
 
-            {/* ✅ Removed Budget, so Mood is full width */}
-            <Select label="Mood" value={mood} options={MOODS} onChange={setMood} icon="emoticon-outline" />
+            <Select
+              label="Mood"
+              value={mood}
+              options={MOODS}
+              onChange={setMood}
+              icon="emoticon-outline"
+            />
 
-            <Select label="Color Scheme" value={color} options={COLORS} onChange={setColor} icon="invert-colors" />
-            <Select label="Lighting" value={lighting} options={LIGHTING} onChange={setLighting} icon="lightbulb-outline" />
+            <Select
+              label="Color Scheme"
+              value={color}
+              options={COLORS}
+              onChange={setColor}
+              icon="invert-colors"
+            />
+            <Select
+              label="Lighting"
+              value={lighting}
+              options={LIGHTING}
+              onChange={setLighting}
+              icon="lightbulb-outline"
+            />
 
             <Text style={styles.label}>Decor Elements</Text>
             <View style={styles.multiWrap}>
@@ -208,7 +270,11 @@ export default function PromptFilters({ onSubmit }) {
                     style={[styles.multiItem, active && styles.multiItemActive]}
                     activeOpacity={0.8}
                   >
-                    <Text style={[styles.multiText, active && styles.multiTextActive]}>{d}</Text>
+                    <Text
+                      style={[styles.multiText, active && styles.multiTextActive]}
+                    >
+                      {d}
+                    </Text>
                   </TouchableOpacity>
                 );
               })}
@@ -218,15 +284,30 @@ export default function PromptFilters({ onSubmit }) {
             <TextInput
               value={notes}
               onChangeText={setNotes}
-              placeholder="e.g. Include a reading nook..."
+              placeholder={
+                isCustomize
+                  ? "e.g. Keep layout but change colors to warmer..."
+                  : "e.g. Include a reading nook..."
+              }
               placeholderTextColor="#94A3B8"
               style={styles.textInput}
               multiline
             />
 
-            <TouchableOpacity style={styles.submitBtn} onPress={submit} activeOpacity={0.8}>
-              <Text style={styles.submitText}>Generate Design</Text>
-              <Feather name="arrow-right" size={16} color="#FFF" style={{ marginLeft: 8 }} />
+            <TouchableOpacity
+              style={styles.submitBtn}
+              onPress={submit}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.submitText}>
+                {isCustomize ? "Apply Customization" : "Generate Design"}
+              </Text>
+              <Feather
+                name="arrow-right"
+                size={16}
+                color="#FFF"
+                style={{ marginLeft: 8 }}
+              />
             </TouchableOpacity>
 
             <View style={{ height: 10 }} />
@@ -252,10 +333,21 @@ function Select({ label, value, options, onChange, icon }) {
         activeOpacity={0.8}
       >
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-          {icon && <MaterialCommunityIcons name={icon} size={14} color="#64748B" style={{ marginRight: 6 }} />}
+          {icon && (
+            <MaterialCommunityIcons
+              name={icon}
+              size={14}
+              color="#64748B"
+              style={{ marginRight: 6 }}
+            />
+          )}
           <Text style={styles.selectText}>{value}</Text>
         </View>
-        <Feather name={open ? "chevron-up" : "chevron-down"} size={14} color="#94A3B8" />
+        <Feather
+          name={open ? "chevron-up" : "chevron-down"}
+          size={14}
+          color="#94A3B8"
+        />
       </TouchableOpacity>
 
       {open && (
@@ -269,7 +361,11 @@ function Select({ label, value, options, onChange, icon }) {
                 setOpen(false);
               }}
             >
-              <Text style={[styles.dropdownText, value === o && styles.dropdownTextActive]}>{o}</Text>
+              <Text
+                style={[styles.dropdownText, value === o && styles.dropdownTextActive]}
+              >
+                {o}
+              </Text>
               {value === o && <Feather name="check" size={14} color="#0EA5E9" />}
             </TouchableOpacity>
           ))}
@@ -293,7 +389,12 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: "#FFFFFF",
     ...Platform.select({
-      ios: { shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.05,
+        shadowRadius: 10,
+      },
       android: { elevation: 3 },
     }),
   },
@@ -318,7 +419,12 @@ const styles = StyleSheet.create({
     borderTopColor: "#F1F5F9",
     maxHeight: 400,
     ...Platform.select({
-      ios: { shadowColor: "#000", shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.05, shadowRadius: 15 },
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.05,
+        shadowRadius: 15,
+      },
       android: { elevation: 4 },
     }),
   },

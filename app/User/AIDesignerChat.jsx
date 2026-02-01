@@ -34,6 +34,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Keyboard,
 } from "react-native";
 
 // ✅ IMPORT PROMPT FILTERS (UI component)
@@ -276,6 +277,26 @@ export default function AIDesignerChat() {
   
 
   const [isTyping, setIsTyping] = useState(false);
+
+  // ✅ DITO ilagay
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) => {
+      const h = e?.endCoordinates?.height || 0;
+      setKeyboardHeight(h);
+    });
+
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardHeight(0);
+    });
+
+    return () => {
+      showSub?.remove?.();
+      hideSub?.remove?.();
+    };
+  }, []);
+
   const [uploadedImage, setUploadedImage] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const [uploadedImageBase64, setUploadedImageBase64] = useState(null);
@@ -1090,19 +1111,19 @@ const validatePromptUI = (raw, { strict = true } = {}) => {
     return trimmed + " " + sug + " ";
   };
 
-  // ✅ PromptFilters submit handler (NEW)
-  const handlePromptFiltersSubmit = (promptText) => {
+  const handlePromptFiltersSubmit = (promptText, meta) => {
     const p = String(promptText || "").trim();
     if (!p) return;
-
-    // show in input momentarily (optional, but helpful)
+  
     setInput(p);
-
-    // send immediately (forces DESIGN because prompt contains "NEW DESIGN..." line)
-    sendMessage(p);
+  
+    // ✅ FORCE DESIGN kapag galing sa PromptFilters
+    const forced = String(meta?.mode || "").toLowerCase() === "design";
+    sendMessage(p, { forceMode: forced ? MODE.DESIGN : null });
   };
-
-  const sendMessage = async (text = input) => {
+  
+  
+  const sendMessage = async (text = input, opts = {}) => {
     const v = validatePromptUI(text, { strict: true });
     const clean = v.cleaned;
 
@@ -1187,16 +1208,25 @@ const validatePromptUI = (raw, { strict = true } = {}) => {
       if (explicitDesign) desiredMode = MODE.DESIGN;
       if (explicitCustomize) desiredMode = MODE.CUSTOMIZE;
 
+      // ✅ FORCE MODE override (PromptFilters)
+if (opts?.forceMode === MODE.DESIGN) {
+  desiredMode = MODE.DESIGN;
+}
+
+
       // ✅ Tab customize: default CUSTOMIZE unless explicitly design/customize
       if (tab === "customize") {
         if (!explicitDesign && !explicitCustomize) desiredMode = MODE.CUSTOMIZE;
       }
 
-      // ✅ Force CUSTOMIZE if ANY reference exists (unless explicit design)
       const hasAnyRef = !!uploadedImage || !!getBestReferenceForCustomize();
-      if (hasAnyRef && desiredMode !== MODE.CUSTOMIZE && !explicitDesign) {
+      const forcedDesign = opts?.forceMode === MODE.DESIGN;
+      
+      // ✅ only auto-force customize when NOT forcedDesign
+      if (!forcedDesign && hasAnyRef && desiredMode !== MODE.CUSTOMIZE && !explicitDesign) {
         desiredMode = MODE.CUSTOMIZE;
       }
+      
 
       // ✅ If user starts a NEW DESIGN, clear refs + attachments (fresh design)
       if (desiredMode === MODE.DESIGN) {
@@ -1796,12 +1826,12 @@ const validatePromptUI = (raw, { strict = true } = {}) => {
 
         {/* ✅ NEW: PromptFilters UI at the top of chat (design builder) */}
         {!isLocked && (
-          <PromptFilters
-            onSubmit={(builtPrompt) => {
-              // ✅ This should always trigger DESIGN
-              handlePromptFiltersSubmit(builtPrompt);
-            }}
-          />
+      <PromptFilters
+      mode="design"
+      onSubmit={(builtPrompt, meta) => handlePromptFiltersSubmit(builtPrompt, meta)}
+    />
+    
+      
         )}
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -1814,7 +1844,8 @@ const validatePromptUI = (raw, { strict = true } = {}) => {
           />
 
 {isTyping && (
-  <View style={styles.typingWrap}>
+  <View style={[styles.typingWrap, { bottom: (keyboardHeight || 0) + 190 }]}>
+
     <View style={styles.typingBubble}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <View style={styles.typingDot} />
@@ -1834,7 +1865,15 @@ const validatePromptUI = (raw, { strict = true } = {}) => {
 
 
           {/* ✅ FOOTER DOCK (permanent bottom) */}
-          <View style={[styles.footerDock, { paddingBottom: Platform.OS === "android" ? 40 : 13 }]}>
+          <View
+  style={[
+    styles.footerDock,
+    {
+      bottom: keyboardHeight, // ✅ aakyat pag may keyboard
+      paddingBottom: Platform.OS === "android" ? 40 : 13,
+    },
+  ]}
+>
           {/* ✅ Upgrade banner when locked */}
             {isLocked && (
               <TouchableOpacity
