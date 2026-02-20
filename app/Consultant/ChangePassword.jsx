@@ -8,8 +8,6 @@ import {
   StatusBar,
   KeyboardAvoidingView,
   Platform,
-  Modal,
-  Pressable,
   Keyboard,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -23,15 +21,10 @@ import {
   signOut,
 } from "firebase/auth";
 import { SafeAreaView } from "react-native-safe-area-context";
+
 import Button from "../components/Button";
 import Input from "../components/Input";
-
-/* ---------------- TOP MESSAGE MODAL (APP-READY) ---------------- */
-const MSG_COLORS = {
-  info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
-  success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
-  error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
-};
+import CenterMessageModal from "../components/CenterMessageModal";
 
 const safeStr = (v) => (v == null ? "" : String(v));
 const trimStr = (v) => safeStr(v).trim();
@@ -46,24 +39,33 @@ export default function ConsultantChangePassword() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ App-ready message modal
-  const [msgVisible, setMsgVisible] = useState(false);
-  const [msgType, setMsgType] = useState("info");
-  const [msgTitle, setMsgTitle] = useState("");
-  const [msgBody, setMsgBody] = useState("");
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info",
+    title: "",
+    message: "",
+    nextRoute: null,
+  });
+
   const msgTimerRef = useRef(null);
 
   const showMessage = (type = "info", title = "", body = "", autoHideMs = 1700) => {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgType(type);
-    setMsgTitle(String(title || ""));
-    setMsgBody(String(body || ""));
-    setMsgVisible(true);
+
+    setCenterModal({
+      visible: true,
+      type,
+      title: String(title || ""),
+      message: String(body || ""),
+      nextRoute: null,
+    });
 
     if (autoHideMs && autoHideMs > 0) {
-      msgTimerRef.current = setTimeout(() => setMsgVisible(false), autoHideMs);
+      msgTimerRef.current = setTimeout(() => {
+        setCenterModal((m) => ({ ...m, visible: false }));
+      }, autoHideMs);
     }
   };
 
@@ -71,7 +73,7 @@ export default function ConsultantChangePassword() {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgVisible(false);
+    setCenterModal((m) => ({ ...m, visible: false }));
   };
 
   useEffect(() => {
@@ -87,12 +89,25 @@ export default function ConsultantChangePassword() {
     const next = trimStr(newPassword);
     const conf = trimStr(confirmPassword);
 
-    if (!user?.email) return { ok: false, title: "Not signed in", body: "Please login again to continue." };
-    if (!cur || !next || !conf) return { ok: false, title: "Validation", body: "Please fill in all fields." };
-
-    if (next.length < 6) return { ok: false, title: "Weak password", body: "Password must be at least 6 characters." };
-    if (next !== conf) return { ok: false, title: "Mismatch", body: "New passwords do not match." };
-    if (cur === next) return { ok: false, title: "Invalid", body: "New password must be different from current password." };
+    if (!user?.email) {
+      return { ok: false, title: "Not signed in", body: "Please login again to continue." };
+    }
+    if (!cur || !next || !conf) {
+      return { ok: false, title: "Validation", body: "Please fill in all fields." };
+    }
+    if (next.length < 6) {
+      return { ok: false, title: "Weak password", body: "Password must be at least 6 characters." };
+    }
+    if (next !== conf) {
+      return { ok: false, title: "Mismatch", body: "New passwords do not match." };
+    }
+    if (cur === next) {
+      return {
+        ok: false,
+        title: "Invalid",
+        body: "New password must be different from current password.",
+      };
+    }
 
     return { ok: true };
   };
@@ -111,20 +126,16 @@ export default function ConsultantChangePassword() {
     try {
       setLoading(true);
 
-      // ✅ re-auth for security
       const credential = EmailAuthProvider.credential(user.email, trimStr(currentPassword));
       await reauthenticateWithCredential(user, credential);
 
-      // ✅ update password
       await updatePassword(user, trimStr(newPassword));
 
-      // ✅ logout everywhere
       await signOut(auth);
       await AsyncStorage.multiRemove(["aestheticai:current-user-id", "aestheticai:current-user-role"]);
 
       showMessage("success", "Password updated", "Please login again using your new password.", 1200);
 
-      // ✅ App-safe navigation: replace Login and block going back to secured screens
       setTimeout(() => {
         router.replace({ pathname: "/Login", params: { role: "consultant" } });
       }, 450);
@@ -136,7 +147,12 @@ export default function ConsultantChangePassword() {
       } else if (error?.code === "auth/too-many-requests") {
         showMessage("error", "Too many attempts", "Please try again later.", 1900);
       } else if (error?.code === "auth/requires-recent-login") {
-        showMessage("error", "Session expired", "Please login again and try updating your password.", 1900);
+        showMessage(
+          "error",
+          "Session expired",
+          "Please login again and try updating your password.",
+          1900
+        );
         setTimeout(() => router.replace({ pathname: "/Login", params: { role: "consultant" } }), 600);
       } else {
         showMessage("error", "Update failed", "Failed to update password. Please try again.", 1900);
@@ -148,11 +164,9 @@ export default function ConsultantChangePassword() {
 
   return (
     <View style={styles.container}>
-      {/* ✅ App-stable StatusBar */}
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
 
-      {/* ✅ SafeArea header so it won’t jump after install */}
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={["top"]}>
         <View style={styles.headerRow}>
           <TouchableOpacity
             style={styles.backButton}
@@ -183,6 +197,10 @@ export default function ConsultantChangePassword() {
         </View>
 
         <View style={styles.card}>
+        
+
+          <View style={styles.cardDivider} />
+
           <Input
             label="Current Password"
             placeholder="Enter current password"
@@ -217,9 +235,8 @@ export default function ConsultantChangePassword() {
 
           <Text style={styles.hintText}>Minimum of 6 characters. Use a strong password.</Text>
         </View>
-
-        <View style={styles.buttonContainer}>
-          <Button
+         {/* ✅ Button moved UP INSIDE the card */}
+         <Button
             title={loading ? "Processing..." : "Update Password"}
             onPress={handleChangePassword}
             disabled={loading}
@@ -227,40 +244,17 @@ export default function ConsultantChangePassword() {
             textColor="#fff"
             style={styles.submitBtn}
           />
-        </View>
+
       </KeyboardAvoidingView>
 
-      {/* ✅ TOP MESSAGE MODAL (instead of Alert) */}
-      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
-        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
-          <Pressable
-            style={[
-              styles.msgCard,
-              {
-                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
-                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.msgRow}>
-              <Ionicons
-                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
-                size={22}
-                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
-              />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
-                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
-              <Ionicons name="close" size={18} color="#475569" />
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+       
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeMessage}
+      />
     </View>
   );
 }
@@ -321,6 +315,10 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
   },
+
+  submitBtn: { borderRadius: 16, height: 56 },
+
+  cardDivider: { height: 1, backgroundColor: "#F1F5F9", marginVertical: 14 },
   inputDivider: { height: 1, backgroundColor: "#F1F5F9", marginVertical: 10 },
 
   hintText: {
@@ -329,42 +327,5 @@ const styles = StyleSheet.create({
     color: "#94A3B8",
     fontWeight: "700",
     textAlign: "center",
-  },
-
-  buttonContainer: { marginTop: "auto", paddingBottom: 20 },
-  submitBtn: { borderRadius: 16, height: 56 },
-
-  /* TOP MESSAGE MODAL (APP-READY) */
-  msgBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15,23,42,0.28)",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: Platform.OS === "ios" ? 90 : 70,
-    paddingHorizontal: 18,
-  },
-  msgCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    position: "relative",
-  },
-  msgRow: { flexDirection: "row", alignItems: "flex-start" },
-  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
-  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
-  msgClose: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
   },
 });

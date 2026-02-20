@@ -1,85 +1,132 @@
-import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
-import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
-import React, { useEffect, useRef, useState, useCallback } from "react";
-import { useFocusEffect } from "@react-navigation/native";
-
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
   Modal,
+  Pressable,
+  SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  StatusBar,
-  SafeAreaView,
-  Pressable,
-  Platform,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { doc, getDoc, serverTimestamp, updateDoc } from "firebase/firestore";
 
 import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 import Button from "../components/Button";
 
-/* ---------------- CENTER MESSAGE MODAL ---------------- */
+/* =========================
+   CONSTANTS
+========================= */
+const ROUTES = {
+  login: "/Login",
+  editProfile: "/Consultant/EditProfile",
+  availability: "/Consultant/EditAvailability",
+  security: "/Consultant/ChangePassword",
+};
+
+const STORAGE_KEYS = {
+  uid: "aestheticai:current-user-id",
+  role: "aestheticai:current-user-role",
+  profile: "aestheticai:consultant-profile",
+};
+
+const ROLE = "consultant";
+const APP_VERSION = "AestheticAI Consultant v1.0.2";
+
+const AVATAR = require("../../assets/office-woman.png");
+
 const MSG_COLORS = {
   info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
   success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
   error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
 };
 
+/* =========================
+   SMALL UI COMPONENTS
+========================= */
+function ProfileOption({ icon, title, subtitle, onPress, color }) {
+  return (
+    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
+      <View style={[styles.iconWrap, { backgroundColor: `${color}15` }]}>
+        <Ionicons name={icon} size={24} color={color} />
+      </View>
+
+      <View style={styles.cardContent}>
+        <Text style={styles.cardTitle}>{title}</Text>
+        <Text style={styles.cardSubtitle}>{subtitle}</Text>
+      </View>
+
+      <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
+    </TouchableOpacity>
+  );
+}
+
+function CenterMessageModal({ visible, type, title, body, onClose }) {
+  const cfg = MSG_COLORS[type] || MSG_COLORS.info;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.msgBackdrop} onPress={onClose}>
+        <Pressable
+          style={[styles.msgCard, { backgroundColor: cfg.bg, borderColor: cfg.border }]}
+          onPress={() => {}}
+        >
+          <View style={styles.msgRow}>
+            <Ionicons name={cfg.icon} size={22} color={cfg.iconColor} />
+            <View style={{ flex: 1, marginLeft: 10 }}>
+              {!!title && <Text style={styles.msgTitle}>{title}</Text>}
+              {!!body && <Text style={styles.msgBody}>{body}</Text>}
+            </View>
+          </View>
+
+          <TouchableOpacity style={styles.msgClose} onPress={onClose} activeOpacity={0.85}>
+            <Ionicons name="close" size={18} color="#475569" />
+          </TouchableOpacity>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+/* =========================
+   SCREEN
+========================= */
 export default function ConsultantProfile() {
   const router = useRouter();
+
   const [consultantName, setConsultantName] = useState("Consultant");
-  const [logoutVisible, setLogoutVisible] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(true);
+
+  const [logoutVisible, setLogoutVisible] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
 
+  // ✅ prevents auth-guard from redirecting while we are actively logging out
+  const isLoggingOutRef = useRef(false);
 
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-  
-      const check = async () => {
-        try {
-          const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
-          const role = await AsyncStorage.getItem("aestheticai:current-user-role");
-  
-          // ✅ if not logged in or not consultant, kick to consultant login
-          if (active && (!uid || role !== "consultant")) {
-            router.replace({ pathname: "/Login", params: { role: "consultant" } });
-          }
-        } catch {
-          // ✅ if storage fails, treat as not logged in
-          if (active) {
-            router.replace({ pathname: "/Login", params: { role: "consultant" } });
-          }
-        }
-      };
-  
-      check();
-  
-      return () => {
-        active = false;
-      };
-    }, [router])
-  );
-  // ✅ Center message modal
+  // Center message modal state
   const [msgVisible, setMsgVisible] = useState(false);
   const [msgType, setMsgType] = useState("info");
   const [msgTitle, setMsgTitle] = useState("");
   const [msgBody, setMsgBody] = useState("");
   const msgTimerRef = useRef(null);
 
-  const avatarSource = require("../../assets/office-woman.png");
-
-  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1600) => {
+  const clearMsgTimer = () => {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
+    msgTimerRef.current = null;
+  };
+
+  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1600) => {
+    clearMsgTimer();
     setMsgType(type);
     setMsgTitle(String(title || ""));
     setMsgBody(String(body || ""));
@@ -91,12 +138,61 @@ export default function ConsultantProfile() {
   };
 
   const closeMessage = () => {
-    try {
-      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-    } catch {}
+    clearMsgTimer();
     setMsgVisible(false);
   };
 
+  const goToLoginHard = useCallback(() => {
+    // ✅ expo-router safe reset (no POP_TO_TOP)
+    try {
+      router.dismissAll?.();
+    } catch {}
+
+    router.replace({ pathname: ROUTES.login, params: { role: ROLE } });
+
+    // ✅ Android safety
+    setTimeout(() => {
+      try {
+        router.dismissAll?.();
+      } catch {}
+      router.replace({ pathname: ROUTES.login, params: { role: ROLE } });
+    }, 50);
+  }, [router]);
+
+  /* =========================
+     AUTH GUARD (ON FOCUS)
+  ========================= */
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      const checkAuth = async () => {
+        // ✅ during logout, don't fight navigation
+        if (isLoggingOutRef.current) return;
+
+        try {
+          const uid = await AsyncStorage.getItem(STORAGE_KEYS.uid);
+          const role = await AsyncStorage.getItem(STORAGE_KEYS.role);
+
+          if (active && (!uid || role !== ROLE)) {
+            router.replace({ pathname: ROUTES.login, params: { role: ROLE } });
+          }
+        } catch {
+          if (active) router.replace({ pathname: ROUTES.login, params: { role: ROLE } });
+        }
+      };
+
+      checkAuth();
+
+      return () => {
+        active = false;
+      };
+    }, [router])
+  );
+
+  /* =========================
+     LOAD PROFILE (ON MOUNT)
+  ========================= */
   useEffect(() => {
     let mounted = true;
 
@@ -104,9 +200,8 @@ export default function ConsultantProfile() {
       setLoadingProfile(true);
 
       try {
-        const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
+        const uid = await AsyncStorage.getItem(STORAGE_KEYS.uid);
 
-        // ✅ Validation: must be logged in
         if (!uid) {
           if (!mounted) return;
           setLoadingProfile(false);
@@ -126,9 +221,7 @@ export default function ConsultantProfile() {
         if (!mounted) return;
 
         setConsultantName(data.fullName || "Consultant");
-
-        // cache
-        await AsyncStorage.setItem("aestheticai:consultant-profile", JSON.stringify(data));
+        await AsyncStorage.setItem(STORAGE_KEYS.profile, JSON.stringify(data));
 
         setLoadingProfile(false);
       } catch (err) {
@@ -143,103 +236,58 @@ export default function ConsultantProfile() {
 
     return () => {
       mounted = false;
-      try {
-        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-      } catch {}
+      clearMsgTimer();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* =========================
+     LOGOUT (FIXED)
+  ========================= */
   const confirmLogout = async () => {
     if (loggingOut) return;
-
     setLoggingOut(true);
+    isLoggingOutRef.current = true;
 
     try {
-      const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
+      const uid = await AsyncStorage.getItem(STORAGE_KEYS.uid);
 
-      // ✅ Guard
-      if (!uid) {
-        showMessage("error", "Not signed in", "Session not found. Returning to login.", 1600);
-        setLogoutVisible(false);
-        setLoggingOut(false);
-        try { router.dismissAll(); } catch {}
-        router.replace({ pathname: "/Login", params: { role: "consultant" } });
-                return;
-      }
-
-      // best-effort: mark offline
-      try {
-        await updateDoc(doc(db, "consultants", uid), {
+      // best-effort mark offline
+      if (uid) {
+        updateDoc(doc(db, "consultants", uid), {
           isOnline: false,
           lastSeen: serverTimestamp(),
-        });
-      } catch (e) {
-        // do not block logout; show info only
-        console.log("Set offline failed:", e?.message || e);
+        }).catch(() => {});
       }
 
-      await AsyncStorage.multiRemove([
-        "aestheticai:current-user-id",
-        "aestheticai:current-user-role",
-        "aestheticai:consultant-profile",
-      ]);
+      await AsyncStorage.multiRemove([STORAGE_KEYS.uid, STORAGE_KEYS.role, STORAGE_KEYS.profile]);
 
       setLogoutVisible(false);
       showMessage("success", "Logged out", "You have been signed out.", 900);
 
-      setTimeout(() => {
-        // ✅ Reset history stack so BACK won't return
-        try {
-          if (typeof router.dismissAll === "function") router.dismissAll();
-        } catch {}
-      
-        // ✅ Force to consultant login route
-        router.replace({ pathname: "/Login", params: { role: "consultant" } });
-      
-        // ✅ Extra: second replace (Android sometimes keeps one screen in stack)
-        setTimeout(() => {
-          try {
-            if (typeof router.dismissAll === "function") router.dismissAll();
-          } catch {}
-          router.replace({ pathname: "/Login", params: { role: "consultant" } });
-        }, 50);
-      }, 250);
-      
-      
+      setTimeout(goToLoginHard, 250);
     } catch (err) {
       console.log("Logout error:", err?.message || err);
       showMessage("error", "Logout failed", "Unable to logout. Please try again.", 1800);
+
+      // if logout failed, allow guard again
+      isLoggingOutRef.current = false;
     } finally {
       setLoggingOut(false);
     }
   };
 
-  const ProfileOption = ({ icon, title, subtitle, onPress, color }) => (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
-      <View style={[styles.iconWrap, { backgroundColor: `${color}15` }]}>
-        <Ionicons name={icon} size={24} color={color} />
-      </View>
-      <View style={styles.cardContent}>
-        <Text style={styles.cardTitle}>{title}</Text>
-        <Text style={styles.cardSubtitle}>{subtitle}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color="#CBD5E1" />
-    </TouchableOpacity>
-  );
-
   return (
     <View style={styles.page}>
-      {/* ✅ App-ready status bar */}
       <StatusBar barStyle="light-content" backgroundColor="#01579B" translucent={false} />
 
-      {/* ===== HEADER (lowered, app-ready) ===== */}
+      {/* ===== HEADER ===== */}
       <View style={styles.headerArea}>
         <SafeAreaView>
           <View style={styles.headerContent}>
             <View style={styles.profileRow}>
               <View style={styles.avatarContainer}>
-                <Image source={avatarSource} style={styles.avatarImage} />
+                <Image source={AVATAR} style={styles.avatarImage} />
                 <View style={styles.onlineBadge} />
               </View>
 
@@ -261,14 +309,13 @@ export default function ConsultantProfile() {
                 )}
               </View>
 
-              {loadingProfile ? (
-                <ActivityIndicator color="#fff" style={{ marginLeft: 10 }} />
-              ) : null}
+              {loadingProfile ? <ActivityIndicator color="#fff" style={{ marginLeft: 10 }} /> : null}
             </View>
           </View>
         </SafeAreaView>
       </View>
 
+      {/* ===== BODY ===== */}
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         <Text style={styles.sectionLabel}>Account Settings</Text>
 
@@ -277,7 +324,7 @@ export default function ConsultantProfile() {
           title="Edit Profile"
           subtitle="Update your professional details"
           color="#0288D1"
-          onPress={() => router.push("/Consultant/EditProfile")}
+          onPress={() => router.push(ROUTES.editProfile)}
         />
 
         <ProfileOption
@@ -285,7 +332,7 @@ export default function ConsultantProfile() {
           title="Manage Availability"
           subtitle="View and update your schedule"
           color="#00897B"
-          onPress={() => router.push("/Consultant/EditAvailability")}
+          onPress={() => router.push(ROUTES.availability)}
         />
 
         <ProfileOption
@@ -293,37 +340,37 @@ export default function ConsultantProfile() {
           title="Security"
           subtitle="Change password and secure account"
           color="#7E57C2"
-          onPress={() => router.push("/Consultant/ChangePassword")}
+          onPress={() => router.push(ROUTES.security)}
         />
 
-        {/* LOGOUT */}
         <View style={{ marginTop: 10 }}>
           <Button
             icon={<Ionicons name="log-out-outline" size={28} color="#fff" />}
             title="Logout"
             subtitle="Sign out of your consultant account"
-            onPress={() => {
-              // ✅ Validation: block logout if profile not loaded but allow if user wants
-              setLogoutVisible(true);
-            }}
+            onPress={() => setLogoutVisible(true)}
             backgroundColor="#C44569"
             textColor="#fff"
           />
         </View>
 
-        <Text style={styles.versionText}>AestheticAI Consultant v1.0.2</Text>
+        <Text style={styles.versionText}>{APP_VERSION}</Text>
       </ScrollView>
 
-      <BottomNavbar role="consultant" />
+      <BottomNavbar role={ROLE} />
 
       {/* ===== LOGOUT MODAL ===== */}
-      <Modal transparent animationType="fade" visible={logoutVisible} onRequestClose={() => !loggingOut && setLogoutVisible(false)}>
+      <Modal
+        transparent
+        animationType="fade"
+        visible={logoutVisible}
+        onRequestClose={() => !loggingOut && setLogoutVisible(false)}
+      >
         <Pressable style={styles.modalOverlay} onPress={() => !loggingOut && setLogoutVisible(false)}>
           <Pressable style={styles.modalBox} onPress={() => {}}>
             <Text style={styles.modalTitle}>Logout</Text>
             <Text style={styles.modalText}>Do you want to logout?</Text>
 
-            {/* ✅ same-size buttons */}
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.modalBtn, styles.cancelBtn, loggingOut && { opacity: 0.6 }]}
@@ -340,11 +387,7 @@ export default function ConsultantProfile() {
                 disabled={loggingOut}
                 activeOpacity={0.85}
               >
-                {loggingOut ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.logoutBtnText}>Logout</Text>
-                )}
+                {loggingOut ? <ActivityIndicator color="#fff" /> : <Text style={styles.logoutBtnText}>Logout</Text>}
               </TouchableOpacity>
             </View>
           </Pressable>
@@ -352,50 +395,23 @@ export default function ConsultantProfile() {
       </Modal>
 
       {/* ===== CENTER MESSAGE MODAL ===== */}
-      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
-        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
-          <Pressable
-            style={[
-              styles.msgCard,
-              {
-                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
-                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.msgRow}>
-              <Ionicons
-                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
-                size={22}
-                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
-              />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
-                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
-              <Ionicons name="close" size={18} color="#475569" />
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      <CenterMessageModal visible={msgVisible} type={msgType} title={msgTitle} body={msgBody} onClose={closeMessage} />
     </View>
   );
 }
 
+/* =========================
+   STYLES
+========================= */
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
 
-  /* ✅ lowered header spacing */
   headerArea: {
     backgroundColor: "#01579B",
-    paddingTop: 58,   // ✅ binaba
+    paddingTop: 58,
     paddingBottom: 12,
   },
-  headerContent: { paddingHorizontal: 20, paddingTop: 6 }, // ✅ binaba
+  headerContent: { paddingHorizontal: 20, paddingTop: 6 },
   profileRow: { flexDirection: "row", alignItems: "center" },
 
   avatarContainer: { position: "relative" },
@@ -417,6 +433,7 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: "#01579B",
   },
+
   profileInfo: { marginLeft: 16, flex: 1 },
   headerName: { fontSize: 20, fontWeight: "900", color: "#FFF" },
 
@@ -435,7 +452,6 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
 
-  // Skeleton lines for loading (app-ready feel)
   skelLineLg: { width: 180, height: 14, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.22)" },
   skelLineSm: { width: 130, height: 10, borderRadius: 8, backgroundColor: "rgba(255,255,255,0.18)" },
 
@@ -479,7 +495,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  /* MODAL */
   modalOverlay: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.45)",
@@ -500,7 +515,7 @@ const styles = StyleSheet.create({
   modalActions: { flexDirection: "row", gap: 12 },
   modalBtn: {
     flex: 1,
-    height: 44,               // ✅ same size
+    height: 44,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
@@ -511,7 +526,6 @@ const styles = StyleSheet.create({
   logoutBtn: { backgroundColor: "#C44569" },
   logoutBtnText: { color: "#fff", fontWeight: "900" },
 
-  /* CENTER MESSAGE MODAL */
   msgBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15,23,42,0.28)",

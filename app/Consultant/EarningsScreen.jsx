@@ -30,12 +30,8 @@ import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 import { Ionicons } from "@expo/vector-icons";
 
-/* ---------------- UI MESSAGE MODAL ---------------- */
-const MSG_COLORS = {
-  info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
-  success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
-  error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
-};
+// ✅ IMPORT YOUR EXISTING COMPONENT
+import CenterMessageModal from "../components/CenterMessageModal";
 
 export default function EarningsScreen() {
   const [entries, setEntries] = useState([]);
@@ -47,9 +43,9 @@ export default function EarningsScreen() {
   const [activeTab, setActiveTab] = useState("all");
   const [submitting, setSubmitting] = useState(false);
 
-  // ✅ Center message modal
+  // ✅ Center message modal (STATE KEPT)
   const [msgVisible, setMsgVisible] = useState(false);
-  const [msgType, setMsgType] = useState("info");
+  const [msgType, setMsgType] = useState("info"); // info | success | warning | error (matches your CenterMessageModal)
   const [msgTitle, setMsgTitle] = useState("");
   const [msgBody, setMsgBody] = useState("");
   const msgTimerRef = useRef(null);
@@ -284,10 +280,8 @@ export default function EarningsScreen() {
 
   return (
     <View style={styles.container}>
-      {/* ✅ App-ready status bar */}
       <StatusBar barStyle="light-content" backgroundColor="#01579B" translucent={false} />
 
-      {/* ✅ App-ready header (lowered) */}
       <View style={styles.headerArea}>
         <SafeAreaView>
           <View style={styles.balanceCard}>
@@ -411,7 +405,12 @@ export default function EarningsScreen() {
               <View style={styles.inputGroup}>
                 <Text style={styles.inputLabel}>GCash Mobile Number</Text>
                 <View style={styles.inputWrap}>
-                  <Ionicons name="phone-portrait-outline" size={18} color="#94A3B8" style={{ marginLeft: 10 }} />
+                  <Ionicons
+                    name="phone-portrait-outline"
+                    size={18}
+                    color="#94A3B8"
+                    style={{ marginLeft: 10 }}
+                  />
                   <TextInput
                     style={[styles.input, { paddingLeft: 10 }]}
                     keyboardType="phone-pad"
@@ -434,44 +433,25 @@ export default function EarningsScreen() {
                 disabled={submitting}
                 activeOpacity={0.85}
               >
-                {submitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.submitText}>Submit Request</Text>}
+                {submitting ? (
+                  <ActivityIndicator color="#FFF" />
+                ) : (
+                  <Text style={styles.submitText}>Submit Request</Text>
+                )}
               </TouchableOpacity>
             </Pressable>
           </Pressable>
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* CENTER MESSAGE MODAL */}
-      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
-        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
-          <Pressable
-            style={[
-              styles.msgCard,
-              {
-                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
-                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.msgRow}>
-              <Ionicons
-                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
-                size={22}
-                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
-              />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
-                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
-              <Ionicons name="close" size={18} color="#475569" />
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {/* ✅ CENTER MESSAGE MODAL (USING YOUR COMPONENT) */}
+      <CenterMessageModal
+        visible={msgVisible}
+        type={msgType}
+        title={msgTitle}
+        message={msgBody}
+        onClose={closeMessage}
+      />
 
       <BottomNavbar role="consultant" />
     </View>
@@ -481,21 +461,20 @@ export default function EarningsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
 
-  /* ✅ Header lowered + app-ready */
   headerArea: {
     backgroundColor: "#01579B",
     paddingBottom: 16,
-    paddingTop: 20, // ✅ binaba
+    paddingTop: 20,
   },
   balanceCard: {
     paddingHorizontal: 20,
-    paddingTop: 50, // ✅ binaba
+    paddingTop: 50,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
   balanceLabel: { fontSize: 13, color: "rgba(255,255,255,0.7)", fontWeight: "600" },
-  balanceAmount: { fontSize: 30, fontWeight: "900", color: "#fff", marginTop: 2 }, // slightly smaller for app fit
+  balanceAmount: { fontSize: 30, fontWeight: "900", color: "#fff", marginTop: 2 },
   balanceWithdrawBtn: {
     backgroundColor: "#3fa796",
     paddingVertical: 10,
@@ -546,7 +525,6 @@ const styles = StyleSheet.create({
   emptyBox: { alignItems: "center", marginTop: 50 },
   emptyText: { color: "#94A3B8", marginTop: 10, fontWeight: "600" },
 
-  /* MODAL */
   modalOverlay: { flex: 1, backgroundColor: "rgba(15, 23, 42, 0.6)", justifyContent: "center", padding: 22 },
   modalBox: { backgroundColor: "#fff", borderRadius: 26, padding: 22, elevation: 20 },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
@@ -591,37 +569,4 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   submitText: { color: "#fff", textAlign: "center", fontWeight: "800", fontSize: 15 },
-
-  /* CENTER MESSAGE MODAL */
-  msgBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15,23,42,0.28)",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 18,
-  },
-  msgCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    position: "relative",
-  },
-  msgRow: { flexDirection: "row", alignItems: "flex-start" },
-  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
-  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
-  msgClose: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
 });

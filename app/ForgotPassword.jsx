@@ -12,9 +12,10 @@ import {
   Platform
 } from "react-native";
 import { sendPasswordResetEmail } from "firebase/auth";
-import { auth } from "../config/firebase"; // Siguraduhing tama ang path
+import { auth } from "../config/firebase";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import Button from "./components/Button"; // ✅ ADDED
 
 export default function ForgotPassword() {
   const router = useRouter();
@@ -29,7 +30,6 @@ export default function ForgotPassword() {
 
     try {
       setLoading(true);
-      // Firebase Logic: Ito ang magpapadala ng actual email
       await sendPasswordResetEmail(auth, email.trim());
       
       Alert.alert(
@@ -60,13 +60,11 @@ export default function ForgotPassword() {
     >
       <StatusBar barStyle="dark-content" backgroundColor="#FDFEFF" />
       
-      {/* Back Button */}
       <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
         <Ionicons name="chevron-back" size={28} color="#000" />
       </TouchableOpacity>
 
       <View style={styles.content}>
-        {/* Icon & Header */}
         <View style={styles.iconCircle}>
           <Ionicons name="key-outline" size={40} color="#01579B" />
         </View>
@@ -76,7 +74,6 @@ export default function ForgotPassword() {
           Enter your registered email below to receive password reset instructions.
         </Text>
 
-        {/* Input Field */}
         <View style={styles.inputContainer}>
           <Ionicons name="mail-outline" size={20} color="#64748B" style={styles.inputIcon} />
           <TextInput
@@ -90,20 +87,13 @@ export default function ForgotPassword() {
           />
         </View>
 
-        {/* Action Button */}
-        <TouchableOpacity
-          onPress={onResetPassword}
-          disabled={loading}
-          style={[styles.button, loading && styles.disabledButton]}
-        >
-          {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
-          ) : (
-            <Text style={styles.buttonText}>Send Reset Link</Text>
-          )}
-        </TouchableOpacity>
+        {/* ✅ REPLACED BUTTON */}
+        {loading ? (
+          <ActivityIndicator color="#01579B" style={{ marginVertical: 20 }} />
+        ) : (
+<Button title="Send Reset Link" onPress={onResetPassword} style={styles.fullButton} />
+        )}
 
-        {/* Footer */}
         <TouchableOpacity onPress={() => router.push("/Login")} style={styles.backToLogin}>
           <Text style={styles.backToLoginText}>
             Remember your password? <Text style={styles.loginLink}>Login</Text>
@@ -131,7 +121,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30,
     justifyContent: "center",
     alignItems: "center",
-    marginTop: -50, // Pull up slightly for better visual balance
+    marginTop: -50,
   },
   iconCircle: {
     width: 80,
@@ -179,28 +169,6 @@ const styles = StyleSheet.create({
     color: "#000",
     fontWeight: "500",
   },
-  button: {
-    backgroundColor: "#01579B",
-    width: "100%",
-    height: 60,
-    borderRadius: 16,
-    justifyContent: "center",
-    alignItems: "center",
-    shadowColor: "#01579B",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  disabledButton: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: "#FFFFFF",
-    fontWeight: "800",
-    fontSize: 16,
-    letterSpacing: 0.5,
-  },
   backToLogin: {
     marginTop: 25,
   },
@@ -213,4 +181,9 @@ const styles = StyleSheet.create({
     color: "#01579B",
     fontWeight: "800",
   },
+  fullButton: {
+    width: "100%",
+    marginTop: 10,
+  },
+  
 });

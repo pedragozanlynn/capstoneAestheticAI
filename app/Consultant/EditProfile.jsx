@@ -1,43 +1,37 @@
-import React, { useEffect, useRef, useState } from "react";
-import {
-  View,
-  Text,
-  StyleSheet,
-  ScrollView,
-  TouchableOpacity,
-  StatusBar,
-  SafeAreaView,
-  KeyboardAvoidingView,
-  Platform,
-  Modal,
-  Pressable,
-  ActivityIndicator,
-  Keyboard,
-} from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Picker } from "@react-native-picker/picker";
 import { useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { db } from "../../config/firebase";
-import Input from "../components/Input";
 import Button from "../components/Button";
+import CenterMessageModal from "../components/CenterMessageModal";
+import Input from "../components/Input";
 
-/* ---------------- CENTER MESSAGE MODAL ---------------- */
-const MSG_COLORS = {
-  info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
-  success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
-  error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
-};
-
+/* =========================
+   HELPERS
+========================= */
 const safeStr = (v) => (v == null ? "" : String(v));
 const trimStr = (v) => safeStr(v).trim();
 
 const normalizeNum = (v) => {
   const s = trimStr(v).replace(/[^\d.]/g, "");
   if (!s) return "";
-  // prevent multiple dots
   const parts = s.split(".");
   const clean = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : s;
   const n = Number(clean);
@@ -46,6 +40,7 @@ const normalizeNum = (v) => {
 
 export default function EditProfile() {
   const router = useRouter();
+
   const [loading, setLoading] = useState(false);
   const [initialData, setInitialData] = useState(null);
 
@@ -58,27 +53,37 @@ export default function EditProfile() {
     specialization: "",
     experience: "",
     licenseNumber: "",
-    sessionFee: "", // ✅ ADDED
+    sessionFee: "",
   });
 
-  // ✅ Center message modal
-  const [msgVisible, setMsgVisible] = useState(false);
-  const [msgType, setMsgType] = useState("info");
-  const [msgTitle, setMsgTitle] = useState("");
-  const [msgBody, setMsgBody] = useState("");
+  /* =========================
+     CENTER MESSAGE MODAL
+  ========================= */
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info", // "success" | "error" | "info" | "warning"
+    title: "",
+    message: "",
+  });
+
   const msgTimerRef = useRef(null);
 
-  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1600) => {
+  const showMessage = (type = "info", title = "", message = "", autoHideMs = 1600) => {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgType(type);
-    setMsgTitle(String(title || ""));
-    setMsgBody(String(body || ""));
-    setMsgVisible(true);
+
+    setCenterModal({
+      visible: true,
+      type,
+      title: String(title || ""),
+      message: String(message || ""),
+    });
 
     if (autoHideMs && autoHideMs > 0) {
-      msgTimerRef.current = setTimeout(() => setMsgVisible(false), autoHideMs);
+      msgTimerRef.current = setTimeout(() => {
+        setCenterModal((m) => ({ ...m, visible: false }));
+      }, autoHideMs);
     }
   };
 
@@ -86,9 +91,12 @@ export default function EditProfile() {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgVisible(false);
+    setCenterModal((m) => ({ ...m, visible: false }));
   };
 
+  /* =========================
+     LOAD PROFILE
+  ========================= */
   useEffect(() => {
     let mounted = true;
 
@@ -102,6 +110,9 @@ export default function EditProfile() {
         }
 
         const snap = await getDoc(doc(db, "consultants", uid));
+
+        if (!mounted) return;
+
         if (snap.exists()) {
           const data = snap.data() || {};
 
@@ -120,11 +131,9 @@ export default function EditProfile() {
             sessionFee: fee !== "" && fee != null ? String(fee) : "",
           };
 
-          if (!mounted) return;
           setFormData(next);
           setInitialData(next);
         } else {
-          if (!mounted) return;
           showMessage("error", "Profile missing", "Consultant profile not found.", 1800);
         }
       } catch (err) {
@@ -144,6 +153,9 @@ export default function EditProfile() {
     };
   }, []);
 
+  /* =========================
+     FORM HELPERS
+  ========================= */
   const handleChange = (field, value) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
@@ -167,7 +179,6 @@ export default function EditProfile() {
     const specialization = trimStr(formData.specialization);
     const consultantType = trimStr(formData.consultantType);
 
-    // ✅ fee validation
     const feeRaw = trimStr(formData.sessionFee);
     const feeNum = Number(feeRaw);
 
@@ -205,6 +216,9 @@ export default function EditProfile() {
     return { ok: true, feeNum };
   };
 
+  /* =========================
+     SAVE
+  ========================= */
   const handleSave = async () => {
     if (loading) return;
     Keyboard.dismiss();
@@ -273,13 +287,16 @@ export default function EditProfile() {
     }
   };
 
+  /* =========================
+     UI
+  ========================= */
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
 
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView edges={["top"]} style={styles.safeArea}>
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.8} disabled={loading}>
             <Ionicons name="arrow-back" size={24} color="#1E293B" />
           </TouchableOpacity>
 
@@ -294,6 +311,7 @@ export default function EditProfile() {
 
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={{ flex: 1 }}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          {/* BASIC DETAILS */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Basic Details</Text>
           </View>
@@ -315,28 +333,27 @@ export default function EditProfile() {
 
             <Text style={styles.label}>Gender *</Text>
             <View style={styles.genderRow}>
-              {["Male", "Female"].map((g) => (
-                <TouchableOpacity
-                  key={g}
-                  style={[
-                    styles.genderBtn,
-                    formData.gender === g && (g === "Male" ? styles.genderMaleActive : styles.genderFemaleActive),
-                  ]}
-                  onPress={() => handleChange("gender", g)}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons
-                    name={g === "Male" ? "male" : "female"}
-                    size={18}
-                    color={formData.gender === g ? "#fff" : "#64748B"}
-                  />
-                  <Text style={[styles.genderText, formData.gender === g && { color: "#fff" }]}>{g}</Text>
-                </TouchableOpacity>
-              ))}
+              {["Male", "Female"].map((g) => {
+                const active = formData.gender === g;
+                return (
+                  <TouchableOpacity
+                    key={g}
+                    style={[
+                      styles.genderBtn,
+                      active && (g === "Male" ? styles.genderMaleActive : styles.genderFemaleActive),
+                    ]}
+                    onPress={() => handleChange("gender", g)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name={g === "Male" ? "male" : "female"} size={18} color={active ? "#fff" : "#64748B"} />
+                    <Text style={[styles.genderText, active && { color: "#fff" }]}>{g}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
 
-          {/* ✅ NEW SECTION: Consultation Settings */}
+          {/* CONSULTATION SETTINGS */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Consultation Settings</Text>
           </View>
@@ -356,6 +373,7 @@ export default function EditProfile() {
             <Text style={styles.feeHint}>This will be used during booking and payments.</Text>
           </View>
 
+          {/* CREDENTIALS */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Credentials</Text>
           </View>
@@ -389,6 +407,7 @@ export default function EditProfile() {
             {trimStr(formData.consultantType) === "Professional" && (
               <View style={styles.proSection}>
                 <View style={styles.proDivider} />
+
                 <Input
                   label="Years of Experience *"
                   keyboardType="numeric"
@@ -396,6 +415,7 @@ export default function EditProfile() {
                   onChangeText={(v) => handleChange("experience", normalizeNum(v))}
                   placeholder="e.g. 5"
                 />
+
                 <Input
                   label="PRC License Number *"
                   value={formData.licenseNumber}
@@ -419,37 +439,14 @@ export default function EditProfile() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* ===== CENTER MESSAGE MODAL ===== */}
-      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
-        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
-          <Pressable
-            style={[
-              styles.msgCard,
-              {
-                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
-                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.msgRow}>
-              <Ionicons
-                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
-                size={22}
-                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
-              />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
-                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
-              <Ionicons name="close" size={18} color="#475569" />
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {/* ✅ CENTER MESSAGE MODAL (component) */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeMessage}
+      />
     </View>
   );
 }
@@ -481,8 +478,15 @@ const styles = StyleSheet.create({
   headerSubtitle: { fontSize: 13, color: "#64748B", marginTop: 1 },
 
   scrollContent: { padding: 20, paddingBottom: 40 },
+
   sectionHeader: { marginBottom: 10, marginTop: 10, paddingLeft: 5 },
-  sectionTitle: { fontSize: 14, fontWeight: "800", color: "#01579B", textTransform: "uppercase", letterSpacing: 0.5 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "800",
+    color: "#01579B",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
 
   card: {
     backgroundColor: "#fff",
@@ -496,7 +500,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
   },
 
-  label: { fontSize: 13, fontWeight: "700", color: "#475569", marginBottom: 8, marginTop: 10, marginLeft: 2 },
+  label: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#475569",
+    marginBottom: 8,
+    marginTop: 10,
+    marginLeft: 2,
+  },
 
   genderRow: { flexDirection: "row", gap: 12, marginTop: 5 },
   genderBtn: {
@@ -526,45 +537,11 @@ const styles = StyleSheet.create({
 
   proSection: { marginTop: 10 },
   proDivider: { height: 1, backgroundColor: "#F1F5F9", marginVertical: 15 },
-  buttonContainer: { marginTop: 10, marginBottom: 14 },
 
+  buttonContainer: { marginTop: 10, marginBottom: 14 },
   hintText: { textAlign: "center", color: "#94A3B8", fontWeight: "700", fontSize: 12, marginTop: 4 },
 
-  // ✅ Fee styles
   feeRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   currency: { fontSize: 18, fontWeight: "900", color: "#01579B", marginTop: 10 },
   feeHint: { marginTop: 6, color: "#94A3B8", fontSize: 12, fontWeight: "700" },
-
-  msgBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15,23,42,0.28)",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: Platform.OS === "ios" ? 90 : 70,
-    paddingHorizontal: 18,
-  },
-  msgCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    position: "relative",
-  },
-  msgRow: { flexDirection: "row", alignItems: "flex-start" },
-  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
-  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
-  msgClose: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
 });

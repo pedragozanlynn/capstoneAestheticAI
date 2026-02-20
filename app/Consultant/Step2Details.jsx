@@ -13,12 +13,11 @@ import {
   Platform,
   Modal,
   Pressable,
+  AppState, // ✅ FIX
 } from "react-native";
 
-// ✅ NEW: camera selfie
 import * as ImagePicker from "expo-image-picker";
 
-// ✅ UPDATED: connect to fileUploadService (portfolio removed)
 import {
   pickFile,
   uploadValidIdFront,
@@ -28,64 +27,40 @@ import {
 
 import Button from "../components/Button";
 import Input from "../components/Input";
+import CenterMessageModal from "../components/CenterMessageModal";
 
 // session cache
 let sessionFormData = null;
 
-/* ================= CENTER MESSAGE MODAL (Login style) ================= */
 const MSG_COLORS = {
-  info: {
-    bg: "#EFF6FF",
-    border: "#BFDBFE",
-    icon: "information-circle",
-    iconColor: "#01579B",
-  },
-  success: {
-    bg: "#ECFDF5",
-    border: "#BBF7D0",
-    icon: "checkmark-circle",
-    iconColor: "#16A34A",
-  },
-  warning: {
-    bg: "#FFFBEB",
-    border: "#FDE68A",
-    icon: "warning",
-    iconColor: "#F59E0B",
-  },
-  error: {
-    bg: "#FEF2F2",
-    border: "#FECACA",
-    icon: "close-circle",
-    iconColor: "#DC2626",
-  },
+  info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
+  success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
+  warning: { bg: "#FFFBEB", border: "#FDE68A", icon: "warning", iconColor: "#F59E0B" },
+  error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
 };
+
+const STEP2_FLOW_KEY = "step2FlowKey";
 
 export default function Step2Details() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const initialized = useRef(false);
 
-  const [formData, setFormData] = useState({
+  const emptyStep2 = {
     specialization: "",
     education: "",
-    experience: "", // ✅ optional
-    licenseNumber: "", // ✅ optional
-
-    // ✅ NEW: rate
+    experience: "",
+    licenseNumber: "",
     rate: "",
-
     idFrontUrl: "",
     idBackUrl: "",
     selfieUrl: "",
-
     availability: [],
     day: "",
-  });
+  };
 
-  /* ===========================
-     ✅ MESSAGE MODAL (Login style)
-     Types: info | success | warning | error
-     =========================== */
+  const [formData, setFormData] = useState(emptyStep2);
+
   const [msgVisible, setMsgVisible] = useState(false);
   const [msgType, setMsgType] = useState("info");
   const [msgTitle, setMsgTitle] = useState("");
@@ -138,6 +113,14 @@ export default function Step2Details() {
   /* ===================== HELPERS ===================== */
   const safeStr = (v) => String(v ?? "").trim();
 
+  const safeJsonParse = (raw) => {
+    try {
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const normalizePickedFile = (picked) => {
     try {
       if (!picked) return null;
@@ -174,17 +157,92 @@ export default function Step2Details() {
     }
   };
 
+  const persistStep2 = async (next) => {
+    try {
+      await AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    } catch {}
+  };
+
   const handleInputChange = (field, value) => {
     const next = { ...formData, [field]: value };
     setFormData(next);
     sessionFormData = next;
-    AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    persistStep2(next);
   };
+
+  const latestRef = useRef(formData);
+
+useEffect(() => {
+  latestRef.current = formData;
+}, [formData]);
+
+useEffect(() => {
+  const sub = AppState.addEventListener("change", (state) => {
+    if (state !== "active") {
+      persistStep2(sessionFormData || latestRef.current);
+    }
+  });
+  return () => sub.remove();
+}, []);
+
+
+  /* ===================== INIT (FIXED FLOW) ===================== */
+  useEffect(() => {
+    const init = async () => {
+      if (initialized.current) return;
+      initialized.current = true;
+
+      const flowKey = safeStr(params?.fresh) || "default_flow";
+
+      // ✅ If flowKey changed -> clear old Step2 cache
+      try {
+        const savedKey = await AsyncStorage.getItem(STEP2_FLOW_KEY);
+        if (savedKey !== flowKey) {
+          await AsyncStorage.removeItem("step2Data");
+          sessionFormData = null;
+          setFormData(emptyStep2);
+          await AsyncStorage.setItem(STEP2_FLOW_KEY, flowKey);
+        }
+      } catch {}
+
+      // ✅ FIX: Always load from AsyncStorage first (survives reload)
+      const saved = await AsyncStorage.getItem("step2Data");
+      const parsed = safeJsonParse(saved);
+      if (parsed) {
+        setFormData(parsed);
+        sessionFormData = parsed;
+        return;
+      }
+
+      // fallback to in-memory if exists
+      if (sessionFormData) {
+        setFormData(sessionFormData);
+        return;
+      }
+
+      // Optional: If Step1/params included step2
+      if (params?.data) {
+        const step1 = safeJsonParse(params.data);
+        if (step1?.step2) {
+          const merged = { ...emptyStep2, ...step1.step2 };
+          setFormData(merged);
+          sessionFormData = merged;
+          persistStep2(merged);
+        }
+      }
+    };
+
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params?.data, params?.fresh]);
 
   /* ===================== UPLOADS ===================== */
 
   const uploadId = async (side) => {
     try {
+      // ✅ FIX: save BEFORE opening picker
+      await persistStep2(sessionFormData || formData);
+
       const pickedRaw = await pickFile();
       const picked = normalizePickedFile(pickedRaw);
       if (!picked?.uri) return;
@@ -212,6 +270,9 @@ export default function Step2Details() {
 
   const handleUploadSelfie = async () => {
     try {
+      // ✅ FIX: save BEFORE opening camera
+      await persistStep2(sessionFormData || formData);
+
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (perm.status !== "granted") {
         return showToast("Camera permission is required to take a selfie.", "warning", 2800);
@@ -219,9 +280,11 @@ export default function Step2Details() {
 
       const result = await ImagePicker.launchCameraAsync({
         allowsEditing: false,
-        quality: 0.9,
+        quality: 0.5,
+        exif: false,
         cameraType: ImagePicker.CameraType.front,
       });
+      
 
       if (result.canceled) return;
 
@@ -245,55 +308,16 @@ export default function Step2Details() {
     }
   };
 
-  /* ===================== INIT ===================== */
-
-  useEffect(() => {
-    if (sessionFormData) {
-      setFormData(sessionFormData);
-      initialized.current = true;
-      return;
-    }
-
-    const init = async () => {
-      if (initialized.current) return;
-      initialized.current = true;
-
-      const saved = await AsyncStorage.getItem("step2Data");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setFormData(parsed);
-        sessionFormData = parsed;
-        return;
-      }
-
-      if (params?.data) {
-        const step1 = JSON.parse(params.data);
-        if (step1.step2) {
-          const merged = { ...formData, ...step1.step2 };
-          setFormData(merged);
-          sessionFormData = merged;
-        }
-      }
-    };
-
-    init();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [params?.data]);
-
   /* ===================== AVAILABILITY ===================== */
 
   const addAvailability = () => {
     const day = safeStr(formData.day);
-    if (!day) {
-      return showToast("Please select a day before adding.", "warning");
-    }
+    if (!day) return showToast("Please select a day before adding.", "warning");
 
     const exists = (formData.availability || []).some(
       (d) => safeStr(d).toLowerCase() === day.toLowerCase()
     );
-    if (exists) {
-      return showToast("That day is already added.", "warning");
-    }
+    if (exists) return showToast("That day is already added.", "warning");
 
     const next = {
       ...formData,
@@ -303,7 +327,7 @@ export default function Step2Details() {
 
     setFormData(next);
     sessionFormData = next;
-    AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    persistStep2(next);
     showToast("Availability day added.", "success", 1200);
   };
 
@@ -315,14 +339,14 @@ export default function Step2Details() {
 
     setFormData(next);
     sessionFormData = next;
-    AsyncStorage.setItem("step2Data", JSON.stringify(next));
+    persistStep2(next);
     showToast("Removed from availability.", "info", 1200);
   };
 
   /* ===================== NAV ===================== */
 
   const handleBack = async () => {
-    await AsyncStorage.setItem("step2Data", JSON.stringify(formData));
+    await persistStep2(sessionFormData || formData);
     router.back();
   };
 
@@ -334,58 +358,35 @@ export default function Step2Details() {
     const education = safeStr(formData.education);
     const specialization = safeStr(formData.specialization);
 
-    if (!education) {
-      showToast("Please select your degree (Education).", "warning");
-      return false;
-    }
-    if (!specialization) {
-      showToast("Please select your specialization.", "warning");
-      return false;
-    }
+    if (!education) return (showToast("Please select your degree (Education).", "warning"), false);
+    if (!specialization) return (showToast("Please select your specialization.", "warning"), false);
 
-    // ✅ REQUIRED: salary rate
     const rate = safeStr(formData.rate);
-    if (!rate) {
-      showToast("Please enter your salary rate.", "warning");
-      return false;
-    }
+    if (!rate) return (showToast("Please enter your salary rate.", "warning"), false);
+
     const rateNum = Number(rate);
-    if (!Number.isFinite(rateNum) || rateNum <= 0) {
-      showToast("Salary rate must be a valid amount.", "warning");
-      return false;
-    }
-    if (rateNum > 1_000_000) {
-      showToast("Salary rate looks too high. Please check it.", "warning");
-      return false;
-    }
+    if (!Number.isFinite(rateNum) || rateNum <= 0)
+      return (showToast("Salary rate must be a valid amount.", "warning"), false);
+    if (rateNum > 1_000_000)
+      return (showToast("Salary rate looks too high. Please check it.", "warning"), false);
 
     const exp = safeStr(formData.experience);
-    if (exp && (!isNumeric(exp) || Number(exp) > 80)) {
-      showToast("Experience must be a valid number (years).", "warning");
-      return false;
-    }
+    if (exp && (!isNumeric(exp) || Number(exp) > 80))
+      return (showToast("Experience must be a valid number (years).", "warning"), false);
 
     const lic = safeStr(formData.licenseNumber);
-    if (lic && lic.length < 3) {
-      showToast("License number looks too short. Please check it.", "warning");
-      return false;
-    }
+    if (lic && lic.length < 3)
+      return (showToast("License number looks too short. Please check it.", "warning"), false);
 
     const avail = formData.availability || [];
-    if (avail.length < 1) {
-      showToast("Please add at least 1 availability day.", "warning");
-      return false;
-    }
+    if (avail.length < 1)
+      return (showToast("Please add at least 1 availability day.", "warning"), false);
 
-    if (!safeStr(formData.idFrontUrl) || !safeStr(formData.idBackUrl)) {
-      showToast("Please upload BOTH front and back of your Valid ID.", "warning");
-      return false;
-    }
+    if (!safeStr(formData.idFrontUrl) || !safeStr(formData.idBackUrl))
+      return (showToast("Please upload BOTH front and back of your Valid ID.", "warning"), false);
 
-    if (!safeStr(formData.selfieUrl)) {
-      showToast("Please take and upload your selfie for verification.", "warning");
-      return false;
-    }
+    if (!safeStr(formData.selfieUrl))
+      return (showToast("Please take and upload your selfie for verification.", "warning"), false);
 
     return true;
   };
@@ -393,30 +394,34 @@ export default function Step2Details() {
   const handleNext = async () => {
     if (!validateStep2()) return;
 
-    const step1Data = params?.data ? JSON.parse(params.data) : {};
+    await persistStep2(sessionFormData || formData);
+
+    const step1Data = params?.data ? safeJsonParse(params.data) : {};
     showToast("All set. Proceeding to Step 3…", "success", 900);
+
+    const flowKey = safeStr(params?.fresh) || String(Date.now());
 
     setTimeout(() => {
       router.push({
         pathname: "/Consultant/Step3Review",
-        params: { data: JSON.stringify({ ...step1Data, step2: formData }) },
+        params: {
+          data: JSON.stringify({ ...step1Data, step2: formData }),
+          fresh: flowKey,
+        },
       });
     }, 300);
   };
 
   /* ===================== UI ===================== */
-
   return (
     <View style={{ flex: 1 }}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         {/* HEADER */}
         <View style={styles.header}>
           <Image source={require("../../assets/new_background.jpg")} style={styles.headerImage} />
-
           <TouchableOpacity onPress={handleBack} style={styles.backButton}>
             <Ionicons name="arrow-back" size={24} color="#FFF" />
           </TouchableOpacity>
-
           <View style={styles.headerText}>
             <Text style={styles.headerTitle}>Registration</Text>
             <Text style={styles.headerSubtitle}>Step 2 • Details</Text>
@@ -437,10 +442,7 @@ export default function Step2Details() {
 
           <Text style={styles.fieldLabel}>Specialization *</Text>
           <View style={styles.pickerBox}>
-            <Picker
-              selectedValue={formData.specialization}
-              onValueChange={(v) => handleInputChange("specialization", v)}
-            >
+            <Picker selectedValue={formData.specialization} onValueChange={(v) => handleInputChange("specialization", v)}>
               <Picker.Item label="Select specialization" value="" />
               <Picker.Item label="Architectural Design" value="Architectural Design" />
               <Picker.Item label="Residential Planning" value="Residential Planning" />
@@ -454,21 +456,27 @@ export default function Step2Details() {
             </Picker>
           </View>
 
-          <Input
-            label="Salary Rate (₱) *"
-            keyboardType="numeric"
-            value={formData.rate}
-            onChangeText={(v) => handleInputChange("rate", v)}
-            placeholder="Input your salary rate"
-          />
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <View style={{ flex: 1 }}>
+              <Input
+                label="Salary Rate (₱) *"
+                keyboardType="numeric"
+                value={formData.rate}
+                onChangeText={(v) => handleInputChange("rate", v)}
+                placeholder="Input your salary rate"
+              />
+            </View>
 
-          <Input
-            label="Experience (Years) (Optional)"
-            keyboardType="numeric"
-            value={formData.experience}
-            onChangeText={(v) => handleInputChange("experience", v)}
-            placeholder="Enter years experience (optional)"
-          />
+            <View style={{ flex: 1 }}>
+              <Input
+                label="Experience (Years) (Optional)"
+                keyboardType="numeric"
+                value={formData.experience}
+                onChangeText={(v) => handleInputChange("experience", v)}
+                placeholder="Enter years experience (optional)"
+              />
+            </View>
+          </View>
 
           <Input
             label="License Number (Optional)"
@@ -481,7 +489,7 @@ export default function Step2Details() {
           <View style={styles.pickerBox}>
             <Picker selectedValue={formData.day} onValueChange={(v) => handleInputChange("day", v)}>
               <Picker.Item label="Select availability" value="" />
-              {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d) => (
+              {["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].map((d) => (
                 <Picker.Item key={d} label={d} value={d} />
               ))}
             </Picker>
@@ -550,7 +558,9 @@ export default function Step2Details() {
               size={30}
               color={formData.selfieUrl ? "#2ECC71" : "#0F3E48"}
             />
-            <Text style={styles.uploadTitle}>{formData.selfieUrl ? "Selfie Uploaded" : "Take Selfie Photo"}</Text>
+            <Text style={styles.uploadTitle}>
+              {formData.selfieUrl ? "Selfie Uploaded" : "Take Selfie Photo"}
+            </Text>
             <Text style={styles.uploadHint}>Camera will open (no gallery)</Text>
           </TouchableOpacity>
 
@@ -599,13 +609,11 @@ export default function Step2Details() {
   );
 }
 
-/* ===================== STYLES ===================== */
 const styles = StyleSheet.create({
+  // ✅ same styles as yours (unchanged)
   container: { flex: 1, backgroundColor: "#fff" },
-
   header: { height: 260 },
   headerImage: { width: "100%", height: "100%" },
-
   backButton: {
     position: "absolute",
     top: 40,
@@ -614,17 +622,14 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.15)",
     borderRadius: 10,
   },
-
   headerText: {
     position: "absolute",
     bottom: 100,
     alignItems: "center",
     width: "100%",
   },
-
   headerTitle: { fontSize: 26, fontWeight: "800", color: "#fff" },
   headerSubtitle: { fontSize: 14, color: "#f5f5f5", marginTop: 6 },
-
   card: {
     marginTop: -85,
     padding: 28,
@@ -632,7 +637,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 40,
     borderTopRightRadius: 40,
   },
-
   fieldLabel: {
     fontSize: 12,
     fontWeight: "800",
@@ -641,7 +645,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingLeft: 2,
   },
-
   pickerBox: {
     borderWidth: 1,
     borderColor: "#ddd",
@@ -649,7 +652,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     marginBottom: 14,
   },
-
   addBtn: {
     flexDirection: "row",
     backgroundColor: "#0F3E48",
@@ -658,9 +660,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 10,
   },
-
   addText: { color: "#fff", marginLeft: 6, fontWeight: "600" },
-
   availabilityItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -677,9 +677,7 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
   },
-
   avail: { fontSize: 15, color: "#912f56", fontWeight: "500" },
-
   uploadCard: {
     borderWidth: 1.2,
     borderColor: "#2c4f4f",
@@ -689,7 +687,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FAF9F6",
     marginBottom: 10,
   },
-
   uploadTitle: {
     marginTop: 10,
     fontSize: 15,
@@ -698,21 +695,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingHorizontal: 10,
   },
-
   uploadHint: { marginTop: 4, fontSize: 12, color: "#6B8C8C" },
-
   uploadSuccess: { flexDirection: "row", alignItems: "center", marginBottom: 16 },
-
-  successText: {
-    marginLeft: 6,
-    fontSize: 13,
-    color: "#2ECC71",
-    fontWeight: "600",
-  },
-
-// Replace your nextBtn style with this:
-nextBtn: { marginTop: 10, marginBottom: 50 },
-
+  successText: { marginLeft: 6, fontSize: 13, color: "#2ECC71", fontWeight: "600" },
+  nextBtn: { marginTop: 10, marginBottom: 50 },
   msgBackdrop: {
     flex: 1,
     backgroundColor: "rgba(15,23,42,0.28)",
@@ -721,20 +707,10 @@ nextBtn: { marginTop: 10, marginBottom: 50 },
     paddingTop: Platform.OS === "ios" ? 120 : 80,
     paddingHorizontal: 18,
   },
-
-  msgCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    position: "relative",
-  },
-
+  msgCard: { width: "100%", maxWidth: 420, borderRadius: 18, padding: 14, borderWidth: 1, position: "relative" },
   msgRow: { flexDirection: "row", alignItems: "flex-start" },
   msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
   msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
-
   msgClose: {
     position: "absolute",
     top: 10,

@@ -1,18 +1,20 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import {
-  Alert,
   Image,
+  Platform,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
-  Platform,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   auth,
   createUserWithEmailAndPassword,
@@ -22,159 +24,183 @@ import {
 
 import { cacheUserRole } from "../../config/userCache";
 import Button from "../components/Button";
-import Input from "../components/Input";
+import CenterMessageModal from "../components/CenterMessageModal";
 import PolicyModal from "../components/PolicyModal";
-import Screen from "../components/Screen";
+
+/** ✅ Security adds (related only) */
+import { sendEmailVerification } from "firebase/auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/** ✅ Strong password: 8+ chars, uppercase, lowercase, number, symbol */
+const STRONG_PASS_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{8,}$/;
 
 export default function Register() {
   const router = useRouter();
   const role = "user";
 
+  // Form states
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+
+  // UI states
   const [agree, setAgree] = useState(false);
   const [policyVisible, setPolicyVisible] = useState(false);
-
-  /* ✅ GENDER STATE (ADDED ONLY) */
   const [gender, setGender] = useState(null); // "Male" | "Female"
 
-  /* ===========================
-     ✅ TOAST (TOP POSITION)
-     ✅ NO OK BUTTON
-     =========================== */
-  const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
-  const toastTimerRef = useRef(null);
+  /** ✅ Age confirmation (18+) */
+  const [adultConfirmed, setAdultConfirmed] = useState(false);
 
-  const showToast = (text, type = "info", ms = 2200) => {
-    try {
-      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      setToast({ visible: true, text: String(text || ""), type });
-      toastTimerRef.current = setTimeout(() => {
-        setToast((t) => ({ ...t, visible: false }));
-      }, ms);
-    } catch {}
+  // Password visibility
+  const [showPass, setShowPass] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  // Message modal states
+  const [msgVisible, setMsgVisible] = useState(false);
+  const [msgType, setMsgType] = useState("info");
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
+  const msgAutoHideMsRef = useRef(2200);
+
+  const showMessage = (type = "info", title = "", body = "", autoHideMs = 2200) => {
+    setMsgType(String(type || "info"));
+    setMsgTitle(String(title || ""));
+    setMsgBody(String(body || ""));
+    msgAutoHideMsRef.current = autoHideMs;
+    setMsgVisible(true);
   };
 
-  useEffect(() => {
-    return () => {
-      try {
-        if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-      } catch {}
-    };
-  }, []);
+  const closeMessage = () => setMsgVisible(false);
 
+  // Validation (same logic + security-related only)
   const validate = () => {
     const n = String(name || "").trim();
-    const e = String(email || "").trim();
+    const e = String(email || "").trim().toLowerCase(); // ✅ normalize email
+    const p = String(password || "");
+    const c = String(confirm || "");
 
-    if (!n) {
-      showToast("Please enter your name.", "error");
-      return false;
-    }
-    if (!EMAIL_REGEX.test(e)) {
-      showToast("Enter a valid email address.", "error");
-      return false;
-    }
-    if (password.length < 6) {
-      showToast("Password must be at least 6 characters.", "error");
-      return false;
-    }
-    if (password !== confirm) {
-      showToast("Passwords do not match.", "error");
-      return false;
-    }
-    if (!gender) {
-      showToast("Please select your gender.", "error");
-      return false;
-    }
-    if (!agree) {
-      showToast("Please agree to the Terms & Conditions.", "info");
-      return false;
-    }
+    if (!n) return showMessage("error", "Missing field", "Please enter your name."), false;
+
+    // ✅ optional: basic name sanity (still minimal)
+    if (n.length < 2)
+      return showMessage("error", "Invalid name", "Name must be at least 2 characters."), false;
+
+    if (!EMAIL_REGEX.test(e))
+      return showMessage("error", "Invalid email", "Enter a valid email address."), false;
+
+    // ✅ stronger password requirement
+    if (!STRONG_PASS_REGEX.test(p))
+      return (
+        showMessage(
+          "error",
+          "Weak password",
+          "Use 8+ chars with uppercase, lowercase, number, and symbol."
+        ),
+        false
+      );
+
+    if (p !== c)
+      return showMessage("error", "Password mismatch", "Passwords do not match."), false;
+
+    if (!gender)
+      return showMessage("error", "Missing field", "Please select your gender."), false;
+
+    /** ✅ Age confirmation required */
+    if (!adultConfirmed)
+      return (
+        showMessage("info", "Age confirmation required", "Please confirm you are at least 18 years old."),
+        false
+      );
+
+    if (!agree)
+      return (
+        showMessage("info", "Agreement required", "Please agree to the Terms & Conditions."),
+        false
+      );
+
     return true;
   };
 
+  // Register (same logic + security-related only)
   const register = async () => {
     if (!validate()) return;
 
     try {
-      const cleanEmail = String(email || "").trim();
+      const cleanEmail = String(email || "").trim().toLowerCase(); // ✅ normalize email
       const cleanName = String(name || "").trim();
 
-      const credential = await createUserWithEmailAndPassword(
-        auth,
-        cleanEmail,
-        password
-      );
+      const credential = await createUserWithEmailAndPassword(auth, cleanEmail, password);
 
       await updateProfile(credential.user, { displayName: cleanName });
+
+      // ✅ email verification
+      await sendEmailVerification(credential.user);
 
       const profile = {
         uid: credential.user.uid,
         name: cleanName,
+        nameLower: cleanName.toLowerCase(), // ✅ useful for search
         email: cleanEmail,
-        gender, // ✅ SAVED
+        gender,
         role,
         subscription_type: "Free",
+        status: "active", // ✅ basic user status
+
+        /** ✅ Age confirmation fields */
+        isAdultConfirmed: true,
+        ageConfirmationAt: serverTimestamp(),
+
+        termsAcceptedAt: serverTimestamp(), // ✅ policy acceptance timestamp
+        termsVersion: "v1", // ✅ track policy version
         createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(), // ✅ audit field
       };
 
       await setDoc(doc(db, "users", credential.user.uid), profile);
       await cacheUserRole(credential.user.uid, role);
 
-      // ✅ success message (toast)
-      showToast("Account created successfully!", "success", 1800);
+      // ✅ message updated for verification (security-related)
+      showMessage(
+        "success",
+        "Register Success",
+        "Welcome to AestheticAI  ",
+        2200
+      );
 
       setTimeout(() => {
         router.replace("/Login");
-      }, 1800);
+      }, 2200);
     } catch (error) {
-      const msg = String(error?.message || "");
+      // ✅ use error.code (reliable)
+      const code = String(error?.code || "");
 
-      // ✅ friendlier common auth errors (still minimal)
-      if (msg.toLowerCase().includes("email-already-in-use")) {
-        showToast("This email is already registered.", "error");
-      } else if (msg.toLowerCase().includes("invalid-email")) {
-        showToast("Invalid email address.", "error");
-      } else if (msg.toLowerCase().includes("weak-password")) {
-        showToast("Password is too weak. Use at least 6 characters.", "error");
+      if (code === "auth/email-already-in-use") {
+        showMessage("error", "Registration failed", "This email is already registered.");
+      } else if (code === "auth/invalid-email") {
+        showMessage("error", "Registration failed", "Invalid email address.");
+      } else if (code === "auth/weak-password") {
+        showMessage(
+          "error",
+          "Registration failed",
+          "Password is too weak. Use 8+ characters with uppercase, lowercase, number, and symbol."
+        );
       } else {
-        showToast("Registration failed. Please try again.", "error");
+        showMessage("error", "Registration failed", "Please try again.");
       }
     }
   };
 
   return (
-    <Screen style={styles.screen}>
-      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
-      {toast.visible && (
-        <View
-          pointerEvents="none"
-          style={[
-            styles.toast,
-            toast.type === "success" && styles.toastSuccess,
-            toast.type === "error" && styles.toastError,
-            toast.type === "info" && styles.toastInfo,
-          ]}
-        >
-          <Text style={styles.toastText}>{toast.text}</Text>
-        </View>
-      )}
+    <SafeAreaView style={styles.screen} edges={[]}>
+      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* HEADER (UNCHANGED) */}
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        {/* HEADER */}
         <View style={styles.header}>
-          <Image
-            source={require("../../assets/new_background.jpg")}
-            style={styles.image}
-          />
+          <Image source={require("../../assets/new_background.jpg")} style={styles.image} />
+          <View style={styles.headerOverlay} />
+
           <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
             <Ionicons name="arrow-back" size={26} color="#FFFFFF" />
           </TouchableOpacity>
@@ -185,31 +211,95 @@ export default function Register() {
           </View>
         </View>
 
-        {/* CONTENT */}
+        {/* CONTENT CARD */}
         <View style={styles.content}>
-          {/* ACCOUNT INFO */}
+          {/* PERSONAL DETAILS */}
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Personal Details</Text>
 
-            <Input placeholder="Username" value={name} onChangeText={setName} />
-            <Input
-              placeholder="Email Address"
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-            />
-            <Input
-              placeholder="Password"
-              secureTextEntry
-              value={password}
-              onChangeText={setPassword}
-            />
-            <Input
-              placeholder="Confirm Password"
-              secureTextEntry
-              value={confirm}
-              onChangeText={setConfirm}
-            />
+            {/* Username */}
+            <View style={styles.inputBox}>
+              <Ionicons name="person-outline" size={18} color="#64748B" style={styles.inputIcon} />
+              <TextInput
+                placeholder="Username"
+                placeholderTextColor="#94A3B8"
+                value={name}
+                onChangeText={setName}
+                style={styles.inputText}
+              />
+            </View>
+
+            {/* Email */}
+            <View style={styles.inputBox}>
+              <Ionicons name="mail-outline" size={18} color="#64748B" style={styles.inputIcon} />
+              <TextInput
+                placeholder="Email Address"
+                placeholderTextColor="#94A3B8"
+                autoCapitalize="none"
+                keyboardType="email-address"
+                value={email}
+                onChangeText={setEmail}
+                style={styles.inputText}
+              />
+            </View>
+
+            {/* Password */}
+            <View style={styles.inputBox}>
+              <Ionicons
+                name="lock-closed-outline"
+                size={18}
+                color="#64748B"
+                style={styles.inputIcon}
+              />
+              <TextInput
+                placeholder="Password"
+                placeholderTextColor="#94A3B8"
+                secureTextEntry={!showPass}
+                value={password}
+                onChangeText={setPassword}
+                style={styles.inputText}
+              />
+              <TouchableOpacity
+                onPress={() => setShowPass((v) => !v)}
+                style={styles.eyeBtn}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={showPass ? "eye-off-outline" : "eye-outline"}
+                  size={20}
+                  color="#64748B"
+                />
+              </TouchableOpacity>
+            </View>
+
+            {/* Confirm Password */}
+            <View style={styles.inputBox}>
+              <Ionicons
+                name="shield-checkmark-outline"
+                size={18}
+                color="#64748B"
+                style={styles.inputIcon}
+              />
+              <TextInput
+                placeholder="Confirm Password"
+                placeholderTextColor="#94A3B8"
+                secureTextEntry={!showConfirm}
+                value={confirm}
+                onChangeText={setConfirm}
+                style={styles.inputText}
+              />
+              <TouchableOpacity
+                onPress={() => setShowConfirm((v) => !v)}
+                style={styles.eyeBtn}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={showConfirm ? "eye-off-outline" : "eye-outline"}
+                  size={20}
+                  color="#64748B"
+                />
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* GENDER */}
@@ -217,72 +307,80 @@ export default function Register() {
             <Text style={styles.sectionLabel}>Gender</Text>
 
             <View style={styles.genderRow}>
-              {/* MALE */}
               <TouchableOpacity
                 style={[styles.genderBtn, gender === "Male" && styles.genderMaleActive]}
                 onPress={() => setGender("Male")}
+                activeOpacity={0.9}
               >
-                <Ionicons
-                  name="male"
-                  size={18}
-                  color={gender === "Male" ? "#fff" : "#555"}
-                />
-                <Text
-                  style={[styles.genderText, gender === "Male" && { color: "#fff" }]}
-                >
+                <Ionicons name="male" size={18} color={gender === "Male" ? "#fff" : "#555"} />
+                <Text style={[styles.genderText, gender === "Male" && styles.genderTextActive]}>
                   Male
                 </Text>
               </TouchableOpacity>
 
-              {/* FEMALE */}
               <TouchableOpacity
-                style={[
-                  styles.genderBtn,
-                  gender === "Female" && styles.genderFemaleActive,
-                ]}
+                style={[styles.genderBtn, gender === "Female" && styles.genderFemaleActive]}
                 onPress={() => setGender("Female")}
+                activeOpacity={0.9}
               >
-                <Ionicons
-                  name="female"
-                  size={18}
-                  color={gender === "Female" ? "#fff" : "#555"}
-                />
-                <Text
-                  style={[
-                    styles.genderText,
-                    gender === "Female" && { color: "#fff" },
-                  ]}
-                >
+                <Ionicons name="female" size={18} color={gender === "Female" ? "#fff" : "#555"} />
+                <Text style={[styles.genderText, gender === "Female" && styles.genderTextActive]}>
                   Female
                 </Text>
               </TouchableOpacity>
             </View>
           </View>
+           {/* ✅ AGREEMENTS moved BELOW Register + checkbox style */}
+           <View style={styles.checkBlock}>
+              {/* Age confirm checkbox */}
+              <TouchableOpacity
+                activeOpacity={0.9}
+                style={styles.checkRow}
+                onPress={() => setAdultConfirmed((v) => !v)}
+              >
+                <View style={[styles.checkbox, adultConfirmed && styles.checkboxChecked]}>
+                  {adultConfirmed && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                </View>
+                <Text style={styles.checkText}>
+                  I confirm that I am at least{" "}
+                  <Text style={styles.checkBold}>18 years old</Text>
+                </Text>
+              </TouchableOpacity>
 
-          {/* TERMS */}
-          <View style={styles.section}>
-            <View style={styles.agreementRow}>
-              <Switch
-                value={agree}
-                onValueChange={(val) => {
-                  if (!val) return setAgree(false);
+              {/* Terms checkbox (opens modal on check) */}
+              <TouchableOpacity
+                activeOpacity={0.9}
+                style={styles.checkRow}
+                onPress={() => {
+                  if (agree) return setAgree(false);
                   setPolicyVisible(true);
                 }}
-              />
-              <Text style={styles.agreementText}>
-                I agree to the Terms & Conditions
-              </Text>
+              >
+                <View style={[styles.checkbox, agree && styles.checkboxChecked]}>
+                  {agree && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                </View>
+                <Text style={styles.checkText}>
+                  I agree to the{" "}
+                  <Text style={[styles.checkBold, styles.checkLink]}>Terms &amp; Conditions</Text>
+                </Text>
+              </TouchableOpacity>
             </View>
-          </View>
 
           {/* ACTIONS */}
           <View style={styles.section}>
             <Button title="Register" onPress={register} />
+
+           
+
             <TouchableOpacity
               onPress={() => router.replace("/Login")}
-              style={styles.footerLink}
+              activeOpacity={0.85}
+              style={styles.footerPill}
             >
-              <Text style={styles.footer}>Already have an account? Login</Text>
+              <Ionicons name="log-in" size={20} color="#2C4F4F" />
+              <Text style={styles.footerPillText}>
+                Already have an account? <Text style={styles.footerPillTextStrong}> Login</Text>
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -291,203 +389,193 @@ export default function Register() {
       <PolicyModal
         visible={policyVisible}
         onClose={() => setPolicyVisible(false)}
-        onAccept={() => setAgree(true)}
+        onAccept={() => {
+          setAgree(true);
+          setPolicyVisible(false);
+        }}
+        variant="user"
       />
-    </Screen>
+
+      <CenterMessageModal
+        visible={msgVisible}
+        type={msgType}
+        title={msgTitle}
+        body={msgBody}
+        autoHideMs={msgAutoHideMsRef.current}
+        onClose={closeMessage}
+      />
+    </SafeAreaView>
   );
 }
 
+// ... same imports and code above (NO CHANGES) ...
+
 const styles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    backgroundColor: "#faf9f6",
-    paddingHorizontal: 0,
-  },
+  screen: { flex: 1, backgroundColor: "#FAF9F6" },
   scroll: { paddingBottom: 40 },
 
-  header: {
-    width: "100%",
-    height: 360,
-    position: "relative",
-  },
-  image: {
-    width: "100%",
-    height: "100%",
-    resizeMode: "cover",
-  },
+  /* HEADER */
+  header: { width: "100%", height: 360, position: "relative", overflow: "hidden" },
+  image: { width: "100%", height: "100%", resizeMode: "cover" },
+  headerOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.25)" },
+
   backButton: {
     position: "absolute",
-    top: 50,
-    left: 20,
-    padding: 6,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderRadius: 10,
+    top: Platform.OS === "android" ? (StatusBar.currentHeight || 0) + 18 : 50,
+    left: 18,
+    padding: 8,
+    backgroundColor: "rgba(255,255,255,0.10)",
+    borderRadius: 12,
   },
+
   headerTextContainer: {
     position: "absolute",
-    top: "38%",
+    top: 140,
     left: 0,
     right: 0,
-    transform: [{ translateY: -30 }],
     alignItems: "center",
+    transform: [{ translateY: -20 }],
   },
   headerTitle: {
-    fontSize: 30,
-    fontWeight: "800",
-    color: "#fff",
+    fontSize: 32,
+    fontWeight: "900",
+    color: "#FFFFFF",
     textAlign: "center",
-    letterSpacing: 0.8,
     textShadowColor: "rgba(0,0,0,0.35)",
     textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 5,
+    textShadowRadius: 6,
   },
   headerSubtitle: {
-    fontSize: 14,
-    color: "#f5f5f5",
-    textAlign: "center",
-    fontWeight: "500",
     marginTop: 6,
-    letterSpacing: 0.4,
-    textShadowColor: "rgba(0,0,0,0.2)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.92)",
+    textAlign: "center",
   },
 
+  /* ✅ CONTENT */
   content: {
     flex: 1,
-    paddingHorizontal: 32,
-    paddingTop: 32,
-    marginTop: -160,
-    backgroundColor: "#faf9f6",
+    paddingHorizontal: 26,
+    paddingTop: 30,
+    paddingBottom: 28,
+    marginTop: -150,
+    backgroundColor: "#FAF9F6",
     borderTopLeftRadius: 40,
     borderTopRightRadius: 40,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
   },
 
-  section: {
-    marginBottom: 28,
-  },
+  section: { marginBottom: 10 },
   sectionLabel: {
     fontSize: 15,
-    fontWeight: "600",
-    color: "#2c4f4f",
-    marginBottom: 10,
-    marginLeft: 6,
-    letterSpacing: 0.3,
-    paddingBottom: 2,
-  },
-
-  input: {
-    width: "100%",
-    backgroundColor: "#fff",
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#dce3ea",
-    fontSize: 15,
+    fontWeight: "800",
+    color: "#2C4F4F",
     marginBottom: 12,
-    color: "#2c3e50",
-    shadowColor: "#000",
-    shadowOpacity: 0.03,
-    shadowRadius: 2,
-    elevation: 1,
+    marginLeft: 6,
+    letterSpacing: 0.2,
   },
 
-  /* ===== GENDER STYLES ===== */
-  genderRow: {
+  /* INPUTS */
+  inputBox: {
     flexDirection: "row",
-    gap: 12,
+    alignItems: "center",
+    width: "100%",
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    height: 54,
+    shadowColor: "#000",
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 2,
   },
+  inputIcon: { marginRight: 12 },
+  inputText: { flex: 1, fontSize: 16, fontWeight: "600", color: "#111827" },
+  eyeBtn: { paddingLeft: 10, paddingVertical: 8 },
 
+  /* GENDER */
+  genderRow: { flexDirection: "row", gap: 10 },
   genderBtn: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 14,
-    borderRadius: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#dce3ea",
-    backgroundColor: "#fff",
+    borderColor: "#DCE3EA",
+    backgroundColor: "#FFFFFF",
   },
+  genderMaleActive: { backgroundColor: "#2C4F4F", borderColor: "#2C4F4F" },
+  genderFemaleActive: { backgroundColor: "#8F2F52", borderColor: "#8F2F52" },
+  genderText: { marginLeft: 8, fontWeight: "800", color: "#555" },
+  genderTextActive: { color: "#FFFFFF" },
 
-  /* MALE ACTIVE */
-  genderMaleActive: {
-    backgroundColor: "#2c4f4f", // DARK TEAL
-    borderColor: "#2c4f4f",
+  /* ✅ Checkbox block */
+  checkBlock: {
+    padding: 12,
+   
   },
-
-  /* FEMALE ACTIVE */
-  genderFemaleActive: {
-    backgroundColor: "#8f2f52", // FEMALE COLOR
-    borderColor: "#8f2f52",
-  },
-
-  genderText: {
-    marginLeft: 8,
-    fontWeight: "700",
-    color: "#555",
-  },
-
-  agreementRow: {
+  checkRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: -20,
-    marginBottom: -40,
+    paddingVertical: 8,
   },
-  agreementText: {
-    color: "#912f56",
-    marginLeft: 12,
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#2C4F4F",
+    backgroundColor: "transparent",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  checkboxChecked: {
+    backgroundColor: "#2C4F4F",
+  },
+  checkText: {
     flex: 1,
-    lineHeight: 20,
-    fontWeight: "600",
+    color: "#2C4F4F",
+    fontWeight: "700",
+    lineHeight: 18,
+    fontSize: 13.5,
+  },
+  checkBold: {
+    fontWeight: "900",
+  },
+  checkLink: {
+    textDecorationLine: "underline",
   },
 
-  dividerContainer: {
+  /* FOOTER */
+  footer: { textAlign: "center", color: "#2C4F4F", fontWeight: "700", fontSize: 14 },
+  footerPill: {
+    marginTop: 10,
+    alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 5,
-    marginBottom: 16,
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 60,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#2C4F4F",
+    backgroundColor: "transparent",
   },
-  line: { flex: 1, height: 1, backgroundColor: "#d0d7d4" },
-  orText: {
-    marginHorizontal: 10,
-    color: "#5f7268",
-    fontWeight: "600",
-    fontSize: 12,
-  },
-  footerLink: { marginTop: 24 },
-  footer: {
-    textAlign: "center",
-    color: "#2c4f4f",
-    fontWeight: "600",
+  footerPillText: {
+    paddingHorizontal: 10,
+    color: "#2C4F4F",
+    fontWeight: "700",
     fontSize: 14,
   },
-
-  /* ===== TOAST (TOP, NO OK) ===== */
-  toast: {
-    position: "absolute",
-    left: 20,
-    right: 20,
-    top: Platform.OS === "ios" ? 58 : 18,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 14,
-    backgroundColor: "#0F172A",
-    opacity: 0.96,
-    elevation: 10,
-    zIndex: 9999,
+  footerPillTextStrong: {
+    fontWeight: "900",
   },
-  toastText: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 13,
-    textAlign: "center",
-  },
-  toastInfo: { backgroundColor: "#0F172A" },
-  toastSuccess: { backgroundColor: "#16A34A" },
-  toastError: { backgroundColor: "#DC2626" },
 });

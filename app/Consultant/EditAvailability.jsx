@@ -1,12 +1,6 @@
-import { Ionicons } from "@expo/vector-icons";
-import { getAuth } from "firebase/auth";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
-  Pressable,
-  SafeAreaView,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -15,19 +9,18 @@ import {
   View,
   Platform,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 import { Picker } from "@react-native-picker/picker";
 import { Calendar } from "react-native-calendars";
 import { useRouter } from "expo-router";
+import { getAuth } from "firebase/auth";
+import { doc, getDoc, updateDoc } from "firebase/firestore";
+
 import { db } from "../../config/firebase";
+import CenterMessageModal from "../components/CenterMessageModal";
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
-/* ---------------- CENTER MESSAGE MODAL ---------------- */
-const MSG_COLORS = {
-  info: { bg: "#EFF6FF", border: "#BFDBFE", icon: "information-circle", iconColor: "#01579B" },
-  success: { bg: "#ECFDF5", border: "#BBF7D0", icon: "checkmark-circle", iconColor: "#16A34A" },
-  error: { bg: "#FEF2F2", border: "#FECACA", icon: "close-circle", iconColor: "#DC2626" },
-};
 
 const safeStr = (v) => (v == null ? "" : String(v));
 const trimStr = (v) => safeStr(v).trim();
@@ -39,27 +32,37 @@ export default function EditAvailability() {
   const [availability, setAvailability] = useState([]);
   const [initialAvailability, setInitialAvailability] = useState(null);
   const [selectedDay, setSelectedDay] = useState("");
+
   const [saving, setSaving] = useState(false);
   const [loadingData, setLoadingData] = useState(true);
 
-  // ✅ Top message modal
-  const [msgVisible, setMsgVisible] = useState(false);
-  const [msgType, setMsgType] = useState("info");
-  const [msgTitle, setMsgTitle] = useState("");
-  const [msgBody, setMsgBody] = useState("");
+  /* ================= CENTER MESSAGE MODAL ================= */
+  const [centerModal, setCenterModal] = useState({
+    visible: false,
+    type: "info",
+    title: "",
+    message: "",
+  });
+
   const msgTimerRef = useRef(null);
 
-  const showMessage = (type = "info", title = "", body = "", autoHideMs = 1600) => {
+  const showMessage = (type = "info", title = "", message = "", autoHideMs = 1600) => {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgType(type);
-    setMsgTitle(String(title || ""));
-    setMsgBody(String(body || ""));
-    setMsgVisible(true);
 
-    if (autoHideMs && autoHideMs > 0) {
-      msgTimerRef.current = setTimeout(() => setMsgVisible(false), autoHideMs);
+    setCenterModal({
+      visible: true,
+      type,
+      title: String(title || ""),
+      message: String(message || ""),
+    });
+
+    // ✅ NOTE: success should NOT auto-hide
+    if (type !== "success" && autoHideMs && autoHideMs > 0) {
+      msgTimerRef.current = setTimeout(() => {
+        setCenterModal((m) => ({ ...m, visible: false }));
+      }, autoHideMs);
     }
   };
 
@@ -67,38 +70,38 @@ export default function EditAvailability() {
     try {
       if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     } catch {}
-    setMsgVisible(false);
+    setCenterModal((m) => ({ ...m, visible: false }));
   };
 
+  /* ================= LOAD DATA ================= */
   useEffect(() => {
     let mounted = true;
 
     const loadData = async () => {
       setLoadingData(true);
+
       try {
         if (!uid) {
           if (!mounted) return;
-          setLoadingData(false);
           showMessage("error", "Not signed in", "Please login again to continue.", 1800);
+          setLoadingData(false);
           return;
         }
 
         const snap = await getDoc(doc(db, "consultants", uid));
+        if (!mounted) return;
+
         if (snap.exists()) {
           const data = snap.data() || {};
           const list = Array.isArray(data.availability) ? data.availability : [];
-          if (!mounted) return;
-
           setAvailability(list);
           setInitialAvailability(list);
         } else {
-          if (!mounted) return;
           showMessage("error", "Profile missing", "Consultant profile not found.", 1800);
         }
       } catch (err) {
         console.log("Load availability error:", err?.message || err);
-        if (!mounted) return;
-        showMessage("error", "Load failed", "Unable to load schedule. Please try again.", 1800);
+        if (mounted) showMessage("error", "Load failed", "Unable to load schedule. Please try again.", 1800);
       } finally {
         if (mounted) setLoadingData(false);
       }
@@ -114,6 +117,7 @@ export default function EditAvailability() {
     };
   }, [uid]);
 
+  /* ================= HELPERS ================= */
   const hasChanges = () => {
     if (!initialAvailability) return true;
     const a = [...initialAvailability].sort().join("|");
@@ -125,6 +129,7 @@ export default function EditAvailability() {
     if (saving) return;
 
     const day = trimStr(selectedDay);
+
     if (!day) {
       showMessage("error", "Select a day", "Please choose a day to add.", 1600);
       return;
@@ -165,14 +170,12 @@ export default function EditAvailability() {
     try {
       setSaving(true);
 
-      await updateDoc(doc(db, "consultants", uid), {
-        availability,
-      });
+      await updateDoc(doc(db, "consultants", uid), { availability });
 
       setInitialAvailability(availability);
-      showMessage("success", "Saved", "Availability updated successfully.", 1000);
 
-      setTimeout(() => router.back(), 280);
+      // ✅ success modal ONLY, stay on screen (no navigation)
+      showMessage("success", "Saved", "Availability updated successfully.", 0);
     } catch (err) {
       console.log("Save availability error:", err?.message || err);
       showMessage("error", "Save failed", "Failed to update schedule. Please try again.", 1800);
@@ -181,6 +184,7 @@ export default function EditAvailability() {
     }
   };
 
+  /* ================= CALENDAR MARKS ================= */
   const markedDates = useMemo(() => {
     const marks = {};
     const today = new Date();
@@ -190,6 +194,7 @@ export default function EditAvailability() {
       date.setDate(today.getDate() + i);
 
       const dayName = date.toLocaleDateString("en-US", { weekday: "long" });
+
       if (availability.includes(dayName)) {
         const key = date.toISOString().split("T")[0];
         marks[key] = {
@@ -208,9 +213,14 @@ export default function EditAvailability() {
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
 
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView edges={["top"]} style={styles.safeArea}>
         <View style={styles.headerRow}>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => router.back()}
+            activeOpacity={0.85}
+            disabled={saving || loadingData}
+          >
             <Ionicons name="arrow-back" size={22} color="#0F3E48" />
           </TouchableOpacity>
 
@@ -221,28 +231,57 @@ export default function EditAvailability() {
 
           {saving || loadingData ? <ActivityIndicator color="#01579B" /> : <View style={{ width: 22 }} />}
         </View>
+
+        <View style={styles.headerDivider} />
       </SafeAreaView>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <View style={styles.divider} />
-
-        {/* ===== CALENDAR AREA ===== */}
+        {/* CALENDAR */}
         <View style={styles.calendarContainer}>
           <Calendar
             markingType="custom"
             markedDates={markedDates}
+            style={styles.calendarStyle}
             theme={{
               todayTextColor: "#8f2f52",
               arrowColor: "#01579B",
               calendarBackground: "#ffffff",
               textMonthFontWeight: "800",
+              "stylesheet.calendar.header": {
+                header: {
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  paddingLeft: 10,
+                  paddingRight: 10,
+                  marginTop: 0,
+                  paddingTop: 0,
+                  paddingBottom: 6,
+                  alignItems: "center",
+                },
+                week: {
+                  marginTop: 0,
+                  flexDirection: "row",
+                  justifyContent: "space-around",
+                  paddingBottom: 6,
+                },
+              },
+              "stylesheet.calendar.main": {
+                container: {
+                  paddingLeft: 6,
+                  paddingRight: 6,
+                  paddingTop: 0,
+                  paddingBottom: 6,
+                  backgroundColor: "#ffffff",
+                },
+              },
             }}
           />
         </View>
 
-        {/* ===== PICKER SECTION ===== */}
+        {/* PICKER */}
         <View style={styles.section}>
           <Text style={styles.label}>Add Available Day</Text>
+
           <View style={styles.inputRow}>
             <View style={styles.pickerBox}>
               <Picker selectedValue={selectedDay} onValueChange={setSelectedDay} enabled={!saving}>
@@ -266,7 +305,7 @@ export default function EditAvailability() {
           </View>
         </View>
 
-        {/* ===== SELECTED DAYS LIST ===== */}
+        {/* SELECTED DAYS */}
         <View style={styles.section}>
           <Text style={styles.label}>Active Schedule</Text>
 
@@ -290,7 +329,7 @@ export default function EditAvailability() {
           )}
         </View>
 
-        {/* ===== SAVE BUTTON ===== */}
+        {/* ✅ SAVE BUTTON (raised) */}
         <TouchableOpacity
           style={[styles.saveBtn, (saving || loadingData) && { opacity: 0.7 }]}
           onPress={saveChanges}
@@ -302,37 +341,14 @@ export default function EditAvailability() {
         </TouchableOpacity>
       </ScrollView>
 
-      {/* ===== TOP MESSAGE MODAL ===== */}
-      <Modal visible={msgVisible} transparent animationType="fade" onRequestClose={closeMessage}>
-        <Pressable style={styles.msgBackdrop} onPress={closeMessage}>
-          <Pressable
-            style={[
-              styles.msgCard,
-              {
-                backgroundColor: (MSG_COLORS[msgType] || MSG_COLORS.info).bg,
-                borderColor: (MSG_COLORS[msgType] || MSG_COLORS.info).border,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.msgRow}>
-              <Ionicons
-                name={(MSG_COLORS[msgType] || MSG_COLORS.info).icon}
-                size={22}
-                color={(MSG_COLORS[msgType] || MSG_COLORS.info).iconColor}
-              />
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                {!!msgTitle && <Text style={styles.msgTitle}>{msgTitle}</Text>}
-                {!!msgBody && <Text style={styles.msgBody}>{msgBody}</Text>}
-              </View>
-            </View>
-
-            <TouchableOpacity style={styles.msgClose} onPress={closeMessage} activeOpacity={0.85}>
-              <Ionicons name="close" size={18} color="#475569" />
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {/* CENTER MODAL */}
+      <CenterMessageModal
+        visible={centerModal.visible}
+        type={centerModal.type}
+        title={centerModal.title}
+        message={centerModal.message}
+        onClose={closeMessage}
+      />
     </View>
   );
 }
@@ -340,19 +356,17 @@ export default function EditAvailability() {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F3F9FA" },
   safeArea: { backgroundColor: "#FFF" },
-  scrollContent: { padding: 16, paddingBottom: 40 },
 
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingTop: 60,
     paddingHorizontal: 16,
-    paddingVertical: Platform.OS === "android" ? 15 : 10,
+    paddingVertical: Platform.OS === "android" ? 12 : 10,
     backgroundColor: "#FFF",
-    borderBottomWidth: 1,
-    borderBottomColor: "#EEF2F7",
     gap: 12,
   },
+  headerDivider: { height: 1, backgroundColor: "#EEF2F7" },
+
   backButton: {
     width: 42,
     height: 42,
@@ -361,23 +375,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+
   headerTitle: { fontSize: 18, fontWeight: "800", color: "#0F3E48" },
   headerSubtitle: { fontSize: 12, color: "#777", marginTop: 2 },
-  divider: { height: 1, backgroundColor: "#E4E6EB", marginBottom: 20 },
+
+  // ✅ IMPORTANT: bigger bottom space so button sits ABOVE the nav (no nav edits)
+  scrollContent: { padding: 16, paddingBottom: 200 },
 
   calendarContainer: {
     backgroundColor: "#fff",
     borderRadius: 16,
-    padding: 10,
     borderWidth: 1,
     borderColor: "#E1E8EA",
-    marginBottom: 20,
-    marginTop: 10,
+    marginBottom: 18,
+    marginTop: 6,
+    overflow: "hidden",
   },
+  calendarStyle: { borderRadius: 16, paddingTop: 0, marginTop: 0 },
 
   section: { marginBottom: 20 },
   label: { fontWeight: "700", marginBottom: 8, color: "#2c4f4f", fontSize: 14 },
+
   inputRow: { flexDirection: "row", gap: 10 },
+
   pickerBox: {
     flex: 1,
     borderWidth: 1,
@@ -386,6 +406,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
     justifyContent: "center",
   },
+
   addBtn: {
     width: 55,
     backgroundColor: "#01579B",
@@ -405,9 +426,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E1E8EA",
   },
+
   dayText: { fontWeight: "700", color: "#01579B" },
   emptyText: { color: "#999", fontStyle: "italic", marginLeft: 5 },
 
+  // ✅ THIS raises the button visually (space under it)
   saveBtn: {
     backgroundColor: "#01579B",
     padding: 16,
@@ -419,38 +442,4 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   saveText: { color: "#fff", fontWeight: "800", fontSize: 16 },
-
-  /* TOP MESSAGE MODAL */
-  msgBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(15,23,42,0.28)",
-    alignItems: "center",
-    justifyContent: "flex-start",
-    paddingTop: Platform.OS === "ios" ? 90 : 70,
-    paddingHorizontal: 18,
-  },
-  msgCard: {
-    width: "100%",
-    maxWidth: 420,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    position: "relative",
-  },
-  msgRow: { flexDirection: "row", alignItems: "flex-start" },
-  msgTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
-  msgBody: { marginTop: 3, fontSize: 13, fontWeight: "700", color: "#475569", lineHeight: 18 },
-  msgClose: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    backgroundColor: "rgba(255,255,255,0.6)",
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
 });

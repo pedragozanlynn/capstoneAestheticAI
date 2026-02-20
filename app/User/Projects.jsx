@@ -3,7 +3,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
-  Alert,
   Image,
   ScrollView,
   StyleSheet,
@@ -15,6 +14,9 @@ import {
 } from "react-native";
 import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
+
+// ✅ CenterMessageModal (for delete success ONLY)
+import CenterMessageModal from "../components/CenterMessageModal";
 
 // ✅ Firebase
 import { getAuth } from "firebase/auth";
@@ -45,18 +47,16 @@ const toISODate = (ts) => {
 export default function Project() {
   const router = useRouter();
   const subType = useSubscriptionType();
-  const [projects, setProjects] = useState([]);
-
   const auth = getAuth();
 
-  const cleanupRef = useRef(null);
+  const [projects, setProjects] = useState([]);
 
+  const cleanupRef = useRef(null);
   const didWarnNoUserRef = useRef(false);
   const didShowEmptyInfoRef = useRef(false);
 
   /* ===========================
-     ✅ TOAST (TOP POSITION)
-     ✅ NO OK BUTTON
+     ✅ TOAST (TOP)
      =========================== */
   const [toast, setToast] = useState({ visible: false, text: "", type: "info" });
   const toastTimerRef = useRef(null);
@@ -79,6 +79,26 @@ export default function Project() {
     };
   }, []);
 
+  /* ===========================
+     ✅ DELETE SUCCESS MODAL (ONLY CHANGE YOU ASKED)
+     - replaces: showToast("Project removed successfully.", "success")
+     =========================== */
+  const [deleteSuccessModal, setDeleteSuccessModal] = useState({
+    visible: false,
+    message: "Project removed successfully.",
+  });
+
+  const openDeleteSuccessModal = (message = "Project removed successfully.") => {
+    setDeleteSuccessModal({ visible: true, message: String(message || "Project removed successfully.") });
+  };
+
+  const closeDeleteSuccessModal = () => {
+    setDeleteSuccessModal((s) => ({ ...s, visible: false }));
+  };
+
+  /* ===========================
+     FALLBACK PROJECTS
+     =========================== */
   const setFallbackProjects = () => {
     setProjects([
       {
@@ -176,10 +196,7 @@ export default function Project() {
   };
 
   useEffect(() => {
-    const unsubAuth = auth.onAuthStateChanged(() => {
-      loadProjects();
-    });
-
+    const unsubAuth = auth.onAuthStateChanged(() => loadProjects());
     loadProjects();
 
     return () => {
@@ -196,10 +213,7 @@ export default function Project() {
 
   /* ================= ACTIONS ================= */
   const openVisualization = (project) => {
-    if (!project?.id) {
-      showToast("Invalid project.", "error");
-      return;
-    }
+    if (!project?.id) return showToast("Invalid project.", "error");
 
     router.push({
       pathname: "/User/RoomVisualization",
@@ -207,50 +221,39 @@ export default function Project() {
     });
   };
 
-  const handleDeleteProject = (projectId) => {
-    if (!projectId) {
-      showToast("Invalid project.", "error");
-      return;
-    }
-    if (projectId === "static-1") {
-      showToast("This sample project cannot be deleted.", "info");
-      return;
-    }
+  // ✅ Delete action (same logic, only success UI changed to modal)
+  const handleDeleteProject = async (projectId) => {
+    if (!projectId) return showToast("Invalid project.", "error");
+    if (projectId === "static-1") return showToast("This sample project cannot be deleted.", "info");
 
-    Alert.alert(
-      "Delete Project",
-      "Are you sure you want to delete this project?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              if (String(projectId).startsWith("aestheticai:project-image:")) {
-                await AsyncStorage.removeItem(projectId);
-                showToast("Project removed successfully.", "success");
-                loadProjects();
-                return;
-              }
+    try {
+      if (String(projectId).startsWith("aestheticai:project-image:")) {
+        await AsyncStorage.removeItem(projectId);
 
-              await deleteDoc(doc(db, "projects", projectId));
-              showToast("Project removed successfully.", "success");
-            } catch (e) {
-              console.log("Delete error:", e?.message || e);
-              showToast("Failed to delete project. Please try again.", "error");
-            }
-          },
-        },
-      ]
-    );
+        // ✅ ONLY CHANGED: success toast -> CenterMessageModal
+        openDeleteSuccessModal("Project removed successfully.");
+
+        loadProjects();
+        return;
+      }
+
+      await deleteDoc(doc(db, "projects", projectId));
+
+      // ✅ ONLY CHANGED: success toast -> CenterMessageModal
+      openDeleteSuccessModal("Project removed successfully.");
+
+      loadProjects();
+    } catch (e) {
+      console.log("Delete error:", e?.message || e);
+      showToast("Failed to delete project. Please try again.", "error");
+    }
   };
 
   return (
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
 
-      {/* ✅ TOAST OVERLAY (TOP, NO OK BUTTON) */}
+      {/* ✅ TOAST OVERLAY (TOP) */}
       {toast.visible && (
         <View
           pointerEvents="none"
@@ -278,12 +281,10 @@ export default function Project() {
         </View>
       )}
 
-      {/* ✅ SIMPLE HEADER (NO CHIP / NO CARD) */}
+      {/* ✅ HEADER */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>AI Design Gallery</Text>
-        <Text style={styles.headerSubtitle}>
-          Review and manage your saved creations
-        </Text>
+        <Text style={styles.headerSubtitle}>Review and manage your saved creations</Text>
       </View>
 
       {/* 🖼️ PROJECT GRID */}
@@ -292,7 +293,6 @@ export default function Project() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* ✅ CHIP MOVED BESIDE "Your projects" */}
         <View style={styles.sectionRow}>
           <View style={styles.sectionLeft}>
             <Text style={styles.sectionLabel}>Your projects</Text>
@@ -320,11 +320,7 @@ export default function Project() {
                   onLongPress={() => handleDeleteProject(project.id)}
                 >
                   <View style={styles.cardMediaWrap}>
-                    <Image
-                      source={imgSource}
-                      style={styles.cardImage}
-                      resizeMode="cover"
-                    />
+                    <Image source={imgSource} style={styles.cardImage} resizeMode="cover" />
 
                     <View style={styles.badgePill}>
                       <Ionicons name="home-outline" size={12} color="#0F3E48" />
@@ -341,11 +337,7 @@ export default function Project() {
 
                     <View style={styles.metaRow}>
                       <View style={styles.metaItem}>
-                        <Ionicons
-                          name="calendar-outline"
-                          size={13}
-                          color="#64748B"
-                        />
+                        <Ionicons name="calendar-outline" size={13} color="#64748B" />
                         <Text style={styles.projectDate}>{project.date}</Text>
                       </View>
 
@@ -353,11 +345,7 @@ export default function Project() {
 
                       <View style={styles.metaItem}>
                         <Ionicons
-                          name={
-                            project.mode === "customize"
-                              ? "color-wand-outline"
-                              : "brush-outline"
-                          }
+                          name={project.mode === "customize" ? "color-wand-outline" : "brush-outline"}
                           size={13}
                           color="#64748B"
                         />
@@ -397,16 +385,24 @@ export default function Project() {
         )}
       </ScrollView>
 
+      {/* ✅ DELETE SUCCESS MODAL (CenterMessageModal) */}
+      <CenterMessageModal
+        visible={deleteSuccessModal.visible}
+        title="Success"
+        message={deleteSuccessModal.message}
+        type="success"
+        primaryText="OK"
+        onPrimaryPress={closeDeleteSuccessModal}
+        onClose={closeDeleteSuccessModal}
+      />
+
       <BottomNavbar subType={subType} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  page: {
-    flex: 1,
-    backgroundColor: "#F8FAFC",
-  },
+  page: { flex: 1, backgroundColor: "#F8FAFC" },
 
   /* ===== TOAST (TOP) ===== */
   toast: {
@@ -436,7 +432,7 @@ const styles = StyleSheet.create({
   toastSuccess: { backgroundColor: "#16A34A" },
   toastError: { backgroundColor: "#DC2626" },
 
-  /* ===== SIMPLE HEADER ===== */
+  /* ===== HEADER ===== */
   header: {
     paddingTop: Platform.OS === "ios" ? 58 : 60,
     paddingHorizontal: 18,
@@ -471,11 +467,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 14,
   },
-  sectionLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
+  sectionLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   sectionLabel: {
     fontSize: 12,
     fontWeight: "900",
@@ -483,13 +475,8 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 1.2,
   },
-  sectionMeta: {
-    fontSize: 11,
-    color: "#94A3B8",
-    fontWeight: "700",
-  },
+  sectionMeta: { fontSize: 11, color: "#94A3B8", fontWeight: "700" },
 
-  /* ✅ COUNT CHIP BESIDE "Your projects" */
   countChip: {
     flexDirection: "row",
     alignItems: "center",
@@ -501,18 +488,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  countChipText: {
-    fontWeight: "900",
-    color: "#0F3E48",
-    fontSize: 12,
-  },
+  countChipText: { fontWeight: "900", color: "#0F3E48", fontSize: 12 },
 
   /* ===== GRID ===== */
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-  },
+  grid: { flexDirection: "row", flexWrap: "wrap", justifyContent: "space-between" },
   card: {
     width: "48%",
     backgroundColor: "#FFF",
@@ -526,14 +505,8 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     elevation: 3,
   },
-  cardMediaWrap: {
-    position: "relative",
-    backgroundColor: "#F1F5F9",
-  },
-  cardImage: {
-    width: "100%",
-    height: 160,
-  },
+  cardMediaWrap: { position: "relative", backgroundColor: "#F1F5F9" },
+  cardImage: { width: "100%", height: 160 },
 
   badgePill: {
     position: "absolute",
@@ -558,10 +531,7 @@ const styles = StyleSheet.create({
     maxWidth: 90,
   },
 
-  cardInfo: {
-    padding: 12,
-    paddingTop: 10,
-  },
+  cardInfo: { padding: 12, paddingTop: 10 },
   projectTitle: {
     fontSize: 13.5,
     fontWeight: "900",
@@ -570,17 +540,8 @@ const styles = StyleSheet.create({
     minHeight: 36,
   },
 
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 10,
-    flexWrap: "wrap",
-  },
-  metaItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+  metaRow: { flexDirection: "row", alignItems: "center", marginTop: 10, flexWrap: "wrap" },
+  metaItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   metaDot: {
     width: 4,
     height: 4,
@@ -588,23 +549,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#CBD5E1",
     marginHorizontal: 10,
   },
-  projectDate: {
-    fontSize: 11,
-    color: "#64748B",
-    fontWeight: "800",
-  },
-  projectMode: {
-    fontSize: 10.5,
-    color: "#64748B",
-    fontWeight: "900",
-    letterSpacing: 0.8,
-  },
+  projectDate: { fontSize: 11, color: "#64748B", fontWeight: "800" },
+  projectMode: { fontSize: 10.5, color: "#64748B", fontWeight: "900", letterSpacing: 0.8 },
 
   /* ===== EMPTY ===== */
-  emptyWrap: {
-    alignItems: "center",
-    marginTop: 40,
-  },
+  emptyWrap: { alignItems: "center", marginTop: 40 },
   emptyCard: {
     width: "100%",
     backgroundColor: "#FFFFFF",
@@ -626,12 +575,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: "900",
-    color: "#0F3E48",
-    marginBottom: 6,
-  },
+  emptyTitle: { fontSize: 16, fontWeight: "900", color: "#0F3E48", marginBottom: 6 },
   emptyText: {
     textAlign: "center",
     color: "#64748B",
@@ -639,13 +583,7 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 18,
   },
-  emptyHintRow: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 14,
-    flexWrap: "wrap",
-    justifyContent: "center",
-  },
+  emptyHintRow: { flexDirection: "row", gap: 10, marginTop: 14, flexWrap: "wrap", justifyContent: "center" },
   emptyHintPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -657,9 +595,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  emptyHintText: {
-    fontSize: 11.5,
-    fontWeight: "900",
-    color: "#0F3E48",
-  },
+  emptyHintText: { fontSize: 11.5, fontWeight: "900", color: "#0F3E48" },
 });

@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     paddingTop: 40,
     paddingBottom: 10,
   },
-  headerContent: { paddingHorizontal: 15, paddingTop: 10 },
+  headerContent: { paddingHorizontal: 15, paddingTop: 20, paddingBottom: 10, },
   headerTopRow: { flexDirection: "row", alignItems: "center" },
   backBtn: {
     width: 38,

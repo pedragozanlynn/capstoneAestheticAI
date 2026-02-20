@@ -80,6 +80,9 @@ export default function Home() {
   // ✅ ADD: safe area insets
   const insets = useSafeAreaInsets();
 
+  // ✅ NEW: status bar height (Android) so header starts below it
+  const statusBarHeight = StatusBar.currentHeight || 0;
+
   const carouselImages = [
     require("../../assets/carousel1.jpg"),
     require("../../assets/carousel2.jpg"),
@@ -386,7 +389,13 @@ export default function Home() {
 
   return (
     <View style={styles.page}>
-      <StatusBar barStyle="light-content" />
+      {/* ✅ CHANGE ONLY: StatusBar is tied to header color */}
+      <StatusBar
+        translucent
+        backgroundColor="#01579B"
+        barStyle="light-content"
+      />
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         bounces={false}
@@ -394,7 +403,15 @@ export default function Home() {
         contentContainerStyle={{ paddingBottom: bottomScrollSpace }}
       >
         {/* ===== HEADER ===== */}
-        <View style={styles.header}>
+        <View
+          style={[
+            styles.header,
+            {
+              // ✅ CHANGE ONLY: push header content below StatusBar/safe area
+              paddingTop: (insets.top || statusBarHeight) + 16,
+            },
+          ]}
+        >
           <View style={styles.headerTop}>
             {/* LEFT: avatar + greeting/name */}
             <View style={styles.headerLeft}>
@@ -614,11 +631,9 @@ const Action = ({ icon, label, desc, color, onPress }) => (
 );
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#F8FAFC" },
 
   header: {
     backgroundColor: "#01579B",
-    paddingTop: 60,
     paddingBottom: 80,
     paddingHorizontal: 25,
   },
@@ -627,6 +642,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between", // ✅ to place bell on the right
+    paddingTop: 25,
   },
 
   headerLeft: {
@@ -800,7 +816,6 @@ const styles = StyleSheet.create({
   tipContent: { fontSize: 13, color: "#64748B", lineHeight: 20 },
 
   // (kept)
-  projectsSection: { marginBottom: 100 },
   sectionHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -810,7 +825,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 18, fontWeight: "900", color: "#0F3E48" },
   seeAll: { color: "#01579B", fontWeight: "700", fontSize: 13 },
-  projectList: { paddingLeft: 25 },
+  projectList: { paddingLeft: 25 , padding:10,},
 
   projectCard: {
     width: CARD_WIDTH,

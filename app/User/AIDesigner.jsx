@@ -1,39 +1,41 @@
 import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Pressable,
+  SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Image,
-  StatusBar,
-  SafeAreaView,
-  ActivityIndicator,
-  Alert,
-  Pressable,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import useSubscriptionType from "../../services/useSubscriptionType";
 import BottomNavbar from "../components/BottomNav";
+import CenterMessageModal from "../components/CenterMessageModal";
 
 // ✅ Firebase
 import { getAuth } from "firebase/auth";
 import {
   collection,
+  deleteDoc,
+  doc,
   limit,
   onSnapshot,
   orderBy,
   query,
   where,
-  deleteDoc,
-  doc,
 } from "firebase/firestore";
 import { getApp } from "firebase/app";
 import { db } from "../../config/firebase";
-import CenterMessageModal from "../components/CenterMessageModal";
 
-
+/* =========================
+   HELPERS
+========================= */
 function formatChatDate(tsLike) {
   try {
     if (!tsLike) return "";
@@ -50,15 +52,23 @@ function safeString(v) {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/* =========================
+   SCREEN
+========================= */
 export default function AIDesigner() {
   const router = useRouter();
   const subType = useSubscriptionType();
-
   const auth = getAuth();
 
+  /* -------------------------
+     AUTH STATE
+  ------------------------- */
   const [uid, setUid] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
+  /* -------------------------
+     CHAT LIST STATE
+  ------------------------- */
   const [loadingChats, setLoadingChats] = useState(true);
   const [chatSummaries, setChatSummaries] = useState([]);
 
@@ -71,25 +81,31 @@ export default function AIDesigner() {
   // fallback mode tracker
   const usedFallbackRef = useRef(false);
 
-  // ✅ menu state (with position)
-  const [menuChat, setMenuChat] = useState(null); // chat object
+  /* -------------------------
+     MENU STATE (positioned)
+  ------------------------- */
+  const [menuChat, setMenuChat] = useState(null); // selected chat
   const [menuPos, setMenuPos] = useState({ x: 0, y: 0 }); // dropdown position
   const moreBtnRefs = useRef(new Map()); // chatId -> ref
 
-  // ✅ CenterMessageModal state
-const [msgOpen, setMsgOpen] = useState(false);
-const [msgType, setMsgType] = useState("info"); // "success" | "error" | "info"
-const [msgTitle, setMsgTitle] = useState("");
-const [msgBody, setMsgBody] = useState("");
+  /* -------------------------
+     CenterMessageModal STATE
+  ------------------------- */
+  const [msgOpen, setMsgOpen] = useState(false);
+  const [msgType, setMsgType] = useState("info"); // "success" | "error" | "info"
+  const [msgTitle, setMsgTitle] = useState("");
+  const [msgBody, setMsgBody] = useState("");
 
-const showMsg = (type, title, body = "") => {
-  setMsgType(type);
-  setMsgTitle(title);
-  setMsgBody(body);
-  setMsgOpen(true);
-};
+  const showMsg = (type, title, body = "") => {
+    setMsgType(type);
+    setMsgTitle(title);
+    setMsgBody(body);
+    setMsgOpen(true);
+  };
 
-
+  /* =========================
+     NAVIGATION ACTIONS
+  ========================= */
   // ✅ NEW CHAT
   const openChatScreen = () => {
     router.push({
@@ -112,72 +128,74 @@ const showMsg = (type, title, body = "") => {
     });
   };
 
-  const closeChatMenu = () => {
-    setMenuChat(null);
-  };
+  /* =========================
+     MENU ACTIONS
+  ========================= */
+  const closeChatMenu = () => setMenuChat(null);
 
   // ✅ open menu near pressed button
   const openChatMenu = (chat) => {
     const ref = moreBtnRefs.current.get(chat.id);
+
     if (ref?.measureInWindow) {
       ref.measureInWindow((x, y, w, h) => {
         setMenuPos({ x: x + w - 170, y: y + h + 8 }); // 170 = menu width
         setMenuChat(chat);
       });
-    } else {
-      // fallback position
-      setMenuPos({ x: 22, y: 250 });
-      setMenuChat(chat);
+      return;
     }
+
+    // fallback position
+    setMenuPos({ x: 22, y: 250 });
+    setMenuChat(chat);
   };
+
   const handleDeleteChat = (chat) => {
     if (!uid || !chat?.id) return;
-  
-    Alert.alert(
-      "Delete chat?",
-      "This will permanently remove this chat.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const src = chat.source === "user" ? "user" : "root";
-  
-              const convoRef =
-                src === "user"
-                  ? doc(db, "users", uid, "aiConversations", chat.id)
-                  : doc(db, "aiConversations", chat.id);
-  
-              await deleteDoc(convoRef);
-  
-              const key = `${src}::${chat.id}`;
-              const unsub = messageUnsubsRef.current.get(key);
-              if (unsub) {
-                try { unsub(); } catch {}
-                messageUnsubsRef.current.delete(key);
-              }
-  
-              setChatSummaries((prev) => prev.filter((c) => c.id !== chat.id));
-  
-              // ✅ SUCCESS MESSAGE
-              showMsg("success", "Deleted", "Chat removed successfully.");
-            } catch (e) {
-              console.warn("Delete chat failed:", e?.message || e);
-  
-              // ✅ ERROR MESSAGE
-              showMsg("error", "Delete failed", "Unable to delete chat right now.");
-            }
-          },
-        },
-      ],
-      { cancelable: true }
-    );
-  };
-  
 
-  // ✅ Alert when project is saved (via params.saved)
+    Alert.alert("Delete chat?", "This will permanently remove this chat.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const src = chat.source === "user" ? "user" : "root";
+
+            const convoRef =
+              src === "user"
+                ? doc(db, "users", uid, "aiConversations", chat.id)
+                : doc(db, "aiConversations", chat.id);
+
+            await deleteDoc(convoRef);
+
+            const key = `${src}::${chat.id}`;
+            const unsub = messageUnsubsRef.current.get(key);
+            if (unsub) {
+              try {
+                unsub();
+              } catch {}
+              messageUnsubsRef.current.delete(key);
+            }
+
+            setChatSummaries((prev) => prev.filter((c) => c.id !== chat.id));
+
+            // ✅ SUCCESS MESSAGE
+            showMsg("success", "Deleted", "Chat removed successfully.");
+          } catch (e) {
+            console.warn("Delete chat failed:", e?.message || e);
+
+            // ✅ ERROR MESSAGE
+            showMsg("error", "Delete failed", "Unable to delete chat right now.");
+          }
+        },
+      },
+    ]);
+  };
+
+  /* =========================
+     ROUTER PARAM ALERT: saved
+  ========================= */
   useEffect(() => {
     const sub = (event) => {
       const saved =
@@ -211,6 +229,9 @@ const showMsg = (type, title, body = "") => {
     };
   }, [router]);
 
+  /* =========================
+     AUTH LISTENER
+  ========================= */
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((u) => {
       const nextUid = u?.uid || null;
@@ -222,9 +243,13 @@ const showMsg = (type, title, body = "") => {
         console.log("Firebase projectId:", getApp().options.projectId);
       } catch {}
     });
+
     return unsub;
   }, [auth]);
 
+  /* =========================
+     SNAPSHOT MAPPING
+  ========================= */
   const mapDocs = (snap, source) => {
     return snap.docs.map((d) => {
       const data = d.data() || {};
@@ -245,6 +270,9 @@ const showMsg = (type, title, body = "") => {
     });
   };
 
+  /* =========================
+     CLEANUP HELPERS
+  ========================= */
   const clearMessageListeners = () => {
     try {
       const map = messageUnsubsRef.current;
@@ -257,11 +285,14 @@ const showMsg = (type, title, body = "") => {
     } catch {}
   };
 
+  /* =========================
+     ENRICH: listen to last msg
+  ========================= */
   const ensureMessageListener = ({ source, chatId }) => {
     const src = source === "user" ? "user" : "root";
     const key = `${src}::${chatId}`;
-    if (messageUnsubsRef.current.has(key)) return;
 
+    if (messageUnsubsRef.current.has(key)) return;
     if (!uid) return;
 
     const messagesCol =
@@ -275,11 +306,13 @@ const showMsg = (type, title, body = "") => {
       mq,
       (snap) => {
         const m = snap.docs?.[0]?.data?.() || {};
+
         const text =
           safeString(m.text) ||
           safeString(m.message) ||
           safeString(m.content) ||
           "";
+
         const createdAt = m.createdAt || m.timestamp || null;
 
         setChatSummaries((prev) =>
@@ -312,6 +345,9 @@ const showMsg = (type, title, body = "") => {
     messageUnsubsRef.current.set(key, unsub);
   };
 
+  /* =========================
+     MAIN LISTENER (root -> fallback)
+  ========================= */
   const attachMainListener = ({ useFallback }) => {
     const basePath = useFallback ? `users/${uid}/aiConversations` : "aiConversations";
 
@@ -339,9 +375,11 @@ const showMsg = (type, title, body = "") => {
         q,
         (snap) => {
           const rows = mapDocs(snap, useFallback ? "user" : "root");
+
           setChatSummaries(rows);
           setLoadingChats(false);
 
+          // ✅ auto fallback to user path if root empty
           if (!useFallback && !usedFallbackRef.current && rows.length === 0) {
             usedFallbackRef.current = true;
             try {
@@ -354,6 +392,7 @@ const showMsg = (type, title, body = "") => {
           const msg = err?.message || String(err);
           console.warn(`Recent chats realtime error (${tag}):`, msg);
 
+          // ✅ if updatedAt index/order fails, fallback to createdAt
           if (tag === "updatedAt") {
             try {
               unsubMainRef.current?.();
@@ -370,6 +409,9 @@ const showMsg = (type, title, body = "") => {
     return attach(qUpdated, "updatedAt");
   };
 
+  /* =========================
+     (RE)ATTACH LISTENERS WHEN AUTH/UID CHANGES
+  ========================= */
   useEffect(() => {
     if (unsubMainRef.current) {
       try {
@@ -377,6 +419,7 @@ const showMsg = (type, title, body = "") => {
       } catch {}
       unsubMainRef.current = null;
     }
+
     clearMessageListeners();
     usedFallbackRef.current = false;
 
@@ -405,6 +448,9 @@ const showMsg = (type, title, body = "") => {
     };
   }, [uid, authReady]);
 
+  /* =========================
+     ENRICH ITEMS THAT NEED IT
+  ========================= */
   useEffect(() => {
     if (!uid) return;
     if (!chatSummaries?.length) return;
@@ -419,8 +465,14 @@ const showMsg = (type, title, body = "") => {
     });
   }, [chatSummaries, uid]);
 
+  /* =========================
+     DERIVED
+  ========================= */
   const historyList = useMemo(() => chatSummaries.map((c) => ({ ...c })), [chatSummaries]);
 
+  /* =========================
+     RENDER
+  ========================= */
   return (
     <View style={styles.page}>
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={false} />
@@ -435,38 +487,45 @@ const showMsg = (type, title, body = "") => {
           <Text style={styles.sectionHint}>Create a new design session</Text>
         </View>
 
-        <TouchableOpacity style={styles.primaryCard} onPress={openChatScreen} activeOpacity={0.92}>
-          <View style={styles.primaryCardTop}>
-            <View style={styles.primaryIconWrap}>
-              <Image source={require("../../assets/design.png")} style={styles.primaryIcon} />
-            </View>
+        <View style={styles.primaryCard}>
+  <View style={styles.primaryCardTop}>
+    <View style={styles.primaryIconWrap}>
+      <Image source={require("../../assets/design.png")} style={styles.primaryIcon} />
+    </View>
 
-            <View style={styles.primaryTextWrap}>
-              <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
-              <Text style={styles.primaryDesc} numberOfLines={2}>
-                Generate layouts, refine styles, and modify furniture using a conversational interface.
-              </Text>
-            </View>
-          </View>
+    <View style={styles.primaryTextWrap}>
+      <Text style={styles.primaryTitle}>AI Interior Assistant</Text>
+      <Text style={styles.primaryDesc} numberOfLines={2}>
+        Generate layouts, refine styles, and modify furniture using a conversational interface.
+      </Text>
+    </View>
+  </View>
 
-          <View style={styles.primaryCardBottom}>
-            <View style={styles.miniPillsRow}>
-              <View style={styles.miniPill}>
-                <Ionicons name="image" size={14} color="#0F3E48" />
-                <Text style={styles.miniPillText}>Image-based</Text>
-              </View>
-              <View style={styles.miniPill}>
-                <Ionicons name="chatbubble-ellipses" size={14} color="#0F3E48" />
-                <Text style={styles.miniPillText}>Prompt-driven</Text>
-              </View>
-            </View>
+  <View style={styles.primaryCardBottom}>
+    <View style={styles.miniPillsRow}>
+      <View style={styles.miniPill}>
+        <Ionicons name="image" size={14} color="#0F3E48" />
+        <Text style={styles.miniPillText}>Image-based</Text>
+      </View>
+      <View style={styles.miniPill}>
+        <Ionicons name="chatbubble-ellipses" size={14} color="#0F3E48" />
+        <Text style={styles.miniPillText}>Prompt-driven</Text>
+      </View>
+    </View>
 
-            <View style={styles.startBtn}>
-              <Text style={styles.startBtnText}>Start Chat</Text>
-              <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
-            </View>
-          </View>
-        </TouchableOpacity>
+    {/* ✅ ONLY THIS BUTTON IS TOUCHABLE */}
+    <TouchableOpacity
+      style={styles.startBtn}
+      onPress={openChatScreen}
+      activeOpacity={0.85}
+      accessibilityRole="button"
+    >
+      <Text style={styles.startBtnText}>Start Chat</Text>
+      <Ionicons name="arrow-forward" size={16} color="#FFFFFF" />
+    </TouchableOpacity>
+  </View>
+</View>
+
 
         <View style={styles.historyHeaderRow}>
           <View>
@@ -522,16 +581,24 @@ const showMsg = (type, title, body = "") => {
                 </View>
 
                 <View style={styles.historyActions}>
-                  <TouchableOpacity
+                  {/* ✅ FIX: make ... button clickable (stop parent row press) */}
+                  <View
+                    collapsable={false}
                     ref={(r) => {
                       if (r) moreBtnRefs.current.set(chat.id, r);
                     }}
-                    onPress={() => openChatMenu(chat)}
-                    style={styles.moreBtn}
-                    activeOpacity={0.7}
                   >
-                    <Ionicons name="ellipsis-horizontal" size={18} color="#64748B" />
-                  </TouchableOpacity>
+                    <Pressable
+                      onPress={(e) => {
+                        e?.stopPropagation?.(); // ✅ prevents row onPress
+                        openChatMenu(chat);
+                      }}
+                      style={styles.moreBtn}
+                      hitSlop={10}
+                    >
+                      <Ionicons name="ellipsis-horizontal" size={18} color="#64748B" />
+                    </Pressable>
+                  </View>
                 </View>
               </TouchableOpacity>
             ))}
@@ -567,18 +634,20 @@ const showMsg = (type, title, body = "") => {
         </View>
       )}
 
-<CenterMessageModal
-  visible={msgOpen}
-  type={msgType}
-  title={msgTitle}
-  message={msgBody}
-  onClose={() => setMsgOpen(false)}
-/>
-
+      <CenterMessageModal
+        visible={msgOpen}
+        type={msgType}
+        title={msgTitle}
+        message={msgBody}
+        onClose={() => setMsgOpen(false)}
+      />
     </View>
   );
 }
 
+/* =========================
+   STYLES (unchanged)
+========================= */
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#F8FAFC" },
   safeTop: { backgroundColor: "#F8FAFC" },
@@ -759,9 +828,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  chatMenuTextDelete: {
-    fontSize: 13,
-    fontWeight: "800",
-    color: "#EF4444",
-  },
+  chatMenuTextDelete: { fontSize: 13, fontWeight: "800", color: "#EF4444" },
 });

@@ -1,11 +1,10 @@
 // ConsultantProfile.jsx
-// ✅ UPDATED ONLY (Validation + validation messages):
-// - Validate consultantId param
-// - Validate consultant doc exists
-// - Validate ratings query + reviewer names safely
-// - Validate "Request Consultation" (must have availability + rate)
-// - Added user-friendly Alert messages for validation failures
-// ❗ No other UI/layout/logic changes
+// ✅ CLEANED + FIXED (ratings show):
+// - Safe consultantId param parsing
+// - Cleaner fetch flow
+// - Ratings query safe + permission-aware
+// - Reviewer names: prefer reviewerName in ratings; fallback to users doc if allowed
+// - No UI/layout changes
 
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -42,9 +41,14 @@ const THEME = {
   danger: "#DC2626",
 };
 
+const toStrParam = (v) => (Array.isArray(v) ? v[0] : v ? String(v) : "");
+const safeStr = (v) => String(v ?? "").trim();
+
 export default function ConsultantProfile() {
-  const { consultantId } = useLocalSearchParams();
+  const params = useLocalSearchParams();
   const router = useRouter();
+
+  const consultantId = toStrParam(params.consultantId);
 
   const [consultant, setConsultant] = useState(null);
   const [ratings, setRatings] = useState([]);
@@ -53,28 +57,20 @@ export default function ConsultantProfile() {
   const [ratingsLoading, setRatingsLoading] = useState(true);
   const [scheduleVisible, setScheduleVisible] = useState(false);
 
-  // ✅ validation message state (simple + UI-safe)
   const [pageError, setPageError] = useState("");
 
-  const safeStr = (v) => String(v ?? "").trim();
-  const isNonEmpty = (v) => safeStr(v).length > 0;
-
   const validateConsultantId = () => {
-    if (!isNonEmpty(consultantId)) return "Missing consultantId.";
+    if (!safeStr(consultantId)) return "Missing consultantId.";
     return "";
   };
 
   const validateCanRequest = () => {
     if (!consultant) return "Consultant data is not available.";
-    const availability = Array.isArray(consultant.availability)
-      ? consultant.availability
-      : [];
+    const availability = Array.isArray(consultant.availability) ? consultant.availability : [];
     const rate = Number(consultant.rate || 0);
 
-    if (availability.length === 0)
-      return "This consultant has no schedule available yet.";
-    if (!Number.isFinite(rate) || rate <= 0)
-      return "This consultant has no consultation fee set yet.";
+    if (availability.length === 0) return "This consultant has no schedule available yet.";
+    if (!Number.isFinite(rate) || rate <= 0) return "This consultant has no consultation fee set yet.";
     return "";
   };
 
@@ -88,47 +84,63 @@ export default function ConsultantProfile() {
       return;
     }
 
-    const fetchData = async () => {
+    let cancelled = false;
+
+    const fetchAll = async () => {
       try {
         setLoading(true);
         setRatingsLoading(true);
         setPageError("");
 
-        // ✅ 1) Consultant doc
-        const cSnap = await getDoc(doc(db, "consultants", String(consultantId)));
-        if (cSnap.exists()) {
-          setConsultant({ id: cSnap.id, ...cSnap.data() });
-        } else {
-          console.log("⚠️ Consultant not found:", consultantId);
+        // 1) Consultant
+        const cSnap = await getDoc(doc(db, "consultants", consultantId));
+        if (!cSnap.exists()) {
           setConsultant(null);
           setPageError("Consultant not found.");
           return;
         }
 
-        // ✅ 2) Ratings list
+        const cData = { id: cSnap.id, ...cSnap.data() };
+        if (!cancelled) setConsultant(cData);
+
+        // 2) Ratings (NOTE: requires rules allow read/list)
         let rList = [];
         try {
-          const q = query(
+          const qRatings = query(
             collection(db, "ratings"),
-            where("consultantId", "==", String(consultantId)),
+            where("consultantId", "==", consultantId),
             orderBy("createdAt", "desc")
           );
 
-          const rSnap = await getDocs(q);
+          const rSnap = await getDocs(qRatings);
           rList = rSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-          setRatings(rList);
+          if (!cancelled) setRatings(rList);
         } catch (e) {
           console.log("⚠️ Ratings fetch failed:", e?.message || e);
-          setRatings([]);
+
+          // If permission denied, show helpful message instead of silent empty list
+          const msg = String(e?.message || "");
+          if (msg.toLowerCase().includes("permission")) {
+            Alert.alert(
+              "Ratings unavailable",
+              "Your Firestore rules currently block reading ratings. Allow 'read/list' on /ratings for signed-in users to show feedback."
+            );
+          }
+          if (!cancelled) setRatings([]);
         }
 
-        // ✅ 3) Reviewer map (safe name resolution)
+        // 3) Reviewer map (optional; may be blocked by /users rules)
+        // Prefer reviewerName stored in rating docs (best practice).
         const map = {};
-        await Promise.all(
-          (rList || []).map(async (r) => {
-            const uid = r?.userId ? String(r.userId) : "";
-            if (!uid || map[uid]) return;
+        const uniqueUserIds = new Set(
+          (rList || [])
+            .map((r) => safeStr(r?.userId))
+            .filter(Boolean)
+        );
 
+        // Only attempt user doc lookup if there are ids
+        await Promise.all(
+          Array.from(uniqueUserIds).map(async (uid) => {
             try {
               const uSnap = await getDoc(doc(db, "users", uid));
               if (uSnap.exists()) {
@@ -140,26 +152,31 @@ export default function ConsultantProfile() {
                   u.username ||
                   "Anonymous";
               }
-            } catch (e) {
-              // keep silent, fallback handled in UI
+            } catch {
+              // ignore; fallback handled in UI
             }
           })
         );
-        setReviewerMap(map);
+
+        if (!cancelled) setReviewerMap(map);
       } catch (e) {
         console.error("Data fetch error:", e);
         setPageError("Failed to load consultant profile. Please try again.");
       } finally {
-        setLoading(false);
-        setRatingsLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setRatingsLoading(false);
+        }
       }
     };
 
-    fetchData();
+    fetchAll();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [consultantId]);
 
-  // ✅ computed + safe
   const availability = useMemo(() => {
     return Array.isArray(consultant?.availability) ? consultant.availability : [];
   }, [consultant]);
@@ -170,6 +187,15 @@ export default function ConsultantProfile() {
     return (sum / ratings.length).toFixed(1);
   }, [ratings]);
 
+  const handleOpenSchedule = () => {
+    const err = validateCanRequest();
+    if (err) {
+      Alert.alert("Cannot request consultation", err);
+      return;
+    }
+    setScheduleVisible(true);
+  };
+
   if (loading) {
     return (
       <View style={styles.center}>
@@ -178,7 +204,6 @@ export default function ConsultantProfile() {
     );
   }
 
-  // ✅ validation / fatal error screen
   if (pageError) {
     return (
       <View style={styles.center}>
@@ -202,15 +227,6 @@ export default function ConsultantProfile() {
       </View>
     );
   }
-
-  const handleOpenSchedule = () => {
-    const err = validateCanRequest();
-    if (err) {
-      Alert.alert("Cannot request consultation", err);
-      return;
-    }
-    setScheduleVisible(true);
-  };
 
   return (
     <View style={styles.container}>
@@ -261,15 +277,11 @@ export default function ConsultantProfile() {
               Expert Details
             </Text>
 
-            <InfoRow
-              icon="cash-outline"
-              label="Consultation Fee"
-              value={`₱${consultant.rate || "0"}.00`}
-            />
+            <InfoRow icon="cash-outline" label="Consultation Fee" value={`₱${consultant.rate || "0"}.00`} />
             <InfoRow icon="school-outline" label="Education" value={consultant.education || "Not provided"} />
-            <InfoRow icon="people-outline" label="Gender" value={consultant.gender} />
-            <InfoRow icon="mail-outline" label="Email" value={consultant.email} />
-            <InfoRow icon="location-outline" label="Address" value={consultant.address} />
+            <InfoRow icon="people-outline" label="Gender" value={consultant.gender || "Not provided"} />
+            <InfoRow icon="mail-outline" label="Email" value={consultant.email || "Not provided"} />
+            <InfoRow icon="location-outline" label="Address" value={consultant.address || "Not provided"} />
           </View>
 
           <View style={styles.card}>
@@ -285,7 +297,7 @@ export default function ConsultantProfile() {
             <View style={styles.availabilityGrid}>
               {availability.length > 0 ? (
                 availability.map((day, i) => (
-                  <View key={i} style={styles.dayChip}>
+                  <View key={`${day}-${i}`} style={styles.dayChip}>
                     <Text style={styles.dayText}>{day}</Text>
                   </View>
                 ))
@@ -294,7 +306,6 @@ export default function ConsultantProfile() {
               )}
             </View>
 
-            {/* ✅ inline validation hint (schedule missing) */}
             {availability.length === 0 ? (
               <Text style={styles.inlineWarn}>
                 Schedule is not available yet. You cannot request a consultation.
@@ -317,29 +328,44 @@ export default function ConsultantProfile() {
             ) : ratings.length === 0 ? (
               <Text style={styles.muted}>No ratings yet</Text>
             ) : (
-              ratings.map((r) => (
-                <View key={r.id} style={styles.reviewCard}>
-                  <View style={styles.reviewHeader}>
-                    <Text style={styles.reviewName}>
-                      {reviewerMap[r.userId] || "Anonymous"}
-                    </Text>
-                    <Text style={styles.reviewDate}>
-                      {r.createdAt?.toDate?.().toLocaleDateString()}
-                    </Text>
+              ratings.map((r) => {
+                const displayName =
+                  // best: reviewerName stored in rating
+                  safeStr(r.reviewerName) ||
+                  // fallback: fetched from users doc if allowed
+                  reviewerMap[safeStr(r.userId)] ||
+                  "Anonymous";
+
+                const dateText = r.createdAt?.toDate?.()
+                  ? r.createdAt.toDate().toLocaleDateString()
+                  : "";
+
+                const ratingNum = Number(r.rating || 0);
+
+                return (
+                  <View key={r.id} style={styles.reviewCard}>
+                    <View style={styles.reviewHeader}>
+                      <Text style={styles.reviewName}>{displayName}</Text>
+                      <Text style={styles.reviewDate}>{dateText}</Text>
+                    </View>
+
+                    <View style={styles.starsRow}>
+                      {[1, 2, 3, 4, 5].map((i) => (
+                        <Ionicons
+                          key={i}
+                          name={i <= ratingNum ? "star" : "star-outline"}
+                          size={14}
+                          color="#F59E0B"
+                        />
+                      ))}
+                    </View>
+
+                    {!!safeStr(r.feedback) && (
+                      <Text style={styles.reviewText}>{safeStr(r.feedback)}</Text>
+                    )}
                   </View>
-                  <View style={styles.starsRow}>
-                    {[1, 2, 3, 4, 5].map((i) => (
-                      <Ionicons
-                        key={i}
-                        name={i <= r.rating ? "star" : "star-outline"}
-                        size={14}
-                        color="#F59E0B"
-                      />
-                    ))}
-                  </View>
-                  {!!r.feedback && <Text style={styles.reviewText}>{r.feedback}</Text>}
-                </View>
-              ))
+                );
+              })
             )}
           </View>
         </View>
@@ -468,12 +494,7 @@ const styles = StyleSheet.create({
   dayChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, backgroundColor: "#E0F2F1", borderWidth: 1, borderColor: "#B2DFDB" },
   dayText: { fontSize: 13, fontWeight: "700", color: "#00796B" },
 
-  inlineWarn: {
-    marginTop: 12,
-    color: THEME.danger,
-    fontWeight: "800",
-    fontSize: 12,
-  },
+  inlineWarn: { marginTop: 12, color: THEME.danger, fontWeight: "800", fontSize: 12 },
 
   reviewCard: { backgroundColor: "#F8FAFC", padding: 15, borderRadius: 18, marginBottom: 12, borderWidth: 1, borderColor: "#F1F5F9" },
   reviewHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },

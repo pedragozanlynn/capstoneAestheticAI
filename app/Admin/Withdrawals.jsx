@@ -1,46 +1,51 @@
-import {
-  collection,
-  doc,
-  getDoc,
-  onSnapshot,
-  serverTimestamp,
-  writeBatch,
-} from "firebase/firestore";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
   Modal,
+  Pressable,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  StatusBar,
-  Pressable,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  collection,
+  doc,
+  getDoc,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  writeBatch,
+} from "firebase/firestore";
+
 import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
-
-// ✅ ADD: Center modal component (same as your other screens)
 import CenterMessageModal from "../components/CenterMessageModal";
 
 export default function Withdrawals() {
+  const insets = useSafeAreaInsets();
+
   const [loading, setLoading] = useState(true);
   const [payouts, setPayouts] = useState([]);
   const [activeFilter, setActiveFilter] = useState("all");
+
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedPayout, setSelectedPayout] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // ✅ CenterMessageModal state
   const [centerModal, setCenterModal] = useState({
     visible: false,
     type: "info", // success | error | info | warning
     title: "",
     message: "",
   });
+
+  const mountedRef = useRef(true);
+  const consultantNameCache = useRef(new Map()); // consultantId -> fullName
 
   const showCenterModal = (type, title, message) => {
     setCenterModal({
@@ -55,51 +60,16 @@ export default function Withdrawals() {
     setCenterModal((m) => ({ ...m, visible: false }));
   };
 
-  // ✅ guard: avoid setState when unmounted
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    const unsub = onSnapshot(collection(db, "payouts"), async (snapshot) => {
-      try {
-        const list = [];
-
-        for (const docSnap of snapshot.docs) {
-          const data = docSnap.data();
-          let consultantName = "Unknown";
-
-          if (data.consultantId) {
-            const cRef = await getDoc(doc(db, "consultants", data.consultantId));
-            if (cRef.exists()) consultantName = cRef.data().fullName;
-          }
-
-          list.push({
-            id: docSnap.id,
-            consultantId: data.consultantId,
-            consultantName,
-            amount: data.amount,
-            gcash_number: data.gcash_number,
-            status: data.status || "pending",
-          });
-        }
-
-        if (!mountedRef.current) return;
-        setPayouts(list);
-        setLoading(false);
-      } catch (e) {
-        console.log("Withdrawals snapshot error:", e?.message || e);
-        if (!mountedRef.current) return;
-        setLoading(false);
-        showCenterModal("error", "Load Failed", "Unable to load payouts. Please try again.");
-      }
-    });
-
-    return () => {
-      mountedRef.current = false;
-      unsub();
-    };
-  }, []);
+  const getStatusConfig = (status) => {
+    switch (status) {
+      case "approved":
+        return { bg: "#E8F5E9", text: "#2E7D32", icon: "checkmark-circle" };
+      case "declined":
+        return { bg: "#FFEBEE", text: "#C62828", icon: "close-circle" };
+      default:
+        return { bg: "#FFF3E0", text: "#EF6C00", icon: "time" };
+    }
+  };
 
   const filteredPayouts = useMemo(() => {
     if (activeFilter === "all") return payouts;
@@ -112,12 +82,90 @@ export default function Withdrawals() {
   };
 
   const closeModal = () => {
-    if (actionLoading) return; // lock closing while saving
+    if (actionLoading) return;
     setModalVisible(false);
     setSelectedPayout(null);
   };
 
   const isPending = selectedPayout?.status === "pending";
+
+  // ✅ Realtime load payouts + safe consultant name lookups
+  useEffect(() => {
+    mountedRef.current = true;
+
+    // If you have createdAt, you can use orderBy:
+    // const qy = query(collection(db, "payouts"), orderBy("createdAt", "desc"));
+    const qy = query(collection(db, "payouts"));
+
+    const unsub = onSnapshot(
+      qy,
+      async (snapshot) => {
+        try {
+          const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+          // collect unique consultantIds
+          const ids = Array.from(
+            new Set(docs.map((x) => x.consultantId).filter(Boolean))
+          );
+
+          // fetch missing consultant names only (cache)
+          const missing = ids.filter((id) => !consultantNameCache.current.has(id));
+
+          if (missing.length) {
+            await Promise.all(
+              missing.map(async (id) => {
+                try {
+                  const snap = await getDoc(doc(db, "consultants", id));
+                  const name = snap.exists() ? String(snap.data()?.fullName || "Unknown") : "Unknown";
+                  consultantNameCache.current.set(id, name);
+                } catch {
+                  consultantNameCache.current.set(id, "Unknown");
+                }
+              })
+            );
+          }
+
+          const list = docs.map((data) => {
+            const consultantId = data.consultantId || null;
+            const consultantName = consultantId
+              ? consultantNameCache.current.get(consultantId) || "Unknown"
+              : "Unknown";
+
+            return {
+              id: data.id,
+              consultantId,
+              consultantName,
+              amount: data.amount ?? 0,
+              gcash_number: data.gcash_number || "",
+              status: data.status || "pending",
+            };
+          });
+
+          if (!mountedRef.current) return;
+          setPayouts(list);
+          setLoading(false);
+        } catch (e) {
+          console.log("Withdrawals snapshot error:", e?.message || e);
+          if (!mountedRef.current) return;
+          setLoading(false);
+          showCenterModal("error", "Load Failed", "Unable to load payouts. Please try again.");
+        }
+      },
+      (err) => {
+        console.log("Withdrawals listener error:", err?.message || err);
+        if (!mountedRef.current) return;
+        setLoading(false);
+        showCenterModal("error", "Load Failed", "Unable to load payouts. Please try again.");
+      }
+    );
+
+    return () => {
+      mountedRef.current = false;
+      try {
+        unsub?.();
+      } catch {}
+    };
+  }, []);
 
   const handleAction = async (action) => {
     if (!selectedPayout || !isPending) return;
@@ -152,7 +200,6 @@ export default function Withdrawals() {
 
       await batch.commit();
 
-      // ✅ show success via CenterMessageModal (no UI redesign)
       showCenterModal(
         "success",
         "Updated",
@@ -170,28 +217,18 @@ export default function Withdrawals() {
     }
   };
 
-  const getStatusConfig = (status) => {
-    switch (status) {
-      case "approved":
-        return { bg: "#E8F5E9", text: "#2E7D32", icon: "checkmark-circle" };
-      case "declined":
-        return { bg: "#FFEBEE", text: "#C62828", icon: "close-circle" };
-      default:
-        return { bg: "#FFF3E0", text: "#EF6C00", icon: "time" };
-    }
-  };
-
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="light-content" />
+      {/* ✅ App-safe StatusBar: header is dark blue, so light content */}
+      <StatusBar barStyle="light-content" backgroundColor="#01579B" />
 
-      {/* 🔒 HEADER — ONLY SMALLER HEIGHT/PADDING */}
-      <View style={styles.header}>
-        <SafeAreaView>
+      {/* ✅ HEADER: SafeAreaView handles notch properly */}
+      <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+        <View style={styles.header}>
           <Text style={styles.headerTitle}>Withdrawals</Text>
           <Text style={styles.headerSubtitle}>Manage consultant payout requests</Text>
-        </SafeAreaView>
-      </View>
+        </View>
+      </SafeAreaView>
 
       {/* FILTERS */}
       <View style={styles.filterWrapper}>
@@ -204,6 +241,7 @@ export default function Withdrawals() {
                 styles.filterTab,
                 activeFilter === filter && styles.activeFilterTab,
               ]}
+              activeOpacity={0.85}
             >
               <Text
                 style={[
@@ -227,17 +265,24 @@ export default function Withdrawals() {
       ) : (
         <FlatList
           data={filteredPayouts}
-          contentContainerStyle={styles.listContent}
           keyExtractor={(item) => item.id}
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: 120 + insets.bottom }, // ✅ not hidden by BottomNavbar
+          ]}
           renderItem={({ item }) => {
             const statusStyle = getStatusConfig(item.status);
+            const firstLetter = (item.consultantName || "U").trim().charAt(0).toUpperCase();
+
             return (
-              <TouchableOpacity style={styles.card} onPress={() => openPayoutModal(item)}>
+              <TouchableOpacity
+                style={styles.card}
+                onPress={() => openPayoutModal(item)}
+                activeOpacity={0.9}
+              >
                 <View style={styles.cardTop}>
                   <View style={styles.profileCircle}>
-                    <Text style={styles.profileLetter}>
-                      {item.consultantName.charAt(0)}
-                    </Text>
+                    <Text style={styles.profileLetter}>{firstLetter}</Text>
                   </View>
 
                   <View style={{ flex: 1, marginLeft: 12 }}>
@@ -264,10 +309,17 @@ export default function Withdrawals() {
               </TouchableOpacity>
             );
           }}
+          ListEmptyComponent={
+            <View style={{ paddingTop: 40, alignItems: "center" }}>
+              <Text style={{ color: "#64748B", fontWeight: "700" }}>
+                No payouts found.
+              </Text>
+            </View>
+          }
         />
       )}
 
-      {/* ✅ MODAL (APP-READY) */}
+      {/* MODAL */}
       <Modal
         visible={modalVisible}
         transparent
@@ -302,6 +354,7 @@ export default function Withdrawals() {
                   ]}
                   onPress={() => handleAction("decline")}
                   disabled={!isPending || actionLoading}
+                  activeOpacity={0.9}
                 >
                   <Text style={styles.declineBtnText}>Decline</Text>
                 </TouchableOpacity>
@@ -313,6 +366,7 @@ export default function Withdrawals() {
                   ]}
                   onPress={() => handleAction("approve")}
                   disabled={!isPending || actionLoading}
+                  activeOpacity={0.9}
                 >
                   {actionLoading ? (
                     <ActivityIndicator color="#FFF" />
@@ -326,6 +380,7 @@ export default function Withdrawals() {
                 style={styles.closeBtn}
                 onPress={closeModal}
                 disabled={actionLoading}
+                activeOpacity={0.8}
               >
                 <Text style={styles.closeBtnText}>Close</Text>
               </TouchableOpacity>
@@ -334,7 +389,7 @@ export default function Withdrawals() {
         </View>
       </Modal>
 
-      {/* ✅ CENTER MESSAGE MODAL */}
+      {/* CENTER MESSAGE MODAL */}
       <CenterMessageModal
         visible={centerModal.visible}
         type={centerModal.type}
@@ -350,21 +405,22 @@ export default function Withdrawals() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F1F5F9" },
-  centerLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
-  loadingText: { marginTop: 10, color: "#64748B" },
 
-  /* ✅ HEADER: reduced paddingBottom only */
+  centerLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
+  loadingText: { marginTop: 10, color: "#64748B", fontWeight: "600" },
+
+  // ✅ header safe wrapper
+  headerSafe: { backgroundColor: "#01579B" },
   header: {
-    backgroundColor: "#01579B",
-    paddingTop: 34,
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
+    paddingTop: 30,
+    paddingBottom: 15, // ✅ stable, no negative margins
   },
-  headerTitle: { fontSize: 25, fontWeight: "800", color: "#FFF",  },
+  headerTitle: { fontSize: 25, fontWeight: "800", color: "#FFF" },
   headerSubtitle: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+    color: "rgba(255,255,255,0.72)",
     marginTop: 4,
-    marginBottom: -15,
   },
 
   filterWrapper: { paddingHorizontal: 16, marginVertical: 10 },
@@ -376,15 +432,18 @@ const styles = StyleSheet.create({
   },
   filterTab: { flex: 1, paddingVertical: 10, alignItems: "center" },
   activeFilterTab: { backgroundColor: "#FFF", borderRadius: 12 },
-  filterTabText: { color: "#64748B", fontWeight: "700" },
+  filterTabText: { color: "#64748B", fontWeight: "800", fontSize: 12 },
   activeFilterTabText: { color: "#01579B" },
 
-  listContent: { padding: 16, paddingBottom: 120 },
+  listContent: { padding: 16 },
+
   card: {
     backgroundColor: "#FFF",
     borderRadius: 20,
     padding: 16,
     marginBottom: 16,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
   },
 
   cardTop: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
@@ -396,13 +455,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  profileLetter: { fontSize: 18, fontWeight: "700", color: "#01579B" },
+  profileLetter: { fontSize: 18, fontWeight: "800", color: "#01579B" },
 
-  consultantName: { fontSize: 16, fontWeight: "700", color: "#334155" },
-  gcashLabel: { fontSize: 12, color: "#94A3B8" },
+  consultantName: { fontSize: 16, fontWeight: "800", color: "#334155" },
+  gcashLabel: { fontSize: 12, color: "#94A3B8", marginTop: 2 },
 
   statusChip: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 },
-  statusText: { fontSize: 11, fontWeight: "700" },
+  statusText: { fontSize: 11, fontWeight: "800", textTransform: "capitalize" },
 
   cardBottom: {
     flexDirection: "row",
@@ -410,9 +469,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: "#F1F5F9",
     paddingTop: 12,
+    alignItems: "center",
   },
-  amountLabel: { fontSize: 11, color: "#64748B" },
-  amountValue: { fontSize: 22, fontWeight: "800", color: "#1E293B" },
+  amountLabel: { fontSize: 11, color: "#64748B", fontWeight: "700" },
+  amountValue: { fontSize: 22, fontWeight: "900", color: "#1E293B", marginTop: 2 },
 
   // Modal
   modalOverlay: {
@@ -435,20 +495,20 @@ const styles = StyleSheet.create({
     backgroundColor: "#E2E8F0",
     alignSelf: "center",
     borderRadius: 10,
-    marginBottom: 20,
+    marginBottom: 18,
   },
-  modalTitle: { fontSize: 20, fontWeight: "800", textAlign: "center" },
+  modalTitle: { fontSize: 20, fontWeight: "900", textAlign: "center" },
 
   infoRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     marginVertical: 8,
   },
-  infoLabel: { color: "#64748B" },
-  infoValue: { fontWeight: "700" },
-  amountHighlight: { color: "#01579B", fontSize: 18, fontWeight: "800" },
+  infoLabel: { color: "#64748B", fontWeight: "700" },
+  infoValue: { fontWeight: "900", color: "#0F172A" },
+  amountHighlight: { color: "#01579B", fontSize: 18, fontWeight: "900" },
 
-  modalButtons: { flexDirection: "row", gap: 12, marginTop: 25 },
+  modalButtons: { flexDirection: "row", gap: 12, marginTop: 22 },
   approveBtn: {
     flex: 1,
     backgroundColor: "#01579B",
@@ -456,7 +516,7 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     alignItems: "center",
   },
-  approveBtnText: { color: "#FFF", fontWeight: "800" },
+  approveBtnText: { color: "#FFF", fontWeight: "900" },
   declineBtn: {
     flex: 1,
     backgroundColor: "#FEE2E2",
@@ -464,13 +524,13 @@ const styles = StyleSheet.create({
     borderRadius: 15,
     alignItems: "center",
   },
-  declineBtnText: { color: "#EF4444", fontWeight: "800" },
+  declineBtnText: { color: "#EF4444", fontWeight: "900" },
   disabledBtn: { opacity: 0.5 },
 
-  closeBtn: { marginTop: 18 },
+  closeBtn: { marginTop: 16 },
   closeBtnText: {
     textAlign: "center",
     color: "#94A3B8",
-    fontWeight: "700",
+    fontWeight: "800",
   },
 });

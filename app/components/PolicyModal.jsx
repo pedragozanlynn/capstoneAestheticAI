@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo } from "react";
 import {
   Modal,
   View,
@@ -6,173 +6,189 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  Linking,
+  Pressable,
 } from "react-native";
-import CenterMessageModal from "./CenterMessageModal";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-export default function PolicyModal({ visible, onClose, onAccept }) {
+export default function PolicyModal({
+  visible,
+  onClose,
+  onAccept,
+  variant = "user", // "user" | "consultant"
+}) {
   const handleAccept = () => {
     if (onAccept) onAccept();
     if (onClose) onClose();
   };
 
-  // ✅ CenterMessageModal state
-  const [msgOpen, setMsgOpen] = useState(false);
-  const [msgType, setMsgType] = useState("info");
-  const [msgTitle, setMsgTitle] = useState("");
-  const [msgBody, setMsgBody] = useState("");
-
-  const showMsg = (type, title, body = "") => {
-    setMsgType(type);
-    setMsgTitle(title);
-    setMsgBody(body);
-    setMsgOpen(true);
-  };
-
-  // ✅ open links safely (NO Alert)
-  const openLink = async (url) => {
-    try {
-      if (!url) return;
-      const can = await Linking.canOpenURL(url);
-      if (!can) return showMsg("error", "Link Error", "Unable to open the link.");
-      await Linking.openURL(url);
-    } catch {
-      showMsg("error", "Link Error", "Unable to open the link.");
+  const content = useMemo(() => {
+    if (variant === "consultant") {
+      return {
+        title: "Privacy Policy ",
+        body:
+          "This Privacy Policy explains how consultant registration information is collected and used.\n\n" +
+          "1. We collect your name, email, and other submitted details for account creation and verification.\n\n" +
+          "2. Your consultant profile information may be reviewed for approval and platform compliance.\n\n" +
+          "2.1. Verification may be required. You may be asked to upload a valid government-issued ID and a selfie for identity verification.\n\n" +
+          "2.2. These verification files may be reviewed to confirm authenticity and eligibility, and may be stored securely for compliance, fraud prevention, and platform safety.\n\n" +
+          "3. Consultation chats, shared images, and appointment details may be stored to support communication and service delivery.\n\n" +
+          "4. Do not submit sensitive personal information (passwords, bank PINs, or unrelated confidential data) in chats or uploads beyond the required verification documents.\n\n" +
+          "5. We do not sell personal information. Access may be limited to authorized staff or systems necessary to operate and secure the service.\n\n" +
+          "6. Verification documents may be retained only as long as necessary for approval processing, compliance, and fraud prevention, and may be securely deleted in accordance with platform policies.\n\n" +
+          "7. You may request updates or removal of your data subject to platform requirements and legal obligations.\n\n" +
+          "By tapping “I Agree”, you consent to the collection and processing of your information for consultant onboarding, identity verification, and service operations.",
+        agreeText: "I Agree",
+      };
+      
     }
-  };
+
+    return {
+      title: "Privacy & User Agreement",
+      body:
+        "1. We collect your email for login and account identification.\n\n" +
+        "2. Uploaded room images and saved designs are stored to generate AI suggestions and project history.\n\n" +
+        "3. AI suggestions are provided by third-party AI models and may not be 100% accurate.\n\n" +
+        "4. Please do not upload sensitive personal information (IDs, passwords, bank details).\n\n" +
+        "5. Consultation chats, shared images, and appointment details may be stored to support communication.\n\n" +
+        "6. Some consultation services inside the platform may require payment. Fees will be shown before booking and are handled between the user and consultant.\n\n" +
+        "7. By tapping “I Agree”, you consent to the use of your data for AI features and consultation services within the system.",
+      agreeText: "I Agree",
+    };
+  }, [variant]);
 
   return (
-    <>
-      <Modal visible={visible} transparent animationType="slide">
-        <View style={styles.overlay}>
-          <View style={styles.container}>
-            {/* Top bar indicator */}
-            <View style={styles.dragIndicatorWrapper}>
-              <View style={styles.dragIndicator} />
-            </View>
+    <Modal visible={visible} transparent animationType="fade" statusBarTranslucent>
+      <Pressable style={styles.overlay} onPress={onClose}>
+        <Pressable style={styles.card} onPress={() => {}}>
+          <SafeAreaView edges={[]} style={styles.cardInner}>
+            {/* Top Divider */}
+            <View style={styles.topDivider} />
 
-            <Text style={styles.title}>Privacy & User Agreements</Text>
+            {/* Title */}
+            <Text style={styles.title}>{content.title}</Text>
 
-            <ScrollView style={styles.scrollArea} showsVerticalScrollIndicator={false}>
-              <Text style={styles.policyText}>
-                1. We collect your email for account creation and authentication.{"\n\n"}
-                2. We store layout images you upload to improve your experience.{"\n\n"}
-                3. AI suggestions are generated by third-party models; avoid uploading sensitive information.{"\n\n"}
-                4. You may request deletion of your data anytime via Profile → Delete Account.{"\n\n"}
-                5. Read the full Privacy Policy and Terms below:
-              </Text>
-
-              {/* ✅ clickable links */}
-              <TouchableOpacity
-                onPress={() => openLink("https://example.com/privacy")}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.linkText}>example.com/privacy</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => openLink("https://example.com/terms")}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.linkText}>example.com/terms</Text>
-              </TouchableOpacity>
+            {/* Body */}
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.policyText}>{content.body}</Text>
             </ScrollView>
 
-            <View style={styles.buttonRow}>
-              <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-                <Text style={styles.closeText}>Close</Text>
+            {/* Footer */}
+            <View style={styles.footer}>
+              <TouchableOpacity onPress={onClose} style={styles.btnGhost} activeOpacity={0.9}>
+                <Text style={styles.btnGhostText}>Close</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity onPress={handleAccept} style={styles.agreeButton}>
-                <Text style={styles.agreeText}>I Agree</Text>
+              <TouchableOpacity onPress={handleAccept} style={styles.btnPrimary} activeOpacity={0.9}>
+                <Text style={styles.btnPrimaryText}>{content.agreeText}</Text>
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* ✅ CenterMessageModal must be outside Modal; wrap in Fragment */}
-      <CenterMessageModal
-        visible={msgOpen}
-        type={msgType}
-        title={msgTitle}
-        message={msgBody}
-        onClose={() => setMsgOpen(false)}
-      />
-    </>
+          </SafeAreaView>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
-    justifyContent: "flex-end",
+    backgroundColor: "rgba(17,24,39,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
   },
-  container: {
-    maxHeight: "80%",
+
+  card: {
+    width: "100%",
+    maxWidth: 420,
     backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-  },
-  dragIndicatorWrapper: {
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  dragIndicator: {
-    width: 48,
-    height: 4,
-    backgroundColor: "#DDD",
-    borderRadius: 2,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: "700",
-    marginBottom: 12,
-    color: "#111827",
-  },
-  scrollArea: {
-    marginBottom: 20,
-  },
-  policyText: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: "#374151",
-  },
-  linkText: {
-    fontSize: 15,
-    lineHeight: 22,
-    color: "#01579B",
-    fontWeight: "700",
-    marginTop: 6,
-  },
-  buttonRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    gap: 12,
-  },
-  closeButton: {
-    flex: 1,
-    padding: 12,
+    borderRadius: 18,
     borderWidth: 1,
-    borderColor: "#DDD",
-    borderRadius: 12,
-    alignItems: "center",
+    borderColor: "rgba(17,24,39,0.10)",
+    overflow: "hidden",
+
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
   },
-  closeText: {
-    fontWeight: "600",
+
+  cardInner: {
+    paddingHorizontal: 18,
+    paddingBottom: 16,
+    paddingTop: 0,
+  },
+
+  /* NEW divider */
+  topDivider: {
+    height: 4,
+    width: 60,
+    borderRadius: 4,
+    backgroundColor: "#E5E7EB",
+    alignSelf: "center",
+    marginTop: 12,
+    marginBottom: 14,
+  },
+
+  title: {
+    fontSize: 18,
+    fontWeight: "900",
     color: "#111827",
+    textAlign: "center",
+    marginBottom: 12,
   },
-  agreeButton: {
+
+  scrollArea: {
+    maxHeight: 340,
+  },
+  scrollContent: {
+    paddingBottom: 6,
+  },
+
+  policyText: {
+    fontSize: 14,
+    lineHeight: 21,
+    color: "#374151",
+    fontWeight: "500",
+  },
+
+  footer: {
+    flexDirection: "row",
+    gap: 12,
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(17,24,39,0.08)",
+  },
+
+  btnGhost: {
     flex: 1,
-    padding: 12,
-    backgroundColor: "#0F3E48",
+    paddingVertical: 12,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(17,24,39,0.18)",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+  },
+  btnGhostText: {
+    color: "#111827",
+    fontWeight: "800",
+  },
+
+  btnPrimary: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: "#0F3E48",
     alignItems: "center",
   },
-  agreeText: {
+  btnPrimaryText: {
     color: "#FFFFFF",
-    fontWeight: "700",
+    fontWeight: "900",
   },
 });

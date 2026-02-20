@@ -16,16 +16,16 @@ import {
   StatusBar,
   Platform,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { LineChart, PieChart } from "react-native-chart-kit";
 import { auth, db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 
 const screenWidth = Dimensions.get("window").width;
 
-/** =========================
- * ✅ Small safe helpers
- * ========================= */
+/* =========================
+   SAFE HELPERS (CLEAN)
+========================= */
 const safeStr = (v) => (v == null ? "" : String(v).trim());
 const safeNum = (v, fallback = 0) => {
   const n = Number(v);
@@ -68,9 +68,17 @@ const normalizeConsultantStatus = (s) => {
   return "pending";
 };
 
+const normalizePaymentStatus = (s) => safeStr(s).toLowerCase();
+
+const pickUnifiedDate = (p) =>
+  p?.createdAt || p?.timestamp || p?.paidAt || p?.date || p?.updatedAt || null;
+
+const isAdminIncome = (p) => safeStr(p?.type).toLowerCase() === "admin_income";
+const isApprovedSub = (p) => normalizePaymentStatus(p?.status) === "approved";
+const isCompletedIncome = (p) => normalizePaymentStatus(p?.status) === "completed";
+
 export default function Dashboard() {
   const router = useRouter();
-  const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
 
@@ -84,7 +92,7 @@ export default function Dashboard() {
   const [grandTotalAdmin, setGrandTotalAdmin] = useState(0);
 
   const [payments, setPayments] = useState([]);
-  const [activeTab, setActiveTab] = useState("all");
+  const [activeTab, setActiveTab] = useState("all"); // all | subscription | session
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
 
@@ -110,65 +118,66 @@ export default function Dashboard() {
 
   useEffect(() => {
     const loadDashboardData = async () => {
+      setLoading(true);
       try {
-        setLoading(true);
-
         const [uSnap, cSnap, paymentsSnap] = await Promise.all([
           getDocs(collection(db, "users")),
           getDocs(collection(db, "consultants")),
           getDocs(collection(db, "subscription_payments")),
         ]);
 
+        // USERS
         setTotalUsers(uSnap.size);
 
+        // CONSULTANTS
         const consData = cSnap.docs.map((d) => d.data() || {});
         setTotalConsultants(consData.length);
 
         const pending = consData.filter((c) => normalizeConsultantStatus(c.status) === "pending").length;
         const accepted = consData.filter((c) => normalizeConsultantStatus(c.status) === "accepted").length;
         const rejected = consData.filter((c) => normalizeConsultantStatus(c.status) === "rejected").length;
-
         setConTrend([pending, accepted, rejected, consData.length]);
 
-        let sTotal = 0;
-        let aTotal = 0;
+        // PAYMENTS (SUBS + ADMIN INCOME)
+        let subsTotal = 0;
+        let adminTotal = 0;
         const combinedList = [];
 
         paymentsSnap.forEach((docSnap) => {
           const d = docSnap.data() || {};
           const amt = safeNum(d.amount, 0);
 
-          // Admin income (session)
-          if (safeStr(d.type) === "admin_income" && safeStr(d.status).toLowerCase() === "completed") {
-            aTotal += amt;
+          // ✅ SESSION FEE ADMIN INCOME (type=admin_income AND status=completed)
+          if (isAdminIncome(d) && isCompletedIncome(d)) {
+            adminTotal += amt;
             combinedList.push({
               id: docSnap.id,
               ...d,
               categoryType: "session",
               displayAmount: amt,
-              unifiedDate: d.createdAt || d.timestamp || d.date || null,
+              unifiedDate: pickUnifiedDate(d),
             });
             return;
           }
 
-          // Subscription payments
-          if (safeStr(d.status).toLowerCase() === "approved") {
-            sTotal += amt;
+          // ✅ SUBSCRIPTION (status=approved AND NOT admin_income)
+          if (!isAdminIncome(d) && isApprovedSub(d)) {
+            subsTotal += amt;
             combinedList.push({
               id: docSnap.id,
               ...d,
               categoryType: "subscription",
               displayAmount: amt,
-              unifiedDate: d.timestamp || d.createdAt || d.date || null,
+              unifiedDate: pickUnifiedDate(d),
             });
           }
         });
 
-        setGrandTotalSubs(sTotal);
-        setGrandTotalAdmin(aTotal);
+        setGrandTotalSubs(subsTotal);
+        setGrandTotalAdmin(adminTotal);
 
-        const sorted = combinedList.sort((a, b) => toMillisSafe(b.unifiedDate) - toMillisSafe(a.unifiedDate));
-        setPayments(sorted);
+        combinedList.sort((a, b) => toMillisSafe(b.unifiedDate) - toMillisSafe(a.unifiedDate));
+        setPayments(combinedList);
       } catch (e) {
         console.error("Dashboard Fetch Error:", e);
         Alert.alert(
@@ -208,23 +217,23 @@ export default function Dashboard() {
     <View style={styles.screen}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent={false} />
 
-    {/* ✅ SAFE AREA (FINAL) */}
-<SafeAreaView edges={["top"]} style={styles.headerSafe}>
-  <View style={styles.headerRow}>
-    <View>
-      <Text style={styles.greeting}>Admin Insights</Text>
-      <Text style={styles.subGreeting}>System monitoring & analytics</Text>
-    </View>
+      {/* ✅ HEADER (SAFE AREA ONLY) */}
+      <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={styles.greeting}>Admin Insights</Text>
+            <Text style={styles.subGreeting}>System monitoring & analytics</Text>
+          </View>
 
-    <TouchableOpacity
-      onPress={() => setShowProfileMenu(true)}
-      style={styles.profileBtn}
-      activeOpacity={0.85}
-    >
-      <Ionicons name="person-circle" size={44} color="#01579B" />
-    </TouchableOpacity>
-  </View>
-</SafeAreaView>
+          <TouchableOpacity
+            onPress={() => setShowProfileMenu(true)}
+            style={styles.profileBtn}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="person-circle" size={44} color="#01579B" />
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
 
       <ScrollView
         style={styles.container}
@@ -238,6 +247,7 @@ export default function Dashboard() {
           </View>
         ) : (
           <>
+            {/* Trend */}
             <Text style={styles.sectionTitle}>Consultant Application Trend</Text>
             <View style={styles.card}>
               <LineChart
@@ -253,6 +263,7 @@ export default function Dashboard() {
               />
             </View>
 
+            {/* Summary cards */}
             <View style={styles.summaryRow}>
               <View style={styles.summaryCard}>
                 <View style={[styles.iconBox, { backgroundColor: "#E3F2FD" }]}>
@@ -271,6 +282,7 @@ export default function Dashboard() {
               </View>
             </View>
 
+            {/* Revenue Distribution */}
             <Text style={styles.sectionTitle}>Revenue Distribution</Text>
             <View style={styles.cardCenter}>
               <View style={styles.totalOverlay}>
@@ -305,6 +317,7 @@ export default function Dashboard() {
               />
             </View>
 
+            {/* Recent Transactions */}
             <View style={styles.tabHeader}>
               <Text style={styles.sectionTitleNoTop}>Recent Transactions</Text>
 
@@ -342,7 +355,7 @@ export default function Dashboard() {
                       </View>
 
                       <View style={styles.paymentMid}>
-                        <Text style={styles.paymentTitle}>{isSub ? "Subscription" : "Admin Share"}</Text>
+                        <Text style={styles.paymentTitle}>{isSub ? "Subscription" : "Admin Income"}</Text>
                         <Text style={styles.paymentDate}>{formatDateTime(p.unifiedDate)}</Text>
                       </View>
 
@@ -362,13 +375,18 @@ export default function Dashboard() {
         )}
       </ScrollView>
 
+      {/* Profile Menu */}
       <Modal
         visible={showProfileMenu}
         transparent
         animationType="fade"
         onRequestClose={() => setShowProfileMenu(false)}
       >
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setShowProfileMenu(false)}>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowProfileMenu(false)}
+        >
           <View style={styles.dropdownMenu}>
             <View style={styles.adminInfo}>
               <Ionicons name="shield-checkmark" size={18} color="#01579B" />
@@ -403,6 +421,7 @@ const lineChartConfig = {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#F4F7FA" },
+
   headerSafe: {
     backgroundColor: "#FFF",
     elevation: 2,
@@ -410,18 +429,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 5,
   },
-  
   headerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-  
-    // ✅ REGULAR DESIGN PADDING (consistent across devices)
     paddingHorizontal: 25,
     paddingTop: 15,
     paddingBottom: 12,
   },
-  
   greeting: { fontSize: 22, fontWeight: "900", color: "#01579B" },
   subGreeting: { fontSize: 12, color: "#64748B", marginTop: 2, fontWeight: "600" },
   profileBtn: { padding: 2, borderRadius: 999 },
@@ -544,13 +559,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
     elevation: 1,
   },
-  iconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-  },
+  iconCircle: { width: 40, height: 40, borderRadius: 14, justifyContent: "center", alignItems: "center" },
   paymentMid: { flex: 1, marginLeft: 12 },
   paymentTitle: { fontSize: 14, fontWeight: "900", color: "#0F172A" },
   paymentDate: { fontSize: 11, color: "#94A3B8", marginTop: 3, fontWeight: "700" },

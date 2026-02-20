@@ -519,4 +519,3 @@ export const uploadSelfie = async (file) => {
     return null;
   }
 };
-

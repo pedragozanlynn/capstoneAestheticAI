@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Modal,
   StyleSheet,
@@ -11,51 +11,49 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 
-// ✅ CenterMessageModal (adjust path if needed)
+// ✅ Firestore
+import { addDoc, collection, doc, serverTimestamp, updateDoc } from "firebase/firestore";
+import { db } from "../../config/firebase";
+
+// ✅ CenterMessageModal
 import CenterMessageModal from "./CenterMessageModal";
 
-/* ---------------- CONSTANTS ---------------- */
+/* ---------------- THEME ---------------- */
 const THEME = {
-  primary: "#01579B", // Ang iyong consistent Deep Blue
+  primary: "#01579B",
   surface: "#FFFFFF",
+  bgSoft: "#F8FAFC",
+  border: "#E2E8F0",
   textDark: "#0F172A",
   textGray: "#64748B",
-  starActive: "#FFD166",
+  success: "#16A34A",
+  danger: "#DC2626",
+  starActive: "#FBBF24",
   starInactive: "#E2E8F0",
-  inputBg: "#F8FAFC",
-  overlay: "rgba(15, 23, 42, 0.7)",
+  overlay: "rgba(15, 23, 42, 0.6)",
 };
 
 export default function RatingModal({
   visible,
-  onSubmit,
+  onSubmit, // optional override
   onClose,
   reviewerName = "Anonymous",
+
+  // ✅ IDs for internal submit (recommended)
+  roomId = null,
+  appointmentId = null, // optional
+  userId = null,
+  consultantId = null,
 }) {
   const [rating, setRating] = useState(0);
   const [feedback, setFeedback] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // ✅ prevent double submit (extra safety)
   const sendingRef = useRef(false);
 
-  // ✅ inline message (no Alert, no toast, minimal UI impact)
-  const [msg, setMsg] = useState({ visible: false, text: "", type: "info" });
-  const msgTimerRef = useRef(null);
-
-  const showMessage = (text, type = "info", ms = 2200) => {
-    try {
-      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-      setMsg({ visible: true, text: String(text || ""), type });
-      msgTimerRef.current = setTimeout(() => {
-        setMsg((m) => ({ ...m, visible: false }));
-      }, ms);
-    } catch {}
-  };
-
-  // ✅ CenterMessageModal state (ADDED ONLY)
+  // CenterMessageModal state
   const [cmOpen, setCmOpen] = useState(false);
-  const [cmType, setCmType] = useState("info"); // "success" | "error" | "info"
+  const [cmType, setCmType] = useState("info");
   const [cmTitle, setCmTitle] = useState("");
   const [cmBody, setCmBody] = useState("");
 
@@ -72,9 +70,7 @@ export default function RatingModal({
       setFeedback("");
       setLoading(false);
       sendingRef.current = false;
-      setMsg({ visible: false, text: "", type: "info" });
 
-      // ✅ reset CenterMessageModal (ADDED ONLY)
       setCmOpen(false);
       setCmType("info");
       setCmTitle("");
@@ -82,84 +78,131 @@ export default function RatingModal({
     }
   }, [visible]);
 
-  useEffect(() => {
-    return () => {
-      try {
-        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-      } catch {}
-    };
-  }, []);
-
-  /* ---------------- VALIDATIONS ---------------- */
-  const safeStr = (v) => (v == null ? "" : String(v));
+  /* ---------------- HELPERS ---------------- */
+  const safeStr = (v) => String(v ?? "").trim();
   const trimmedFeedback = feedback.trim();
 
+  // ✅ appointmentId optional; fallback to roomId
+  const getAppointmentId = () => {
+    const aid = safeStr(appointmentId);
+    const rid = safeStr(roomId);
+    return aid || rid || "";
+  };
+
+  const canInternalSubmit = () => {
+    const rid = safeStr(roomId);
+    return !!rid; // ✅ roomId is enough now
+  };
+
   const validate = () => {
+    if (!visible) return "Rating form is not open.";
     if (loading || sendingRef.current) return "Submitting... please wait.";
-    if (typeof onSubmit !== "function") return "Submit handler is missing.";
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5)
+
+    const hasHandler = typeof onSubmit === "function";
+    if (!hasHandler && !canInternalSubmit()) {
+      return "Missing roomId. Please reopen the chat then try again.";
+    }
+
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
       return "Please select a star rating (1–5).";
-    if (safeStr(reviewerName).trim().length > 60)
-      return "Reviewer name is too long.";
+    }
+
+    if (safeStr(reviewerName).length > 60) return "Reviewer name is too long.";
     if (trimmedFeedback.length > 300) return "Feedback is too long (max 300).";
+
     return "";
+  };
+
+  /* ---------------- INTERNAL SUBMIT ----------------
+     ✅ Saves rating + completes chat room (and appointment if exists)
+  */
+  const internalSubmit = async (payload) => {
+    try {
+      const rid = safeStr(roomId);
+      const aid = getAppointmentId(); // ✅ fallback to roomId
+
+      if (!rid) return false;
+
+      const ratingNum = Number(payload?.rating || 0);
+      if (!Number.isFinite(ratingNum) || ratingNum < 1 || ratingNum > 5) return false;
+
+      // 1) Save rating record
+      await addDoc(collection(db, "ratings"), {
+        roomId: rid,
+        appointmentId: aid || null,
+        userId: safeStr(userId) || null,
+        consultantId: safeStr(consultantId) || null,
+        rating: ratingNum,
+        feedback: safeStr(payload?.feedback || ""),
+        reviewerName: safeStr(payload?.reviewerName || "Anonymous"),
+        createdAt: serverTimestamp(),
+      });
+
+      // 2) Complete chat room
+      await updateDoc(doc(db, "chatRooms", rid), {
+        ratingSubmitted: true,
+        ratingRequiredForUser: false, // ✅ cleanup
+        status: "completed",
+        completedAt: serverTimestamp(),
+      });
+
+      // 3) Complete appointment (only if doc exists / rules allow)
+      // ✅ If your appointmentId is not same as roomId, pass it; otherwise fallback is ok.
+      if (aid) {
+        try {
+          await updateDoc(doc(db, "appointments", aid), {
+            status: "completed",
+            completedAt: serverTimestamp(),
+          });
+        } catch (e) {
+          // Do not fail rating if appointment update fails
+          console.log("⚠️ appointment complete skipped:", e?.message || e);
+        }
+      }
+
+      return true;
+    } catch (e) {
+      console.log("❌ internalSubmit error:", e?.message || e);
+      return false;
+    }
   };
 
   const handleSubmit = async () => {
     const err = validate();
-
-    // ✅ use CenterMessageModal for validation errors (ADDED ONLY)
     if (err) {
       showCenterMsg("error", "Cannot submit", err);
-      return showMessage(err, "error");
+      return;
     }
 
     sendingRef.current = true;
     setLoading(true);
 
     try {
-      // ✅ ALWAYS pass clean, consistent payload for Firestore
       const payload = {
         rating: Number(rating),
-        feedback: trimmedFeedback, // can be ""
-        reviewerName: safeStr(reviewerName).trim() || "Anonymous",
-        createdAt: new Date().toISOString(), // helpful if onSubmit forgets serverTimestamp
+        feedback: trimmedFeedback,
+        reviewerName: safeStr(reviewerName) || "Anonymous",
       };
 
-      const result = await onSubmit(payload);
+      const ok =
+        typeof onSubmit === "function"
+          ? await onSubmit(payload)
+          : await internalSubmit(payload);
 
-      // ✅ if onSubmit returns false -> treat as failure (keeps your behavior)
-      if (result === false) {
-        showCenterMsg(
-          "error",
-          "Submit failed",
-          "Failed to submit rating. Please try again."
-        );
-        showMessage("Failed to submit rating. Please try again.", "error");
+      if (ok === false) {
+        showCenterMsg("error", "Submit failed", "Please check your connection and try again.");
         return;
       }
 
-      // ✅ success (ADDED ONLY)
       showCenterMsg("success", "Thank you!", "Your rating was submitted.");
-      showMessage("Thank you! Your rating was submitted.", "success", 1200);
 
-      // close after short delay so message is seen
       setTimeout(() => {
         try {
           onClose?.();
         } catch {}
       }, 450);
-    } catch (err) {
-      console.log("Rating submit error:", err?.message || err);
-
-      // ✅ error (ADDED ONLY)
-      showCenterMsg(
-        "error",
-        "Something went wrong",
-        "Please try again."
-      );
-
-      showMessage("Something went wrong. Please try again.", "error");
+    } catch (e) {
+      showCenterMsg("error", "Something went wrong", "Please try again.");
     } finally {
       setLoading(false);
       sendingRef.current = false;
@@ -168,53 +211,51 @@ export default function RatingModal({
 
   return (
     <>
-      <Modal visible={visible} transparent animationType="fade">
+      <Modal visible={!!visible} transparent animationType="fade" onRequestClose={onClose}>
         <View style={styles.overlay}>
           <View style={styles.card}>
-            {/* HEADER SECTION */}
-            <View style={styles.iconContainer}>
-              <View style={styles.iconCircle}>
-                <Ionicons name="star" size={30} color={THEME.starActive} />
+            {/* top icon */}
+            <View style={styles.topIconWrap}>
+              <View style={styles.topIconCircle}>
+                <Ionicons name="star" size={28} color={THEME.starActive} />
               </View>
             </View>
 
-            <Text style={styles.title}>How was your consultation?</Text>
+            <Text style={styles.title}>Rate your consultation</Text>
             <Text style={styles.subtitle}>
-              Your feedback helps us provide better service for you ✨
+              Your feedback helps improve the experience.
             </Text>
 
-            {/* ⭐ STAR RATING */}
+            {/* stars */}
             <View style={styles.starsRow}>
-              {[1, 2, 3, 4, 5].map((num) => (
-                <TouchableOpacity
-                  key={num}
-                  disabled={loading}
-                  activeOpacity={0.6}
-                  onPress={() => {
-                    if (loading) return;
-                    setRating(num);
-                    if (msg.visible) setMsg((m) => ({ ...m, visible: false }));
-                  }}
-                  style={styles.starTouch}
-                >
-                  <Ionicons
-                    name={rating >= num ? "star" : "star-outline"}
-                    size={42}
-                    color={rating >= num ? THEME.starActive : THEME.starInactive}
-                  />
-                </TouchableOpacity>
-              ))}
+              {[1, 2, 3, 4, 5].map((num) => {
+                const active = rating >= num;
+                return (
+                  <TouchableOpacity
+                    key={num}
+                    disabled={loading}
+                    activeOpacity={0.75}
+                    onPress={() => setRating(num)}
+                    style={styles.starBtn}
+                  >
+                    <Ionicons
+                      name={active ? "star" : "star-outline"}
+                      size={40}
+                      color={active ? THEME.starActive : THEME.starInactive}
+                    />
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
-            {/* 📝 FEEDBACK INPUT */}
-            <View style={styles.inputWrapper}>
+            {/* feedback */}
+            <View style={styles.inputWrap}>
               <TextInput
                 style={styles.input}
-                placeholder="Share your experience (optional)..."
+                placeholder="Write a short feedback (optional)..."
                 placeholderTextColor={THEME.textGray}
                 value={feedback}
                 onChangeText={(t) => {
-                  // ✅ enforce maxLength safely even if pasted
                   const next = String(t || "");
                   setFeedback(next.length > 300 ? next.slice(0, 300) : next);
                 }}
@@ -226,48 +267,35 @@ export default function RatingModal({
               <Text style={styles.counter}>{feedback.length}/300</Text>
             </View>
 
-            {/* ✅ messages (no alert/toast, minimal) */}
-            {msg.visible ? (
-              <Text
-                style={[
-                  styles.inlineMsg,
-                  msg.type === "success" && styles.inlineMsgSuccess,
-                  msg.type === "error" && styles.inlineMsgError,
-                ]}
-              >
-                {msg.text}
-              </Text>
-            ) : null}
-
-            {/* ACTIONS */}
-            <View style={styles.buttonContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.submitBtn,
-                  (loading || rating === 0) && styles.disabledBtn,
-                ]}
-                disabled={loading || rating === 0}
-                onPress={handleSubmit}
-                activeOpacity={0.85}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#FFF" />
-                ) : (
-                  <Text style={styles.submitText}>Submit Feedback</Text>
-                )}
-              </TouchableOpacity>
-
-              {!loading && (
-                <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
-                  <Text style={styles.cancelText}>Maybe later</Text>
-                </TouchableOpacity>
+            {/* buttons */}
+            <TouchableOpacity
+              style={[
+                styles.primaryBtn,
+                (loading || rating === 0) && styles.primaryBtnDisabled,
+              ]}
+              disabled={loading || rating === 0}
+              onPress={handleSubmit}
+              activeOpacity={0.9}
+            >
+              {loading ? (
+                <ActivityIndicator color="#FFF" />
+              ) : (
+                <Text style={styles.primaryBtnText}>Submit</Text>
               )}
-            </View>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              disabled={loading}
+              onPress={onClose}
+              style={styles.secondaryBtn}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.secondaryBtnText}>Maybe later</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* ✅ CenterMessageModal (ADDED ONLY) */}
       <CenterMessageModal
         visible={cmOpen}
         type={cmType}
@@ -285,134 +313,119 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.overlay,
     justifyContent: "center",
     alignItems: "center",
-    padding: 20,
+    padding: 18,
   },
+
   card: {
     width: "100%",
-    maxWidth: 360,
+    maxWidth: 380,
     backgroundColor: THEME.surface,
-    borderRadius: 30,
-    padding: 24,
-    alignItems: "center",
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: THEME.border,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 10 },
-        shadowOpacity: 0.1,
+        shadowOpacity: 0.12,
         shadowRadius: 20,
       },
-      android: {
-        elevation: 10,
-      },
+      android: { elevation: 10 },
     }),
   },
-  iconContainer: {
-    marginTop: -60, // Para mag-overlap ang icon sa taas ng card
-    marginBottom: 15,
-  },
-  iconCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: THEME.surface,
-    justifyContent: "center",
+
+  topIconWrap: {
     alignItems: "center",
-    borderWidth: 6,
-    borderColor: THEME.overlay.replace("0.7", "1"), // Tugma sa background overlay
-    elevation: 4,
+    marginTop: -38,
+    marginBottom: 10,
   },
+  topIconCircle: {
+    width: 70,
+    height: 70,
+    borderRadius: 22,
+    backgroundColor: THEME.surface,
+    borderWidth: 6,
+    borderColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.12,
+        shadowRadius: 14,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+
   title: {
-    fontSize: 22,
+    fontSize: 18,
     fontWeight: "900",
-    textAlign: "center",
     color: THEME.textDark,
-    marginBottom: 8,
+    textAlign: "center",
   },
   subtitle: {
-    fontSize: 14,
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: "700",
     color: THEME.textGray,
     textAlign: "center",
-    lineHeight: 20,
-    marginBottom: 24,
-    paddingHorizontal: 10,
+    lineHeight: 18,
+    marginBottom: 14,
   },
+
   starsRow: {
     flexDirection: "row",
     justifyContent: "center",
-    marginBottom: 24,
+    marginBottom: 14,
   },
-  starTouch: {
-    paddingHorizontal: 4,
-  },
-  inputWrapper: {
-    width: "100%",
-    marginBottom: 12,
-  },
+  starBtn: { paddingHorizontal: 4 },
+
+  inputWrap: { marginTop: 4 },
   input: {
-    width: "100%",
-    backgroundColor: THEME.inputBg,
-    borderRadius: 18,
-    padding: 16,
     minHeight: 110,
-    color: THEME.textDark,
-    fontSize: 15,
-    textAlignVertical: "top",
+    borderRadius: 16,
+    backgroundColor: THEME.bgSoft,
     borderWidth: 1,
-    borderColor: "#E2E8F0",
+    borderColor: THEME.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: THEME.textDark,
+    fontSize: 14,
+    fontWeight: "700",
   },
   counter: {
+    marginTop: 8,
     fontSize: 11,
+    fontWeight: "800",
     color: THEME.textGray,
     textAlign: "right",
-    marginTop: 6,
-    fontWeight: "600",
   },
 
-  // ✅ inline message (minimal, no layout changes elsewhere)
-  inlineMsg: {
-    width: "100%",
-    textAlign: "center",
-    fontSize: 12,
-    fontWeight: "800",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    marginBottom: 10,
-    backgroundColor: "#0F172A",
-    color: "#FFFFFF",
-    opacity: 0.96,
-  },
-  inlineMsgSuccess: { backgroundColor: "#16A34A" },
-  inlineMsgError: { backgroundColor: "#DC2626" },
-
-  buttonContainer: {
-    width: "100%",
-  },
-  submitBtn: {
-    width: "100%",
-    backgroundColor: "#2c4f4f",
-    paddingVertical: 16,
+  primaryBtn: {
+    marginTop: 14,
+    backgroundColor: THEME.primary,
     borderRadius: 16,
+    paddingVertical: 14,
     alignItems: "center",
-    marginBottom: 12,
-    elevation: 4,
   },
-  disabledBtn: {
-    backgroundColor: "#CBD5E1",
-    elevation: 0,
-  },
-  submitText: {
+  primaryBtnDisabled: { backgroundColor: "#CBD5E1" },
+  primaryBtnText: {
     color: "#FFF",
-    fontWeight: "800",
-    fontSize: 16,
+    fontSize: 15,
+    fontWeight: "900",
   },
-  cancelBtn: {
+
+  secondaryBtn: {
+    marginTop: 10,
     paddingVertical: 10,
+    alignItems: "center",
   },
-  cancelText: {
-    textAlign: "center",
+  secondaryBtnText: {
     color: THEME.textGray,
-    fontWeight: "700",
-    fontSize: 14,
+    fontSize: 13,
+    fontWeight: "800",
   },
 });

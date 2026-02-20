@@ -16,15 +16,17 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
+  Platform,
+  RefreshControl,
+  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  StatusBar,
-  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
+
 import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 
@@ -40,6 +42,12 @@ export default function Homepage() {
   // ✅ Notification badge
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
 
+  // ✅ Optional refresh UX (does not change Firestore logic)
+  const [refreshing, setRefreshing] = useState(false);
+
+  // -----------------------------
+  // Load consultant profile
+  // -----------------------------
   useEffect(() => {
     const loadProfile = async () => {
       try {
@@ -54,25 +62,30 @@ export default function Homepage() {
         if (profileKey) {
           const data = await AsyncStorage.getItem(profileKey);
           setConsultant(JSON.parse(data));
-        } else {
-          const docRef = doc(db, "consultants", currentUser.uid);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            setConsultant({ uid: currentUser.uid, ...docSnap.data() });
-          }
+          return;
+        }
+
+        const docRef = doc(db, "consultants", currentUser.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setConsultant({ uid: currentUser.uid, ...docSnap.data() });
         }
       } catch (err) {
         console.error("Error loading consultant profile:", err);
       }
     };
+
     loadProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const currentUid = useMemo(() => {
     return consultant?.uid || auth.currentUser?.uid || null;
   }, [consultant, auth.currentUser]);
 
-  // ✅ App-ready: realtime unread notifications for consultant
+  // -----------------------------
+  // Realtime unread notifications
+  // -----------------------------
   useEffect(() => {
     if (!currentUid) return;
 
@@ -92,6 +105,9 @@ export default function Homepage() {
     return () => unsubNotif();
   }, [currentUid]);
 
+  // -----------------------------
+  // Recent appointments + balance
+  // -----------------------------
   useEffect(() => {
     if (!currentUid) return;
 
@@ -104,45 +120,59 @@ export default function Homepage() {
       limit(3)
     );
 
-    const unsubAppointments = onSnapshot(appointmentsQuery, async (snapshot) => {
-      const requests = await Promise.all(
-        snapshot.docs.map(async (docSnap) => {
-          const data = docSnap.data();
-          let userName = "Unknown User";
+    const unsubAppointments = onSnapshot(
+      appointmentsQuery,
+      async (snapshot) => {
+        try {
+          const requests = await Promise.all(
+            snapshot.docs.map(async (docSnap) => {
+              const data = docSnap.data() || {};
+              let userName = "Unknown User";
 
-          if (data.userId) {
-            try {
-              const userDoc = await getDoc(doc(db, "users", data.userId));
-              if (userDoc.exists()) {
-                const u = userDoc.data();
-                userName = u.fullName || u.name || "Unnamed User";
+              if (data.userId) {
+                try {
+                  const userDoc = await getDoc(doc(db, "users", String(data.userId)));
+                  if (userDoc.exists()) {
+                    const u = userDoc.data() || {};
+                    userName = u.fullName || u.name || "Unnamed User";
+                  }
+                } catch (err) {
+                  console.log("User fetch error:", err);
+                }
               }
-            } catch (err) {
-              console.log("User fetch error:", err);
-            }
-          }
 
-          return { id: docSnap.id, ...data, userName };
-        })
-      );
+              return { id: docSnap.id, ...data, userName };
+            })
+          );
 
-      setRecentRequests(requests);
-      setLoading(false);
-    });
+          setRecentRequests(requests);
+        } finally {
+          setLoading(false);
+        }
+      },
+      (err) => {
+        console.log("Appointments listener error:", err);
+        setLoading(false);
+      }
+    );
 
     const paymentsQuery = query(
       collection(db, "payments"),
       where("consultantId", "==", currentUid)
     );
 
-    const unsubPayments = onSnapshot(paymentsQuery, (snapshot) => {
-      let totalBalance = 0;
-      snapshot.docs.forEach((docSnap) => {
-        const data = docSnap.data();
-        totalBalance += Number(data.amount) || 0;
-      });
-      setBalance(totalBalance);
-    });
+    const unsubPayments = onSnapshot(
+      paymentsQuery,
+      (snapshot) => {
+        let totalBalance = 0;
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data() || {};
+          totalBalance += Number(data.amount) || 0;
+        });
+        setBalance(totalBalance);
+      },
+      (err) => console.log("Payments listener error:", err)
+    );
 
     return () => {
       unsubAppointments();
@@ -150,25 +180,95 @@ export default function Homepage() {
     };
   }, [currentUid]);
 
+  const formatTime = (ts) => {
+    const d = ts?.toDate?.();
+    if (!d) return "—";
+    return d.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true, // ✅ AM/PM
+    });
+  };
+  
+
+  const formatDate = (ts) => {
+    const d = ts?.toDate?.();
+    if (!d) return "—";
+    return d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+  };
+
+  const onRefresh = async () => {
+    // Since Firestore is realtime, refresh is just UX (spinner)
+    setRefreshing(true);
+    setTimeout(() => setRefreshing(false), 700);
+  };
+
+  // -----------------------------
+  // UI: Appointment Card
+  // -----------------------------
+  const renderAppointment = ({ item }) => {
+    const time = formatTime(item.appointmentAt);
+    const date = formatDate(item.appointmentAt);
+
+    return (
+      <TouchableOpacity
+        activeOpacity={0.85}
+        style={styles.apptCard}
+        onPress={() => {
+          // OPTIONAL: open requests or chat room
+          // router.push("/Consultant/Requests");
+          // If you have chatRoomId stored in appointment:
+          // if (item.chatRoomId && item.userId) router.push({ pathname: "/Consultant/ChatRoom", params: { roomId: item.chatRoomId, userId: item.userId } });
+          router.push("/Consultant/Requests");
+        }}
+      >
+        <View style={styles.apptLeft}>
+          <View style={styles.apptAvatar}>
+            <Ionicons name="person" size={18} color="#0F172A" />
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <Text style={styles.apptName} numberOfLines={1}>
+              {item.userName}
+            </Text>
+
+            <View style={styles.apptMetaRow}>
+              <Ionicons name="time-outline" size={14} color="#64748B" />
+              <Text style={styles.apptMetaText}>{time}</Text>
+              <Text style={styles.apptDot}>•</Text>
+              <Ionicons name="calendar-outline" size={14} color="#64748B" />
+              <Text style={styles.apptMetaText}>{date}</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.apptRight}>
+          <View style={styles.apptChip}>
+            <Text style={styles.apptChipText}>Appointment</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color="#94A3B8" />
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFF" translucent={false} />
 
-      {/* ✅ App-ready SafeArea (safe-area-context) */}
       <SafeAreaView style={styles.safeArea} edges={["top"]}>
         <View style={styles.headerArea}>
           <View style={styles.welcomeRow}>
-            <View>
-              <Text style={styles.header}>
+            <View style={{ flex: 1, paddingRight: 10 }}>
+              <Text style={styles.header} numberOfLines={1}>
                 Hi, {consultant?.fullName || "Consultant"}
               </Text>
-              <Text style={styles.subtext}>
+              <Text style={styles.subtext} numberOfLines={1}>
                 {consultant?.consultantType || "Professional"} •{" "}
                 {consultant?.specialization || "Expert"}
               </Text>
             </View>
 
-            {/* ✅ Notification icon (replaces the circle) */}
             <TouchableOpacity
               style={styles.notifBtn}
               onPress={() => router.push("/Consultant/Notifications")}
@@ -190,7 +290,7 @@ export default function Homepage() {
               <Text style={styles.balanceLabel}>Current Balance</Text>
               <Text style={styles.balanceAmount}>
                 ₱{" "}
-                {balance.toLocaleString(undefined, {
+                {Number(balance).toLocaleString(undefined, {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
                 })}
@@ -200,8 +300,9 @@ export default function Homepage() {
             <TouchableOpacity
               style={styles.withdrawBtn}
               onPress={() => router.push("/Consultant/EarningsScreen")}
-              activeOpacity={0.7}
+              activeOpacity={0.85}
             >
+              <Ionicons name="wallet-outline" size={16} color="#fff" style={{ marginRight: 7 }} />
               <Text style={styles.withdrawText}>Withdraw</Text>
             </TouchableOpacity>
           </View>
@@ -211,37 +312,35 @@ export default function Homepage() {
       <FlatList
         data={loading ? [] : recentRequests}
         keyExtractor={(item) => item.id}
+        renderItem={renderAppointment}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         ListHeaderComponent={
           <>
             <View style={styles.quickActions}>
               <TouchableOpacity
                 style={[styles.actionCard, styles.actionCardTeal]}
                 onPress={() => router.push("/Consultant/EditProfile")}
+                activeOpacity={0.85}
               >
-                <Image
-                  source={require("../../assets/edit.png")}
-                  style={styles.actionIcon}
-                />
+                <Image source={require("../../assets/edit.png")} style={styles.actionIcon} />
                 <Text style={styles.actionText}>Edit Profile</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={[styles.actionCard, styles.actionCardPurple]}
                 onPress={() => router.push("/Consultant/EditAvailability")}
+                activeOpacity={0.85}
               >
-                <Image
-                  source={require("../../assets/schedule.png")}
-                  style={styles.actionIcon}
-                />
+                <Image source={require("../../assets/schedule.png")} style={styles.actionIcon} />
                 <Text style={styles.actionText}>Availability</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Recent Appointments</Text>
-              <TouchableOpacity onPress={() => router.push("/Consultant/Requests")}>
+              <TouchableOpacity onPress={() => router.push("/Consultant/Requests")} activeOpacity={0.85}>
                 <Text style={styles.viewAllText}>View All</Text>
               </TouchableOpacity>
             </View>
@@ -249,35 +348,21 @@ export default function Homepage() {
             {loading && (
               <View style={styles.listLoader}>
                 <ActivityIndicator color="#01579B" />
+                <Text style={styles.loadingHint}>Loading appointments…</Text>
               </View>
             )}
           </>
         }
-        renderItem={({ item }) => (
-          <View style={styles.requestItem}>
-            <View style={styles.requestInfo}>
-              <Text style={styles.requestName}>{item.userName}</Text>
-              <View style={styles.requestMeta}>
-                <Text style={styles.requestTime}>
-                  {item.appointmentAt
-                    ?.toDate()
-                    .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                </Text>
-                <Text style={styles.dot}>•</Text>
-                <Text style={styles.requestDate}>
-                  {item.appointmentAt?.toDate().toLocaleDateString()}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.statusDot} />
-          </View>
-        )}
         ListEmptyComponent={
-          !loading && (
+          !loading ? (
             <View style={styles.emptyContainer}>
-              <Text style={styles.placeholderText}>No recent appointments</Text>
+              <View style={styles.emptyIcon}>
+                <Ionicons name="calendar-outline" size={28} color="#94A3B8" />
+              </View>
+              <Text style={styles.emptyTitle}>No recent appointments</Text>
+              <Text style={styles.emptySub}>New bookings will appear here.</Text>
             </View>
-          )
+          ) : null
         }
       />
 
@@ -288,37 +373,29 @@ export default function Homepage() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F8FAFC" },
-
-  // ✅ App-ready safe area
   safeArea: { backgroundColor: "#FFF" },
 
   headerArea: {
     paddingHorizontal: 20,
-    // ✅ “ibaba yung header” in an app-safe way:
-    // keep a small consistent top padding without hardcoding huge values
     paddingTop: Platform.OS === "android" ? 25 : 6,
     paddingBottom: 10,
-   
+    backgroundColor: "#FFF",
   },
 
   welcomeRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
-    marginBottom: 15,
+    marginBottom: 14,
   },
 
   header: {
     fontSize: 22,
-    fontWeight: "800",
+    fontWeight: "900",
     color: "#1E293B",
-    // ✅ remove the old hard paddingTop:20 so it won’t break on devices
-    paddingTop: 0,
   },
-
   subtext: { fontSize: 13, color: "#64748B", marginTop: 2 },
 
-  // ✅ Notification bell
   notifBtn: {
     width: 45,
     height: 45,
@@ -347,30 +424,32 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: 22,
-    borderRadius: 24,
+    padding: 20,
+    borderRadius: 22,
     backgroundColor: "#01579B",
-    marginBottom: 5,
-    elevation: 8,
+    marginTop: 8,
     shadowColor: "#01579B",
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    marginTop: 10,
+    shadowOpacity: 0.22,
+    shadowRadius: 14,
+    elevation: 7,
   },
-  balanceLabel: { fontSize: 13, color: "rgba(255,255,255,0.7)", fontWeight: "600" },
-  balanceAmount: { fontSize: 26, fontWeight: "900", color: "#FFF", marginTop: 4 },
+  balanceLabel: { fontSize: 13, color: "rgba(255,255,255,0.75)", fontWeight: "700" },
+  balanceAmount: { fontSize: 26, fontWeight: "900", color: "#FFF", marginTop: 3 },
+
   withdrawBtn: {
+    flexDirection: "row",
+    alignItems: "center",
     backgroundColor: "#3fa796",
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     height: 36,
     borderRadius: 12,
     justifyContent: "center",
-    alignItems: "center",
   },
-  withdrawText: { color: "#fff", fontWeight: "700", fontSize: 13 },
+  withdrawText: { color: "#fff", fontWeight: "800", fontSize: 13 },
 
-  scrollContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 120 },
-  quickActions: { flexDirection: "row", justifyContent: "space-between", marginBottom: 25 },
+  scrollContent: { paddingHorizontal: 20, paddingTop: 18, paddingBottom: 120 },
+
+  quickActions: { flexDirection: "row", justifyContent: "space-between", marginBottom: 18 },
   actionCard: {
     flex: 1,
     marginHorizontal: 6,
@@ -378,40 +457,96 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: "center",
     alignItems: "center",
-    elevation: 2,
+    backgroundColor: "#FFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     shadowColor: "#000",
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 2,
   },
   actionCardTeal: { backgroundColor: "#E0F7FA" },
   actionCardPurple: { backgroundColor: "#F3E5F5" },
   actionIcon: { width: 32, height: 32, marginBottom: 8, resizeMode: "contain" },
-  actionText: { fontWeight: "800", fontSize: 12, color: "#334155" },
+  actionText: { fontWeight: "900", fontSize: 12, color: "#334155" },
 
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
-  sectionTitle: { fontSize: 17, fontWeight: "800", color: "#1E293B" },
-  viewAllText: { fontSize: 13, fontWeight: "700", color: "#01579B" },
-
-  requestItem: {
-    backgroundColor: "#FFF",
-    padding: 18,
-    borderRadius: 20,
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 4,
     marginBottom: 12,
+  },
+  sectionTitle: { fontSize: 17, fontWeight: "900", color: "#1E293B" },
+  viewAllText: { fontSize: 13, fontWeight: "800", color: "#01579B" },
+
+  listLoader: { paddingVertical: 18, flexDirection: "row", alignItems: "center", gap: 10 },
+  loadingHint: { color: "#64748B", fontWeight: "700" },
+
+  // ✅ Improved appointment cards
+  apptCard: {
+    backgroundColor: "#FFF",
+    borderRadius: 18,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    shadowColor: "#000",
+    shadowOpacity: 0.03,
+    shadowRadius: 10,
+    elevation: 2,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOpacity: 0.03,
   },
-  requestInfo: { flex: 1 },
-  requestName: { fontSize: 16, fontWeight: "700", color: "#1E293B", marginBottom: 4 },
-  requestMeta: { flexDirection: "row", alignItems: "center" },
-  requestTime: { fontSize: 12, color: "#64748B" },
-  requestDate: { fontSize: 12, color: "#64748B" },
-  dot: { marginHorizontal: 6, color: "#CBD5E1" },
-  statusDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: "#912f56" },
+  apptLeft: { flexDirection: "row", alignItems: "center", flex: 1, paddingRight: 10 },
+  apptAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
+  },
+  apptName: { fontSize: 15, fontWeight: "900", color: "#0F172A", marginBottom: 4 },
+  apptMetaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
+  apptMetaText: { fontSize: 12, color: "#64748B", fontWeight: "700", marginLeft: 5 },
+  apptDot: { marginHorizontal: 8, color: "#CBD5E1", fontWeight: "900" },
 
-  listLoader: { padding: 20 },
-  emptyContainer: { alignItems: "center", marginTop: 20 },
-  placeholderText: { textAlign: "center", color: "#94A3B8", fontSize: 14 },
+  apptRight: { alignItems: "flex-end", gap: 6 },
+  apptChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "#EEF2FF",
+    borderWidth: 1,
+    borderColor: "#E0E7FF",
+  },
+  apptChipText: { fontSize: 11, fontWeight: "900", color: "#334155" },
+
+  emptyContainer: {
+    backgroundColor: "#FFF",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    borderRadius: 20,
+    padding: 18,
+    alignItems: "center",
+    marginTop: 8,
+  },
+  emptyIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 10,
+  },
+  emptyTitle: { fontSize: 14, fontWeight: "900", color: "#1E293B" },
+  emptySub: { marginTop: 2, fontSize: 12, color: "#64748B", fontWeight: "700" },
 });

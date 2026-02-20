@@ -8,7 +8,6 @@ import { AppState } from "react-native";
 import { db } from "./config/firebase";
 import "./polyfills";
 
-// ✅ SAFE AREA PROVIDER (NEW)
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 /* ================= AUTH ================= */
@@ -44,30 +43,33 @@ import UpgradePayment from "./app/User/UpgradePayment";
 /* ================= ADMIN ================= */
 import ConsultantDetails from "./app/Admin/ConsultantDetails";
 import Dashboard from "./app/Admin/Dashboard";
-import Ratings from "./app/Admin/Ratings";
-import Subscription from "./app/Admin/Subscription";
 import Withdrawals from "./app/Admin/Withdrawals";
+ import AdminTransactions from "./app/Admin/AdminTransactions";
 
 const Stack = createNativeStackNavigator();
 
 export default function App() {
   /* ======================================================
-     🔥 REAL ONLINE / OFFLINE PRESENCE (FINAL & CORRECT)
+     🔥 REAL ONLINE / OFFLINE PRESENCE (supports admin too)
      ====================================================== */
   useEffect(() => {
-    let appStateListener;
+    let sub;
 
     const initPresence = async () => {
       try {
-        /**
-         * ✅ SINGLE SOURCE OF TRUTH
-         * This key MUST be set on login (user OR consultant)
-         */
         const uid = await AsyncStorage.getItem("aestheticai:current-user-id");
-        const role = await AsyncStorage.getItem("aestheticai:current-user-role"); // "user" | "consultant"
+        const role = await AsyncStorage.getItem("aestheticai:current-user-role"); 
+        // role: "user" | "consultant" | "admin"
         if (!uid || !role) return;
 
-        const collectionName = role === "consultant" ? "consultants" : "users";
+        // ✅ Map role -> collection
+        const collectionName =
+          role === "consultant"
+            ? "consultants"
+            : role === "admin"
+            ? "admins"
+            : "users";
+
         const userRef = doc(db, collectionName, uid);
 
         const setOnline = async () => {
@@ -95,23 +97,24 @@ export default function App() {
         // ✅ App opened
         await setOnline();
 
-        // ✅ Listen to app background / foreground
-        appStateListener = AppState.addEventListener("change", (state) => {
+        // ✅ Foreground / background transitions
+        sub = AppState.addEventListener("change", (state) => {
           if (state === "active") {
             setOnline();
           } else {
+            // includes "inactive" (iOS) + "background"
             setOffline();
           }
         });
       } catch (err) {
-        console.log("❌ Presence error:", err);
+        console.log("❌ Presence error:", err?.message || err);
       }
     };
 
     initPresence();
 
     return () => {
-      appStateListener?.remove();
+      sub?.remove?.();
     };
   }, []);
 
@@ -160,9 +163,8 @@ export default function App() {
           {/* ADMIN */}
           <Stack.Screen name="Dashboard" component={Dashboard} />
           <Stack.Screen name="ConsultantDetails" component={ConsultantDetails} />
-          <Stack.Screen name="Subscription" component={Subscription} />
-          <Stack.Screen name="Ratings" component={Ratings} />
           <Stack.Screen name="Withdrawals" component={Withdrawals} />
+        <Stack.Screen name="AdminTransactions" component={AdminTransactions} />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>

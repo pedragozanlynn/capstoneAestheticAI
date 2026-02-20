@@ -1,61 +1,73 @@
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  View,
-  Text,
-  StyleSheet,
   ActivityIndicator,
-  TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
-  getAuth,
   EmailAuthProvider,
+  getAuth,
   reauthenticateWithCredential,
   updatePassword,
 } from "firebase/auth";
 
 import Button from "../components/Button";
 import Input from "../components/Input";
-
-// ✅ ADD: use your reusable center modal
 import CenterMessageModal from "../components/CenterMessageModal";
+
+const safeStr = (v) => String(v ?? "").trim();
 
 export default function ChangePassword() {
   const router = useRouter();
   const auth = getAuth();
   const user = auth.currentUser;
 
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [loading, setLoading] = useState(false);
+  /* =========================
+     STATE
+  ========================= */
+  const [form, setForm] = useState({
+    currentPassword: "",
+    newPassword: "",
+    confirmPassword: "",
+  });
 
-  // ✅ inline validation error state
   const [errors, setErrors] = useState({
     currentPassword: "",
     newPassword: "",
     confirmPassword: "",
   });
 
-  /* ===========================
-     ✅ CENTER MODAL MESSAGE
-     =========================== */
+  const [loading, setLoading] = useState(false);
+
+  /* =========================
+     CENTER MODAL
+  ========================= */
+  const timerRef = useRef(null);
   const [msgModal, setMsgModal] = useState({
     visible: false,
-    type: "info", // "info" | "success" | "warning" | "error" (depends on your component)
+    type: "info", // info | success | warning | error
     title: "Notice",
     message: "",
   });
 
-  const msgTimerRef = useRef(null);
-
-  const openMsg = (message, type = "info", title = "Notice", autoHideMs = 2200) => {
+  const closeMsg = useCallback(() => {
     try {
-      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    } catch {}
+    setMsgModal((m) => ({ ...m, visible: false }));
+  }, []);
+
+  const openMsg = useCallback((message, type = "info", title = "Notice", autoHideMs = 2200) => {
+    try {
+      if (timerRef.current) clearTimeout(timerRef.current);
     } catch {}
 
     setMsgModal({
@@ -65,83 +77,77 @@ export default function ChangePassword() {
       message: String(message || ""),
     });
 
-    // ✅ auto-hide for non-blocking feel (like your toast)
     if (autoHideMs && autoHideMs > 0) {
-      msgTimerRef.current = setTimeout(() => {
+      timerRef.current = setTimeout(() => {
         setMsgModal((m) => ({ ...m, visible: false }));
       }, autoHideMs);
     }
-  };
-
-  const closeMsg = () => {
-    try {
-      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
-    } catch {}
-    setMsgModal((m) => ({ ...m, visible: false }));
-  };
+  }, []);
 
   useEffect(() => {
     return () => {
       try {
-        if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+        if (timerRef.current) clearTimeout(timerRef.current);
       } catch {}
     };
   }, []);
 
-  const clearErrors = () =>
+  /* =========================
+     HELPERS
+  ========================= */
+  const setField = useCallback((key, value) => {
+    setForm((p) => ({ ...p, [key]: value }));
+  }, []);
+
+  const setFieldError = useCallback((key, value) => {
+    setErrors((p) => ({ ...p, [key]: value }));
+  }, []);
+
+  const clearErrors = useCallback(() => {
     setErrors({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  }, []);
 
-  const setFieldError = (field, msg) =>
-    setErrors((prev) => ({ ...prev, [field]: msg }));
-
-  const validate = () => {
+  const validate = useCallback(() => {
     const next = { currentPassword: "", newPassword: "", confirmPassword: "" };
 
-    const cur = String(currentPassword || "").trim();
-    const nw = String(newPassword || "");
-    const cf = String(confirmPassword || "");
+    const cur = safeStr(form.currentPassword);
+    const nw = String(form.newPassword || "");
+    const cf = String(form.confirmPassword || "");
 
-    // ✅ current password required
     if (!cur) next.currentPassword = "Current password is required.";
 
-    // ✅ new password rules
-    if (!nw) {
-      next.newPassword = "New password is required.";
-    } else if (nw.length < 6) {
-      next.newPassword = "New password must be at least 6 characters.";
-    } else if (nw === cur) {
-      next.newPassword = "New password must be different from current password.";
-    } else {
+    if (!nw) next.newPassword = "New password is required.";
+    else if (nw.length < 6) next.newPassword = "New password must be at least 6 characters.";
+    else if (nw === cur) next.newPassword = "New password must be different from current password.";
+    else {
       if (!/[A-Z]/.test(nw)) next.newPassword = "Include at least 1 uppercase letter.";
       else if (!/[a-z]/.test(nw)) next.newPassword = "Include at least 1 lowercase letter.";
       else if (!/[0-9]/.test(nw)) next.newPassword = "Include at least 1 number.";
     }
 
-    // ✅ confirm password
     if (!cf) next.confirmPassword = "Please confirm your new password.";
     else if (nw !== cf) next.confirmPassword = "Passwords do not match.";
 
     setErrors(next);
 
     const ok = !(next.currentPassword || next.newPassword || next.confirmPassword);
-
-    // ✅ summary message (replaces top toast)
     if (!ok) {
-      if (next.currentPassword) openMsg(next.currentPassword, "error", "Error");
-      else if (next.newPassword) openMsg(next.newPassword, "error", "Error");
-      else if (next.confirmPassword) openMsg(next.confirmPassword, "error", "Error");
+      const first =
+        next.currentPassword || next.newPassword || next.confirmPassword || "Please check your inputs.";
+      openMsg(first, "error", "Validation Error");
     }
 
     return ok;
-  };
+  }, [form.confirmPassword, form.currentPassword, form.newPassword, openMsg]);
 
-  /* ================= CHANGE PASSWORD LOGIC ================= */
-  const handleChangePassword = async () => {
+  /* =========================
+     ACTION
+  ========================= */
+  const handleChangePassword = useCallback(async () => {
     if (loading) return;
 
     clearErrors();
-    const ok = validate();
-    if (!ok) return;
+    if (!validate()) return;
 
     try {
       setLoading(true);
@@ -151,15 +157,13 @@ export default function ChangePassword() {
         return;
       }
 
-      const credential = EmailAuthProvider.credential(user.email, currentPassword);
+      const credential = EmailAuthProvider.credential(user.email, form.currentPassword);
 
       await reauthenticateWithCredential(user, credential);
-      await updatePassword(user, newPassword);
+      await updatePassword(user, form.newPassword);
 
-      // ✅ success via CenterMessageModal (no custom Modal)
       openMsg("Your password has been updated successfully!", "success", "Success", 1200);
 
-      // ✅ go back after short delay (non-blocking)
       setTimeout(() => {
         router.back();
       }, 900);
@@ -183,32 +187,32 @@ export default function ChangePassword() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [clearErrors, form.currentPassword, form.newPassword, loading, openMsg, router, setFieldError, user, validate]);
+
+  const subtitle = useMemo(() => "Update your account security", []);
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {/* ===== HEADER ===== */}
-        <View style={styles.profileHeaderRow}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-            disabled={loading}
-          >
-            <Ionicons name="arrow-back" size={24} color="#0F3E48" />
-          </TouchableOpacity>
+    <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : "height"}>
+      {/* ✅ STATUS BAR */}
+      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" translucent={Platform.OS === "android"} />
 
-          <View>
-            <Text style={styles.profileHeaderTitle}>Change Password</Text>
-            <Text style={styles.profileHeaderSubtitle}>Update your account security</Text>
-          </View>
+      {/* ✅ WHITE HEADER */}
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.backBtn} onPress={router.back} disabled={loading} activeOpacity={0.85}>
+          <Ionicons name="arrow-back" size={20} color="#0F3E48" />
+        </TouchableOpacity>
+
+        <View style={styles.headerText}>
+          <Text style={styles.headerTitle}>Change Password</Text>
+          <Text style={styles.headerSubtitle} numberOfLines={1}>
+            {subtitle}
+          </Text>
         </View>
 
-        <View style={styles.profileHeaderDivider} />
+        <View style={styles.headerSpacer} />
+      </View>
 
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.infoBox}>
           <Ionicons name="shield-checkmark" size={20} color="#0D9488" />
           <Text style={styles.infoText}>
@@ -216,33 +220,33 @@ export default function ChangePassword() {
           </Text>
         </View>
 
-        {/* ===== FORM CARD ===== */}
         <View style={styles.card}>
           <Input
             label="Current Password"
             placeholder="Enter current password"
             secureTextEntry
-            value={currentPassword}
+            value={form.currentPassword}
             onChangeText={(v) => {
-              setCurrentPassword(v);
+              setField("currentPassword", v);
               if (errors.currentPassword) setFieldError("currentPassword", "");
             }}
             icon={<Ionicons name="lock-closed-outline" size={18} color="#9CA3AF" />}
           />
           {!!errors.currentPassword && <Text style={styles.errorText}>{errors.currentPassword}</Text>}
 
-          <View style={{ height: 15 }} />
+          <View style={styles.gap} />
 
           <Input
             label="New Password"
             placeholder="Minimum 6 characters"
             secureTextEntry
-            value={newPassword}
+            value={form.newPassword}
             onChangeText={(v) => {
-              setNewPassword(v);
+              setField("newPassword", v);
+
               if (errors.newPassword) setFieldError("newPassword", "");
 
-              if (confirmPassword && v !== confirmPassword) {
+              if (form.confirmPassword && v !== form.confirmPassword) {
                 setFieldError("confirmPassword", "Passwords do not match.");
               } else if (errors.confirmPassword) {
                 setFieldError("confirmPassword", "");
@@ -252,28 +256,27 @@ export default function ChangePassword() {
           />
           {!!errors.newPassword && <Text style={styles.errorText}>{errors.newPassword}</Text>}
 
-          <View style={{ height: 15 }} />
+          <View style={styles.gap} />
 
           <Input
             label="Confirm New Password"
             placeholder="Repeat new password"
             secureTextEntry
-            value={confirmPassword}
+            value={form.confirmPassword}
             onChangeText={(v) => {
-              setConfirmPassword(v);
+              setField("confirmPassword", v);
+
               if (errors.confirmPassword) setFieldError("confirmPassword", "");
-              if (newPassword && v !== newPassword) {
+
+              if (form.newPassword && v !== form.newPassword) {
                 setFieldError("confirmPassword", "Passwords do not match.");
               }
             }}
             icon={<Ionicons name="shield-checkmark-outline" size={18} color="#9CA3AF" />}
           />
-          {!!errors.confirmPassword && (
-            <Text style={styles.errorText}>{errors.confirmPassword}</Text>
-          )}
+          {!!errors.confirmPassword && <Text style={styles.errorText}>{errors.confirmPassword}</Text>}
         </View>
 
-        {/* ===== SAVE BUTTON ===== */}
         <Button
           title={loading ? "Updating..." : "Update Password"}
           onPress={handleChangePassword}
@@ -296,6 +299,8 @@ export default function ChangePassword() {
         type={msgModal.type}
         title={msgModal.title}
         message={msgModal.message}
+        primaryText="OK"
+        onPrimaryPress={closeMsg}
         onClose={closeMsg}
       />
     </KeyboardAvoidingView>
@@ -303,69 +308,79 @@ export default function ChangePassword() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FAFC" },
-  scrollContent: { padding: 20 },
+  page: { flex: 1, backgroundColor: "#F8FAFC" },
 
-  profileHeaderRow: {
+  /* ===== Header (WHITE) ===== */
+  header: {
+    backgroundColor: "#FFFFFF",
+    paddingTop: Platform.OS === "ios" ? 56 : 68,
+    paddingBottom: 14,
+    paddingHorizontal: 18,
     flexDirection: "row",
     alignItems: "center",
-    paddingTop: 40,
-    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E2E8F0",
+    elevation: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
   },
-  backButton: {
+  backBtn: {
     width: 42,
     height: 42,
-    borderRadius: 12,
-    backgroundColor: "#fff",
+    borderRadius: 14,
+    backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 16,
-    elevation: 2,
-    shadowColor: "#000",
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
   },
-  profileHeaderTitle: { fontSize: 20, fontWeight: "900", color: "#0F3E48" },
-  profileHeaderSubtitle: { fontSize: 13, color: "#777" },
+  headerText: { flex: 1, marginLeft: 12 },
+  headerTitle: { fontSize: 18, fontWeight: "900", color: "#0F3E48" },
+  headerSubtitle: { marginTop: 3, fontSize: 12.5, fontWeight: "700", color: "#64748B" },
+  headerSpacer: { width: 42 },
 
-  profileHeaderDivider: { height: 1, backgroundColor: "#E4E6EB", marginBottom: 25 },
+  /* ===== Content ===== */
+  scrollContent: { padding: 18, paddingBottom: 28 },
 
   infoBox: {
     flexDirection: "row",
     backgroundColor: "#F0FDFA",
     padding: 14,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: "#CCFBF1",
-    marginBottom: 20,
+    marginBottom: 14,
     alignItems: "center",
   },
   infoText: {
-    fontSize: 12,
+    fontSize: 12.5,
     color: "#0D9488",
     marginLeft: 10,
     flex: 1,
-    fontWeight: "500",
+    fontWeight: "700",
     lineHeight: 18,
   },
 
   card: {
     backgroundColor: "#fff",
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 25,
+    borderRadius: 22,
+    padding: 18,
+    marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#E1E8EA",
+    borderColor: "#E2E8F0",
     elevation: 3,
     shadowColor: "#000",
     shadowOpacity: 0.05,
     shadowRadius: 10,
   },
 
+  gap: { height: 14 },
+
   errorText: {
     marginTop: 8,
     color: "#DC2626",
-    fontWeight: "800",
+    fontWeight: "900",
     fontSize: 12,
     lineHeight: 16,
   },

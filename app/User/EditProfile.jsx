@@ -2,13 +2,13 @@ import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
   TextInput,
@@ -17,15 +17,22 @@ import {
 } from "react-native";
 import { db } from "../../config/firebase";
 import Button from "../components/Button";
-
-// ✅ Central modal from components
 import CenterMessageModal from "../components/CenterMessageModal";
 
 const USER_ID_KEY = "aestheticai:current-user-id";
 
+/* =========================
+   SMALL UI COMPONENTS
+========================= */
+const Label = ({ text }) => <Text style={styles.label}>{text}</Text>;
+const safeStr = (v) => String(v ?? "").trim();
+
 export default function EditProfile() {
   const router = useRouter();
 
+  /* =========================
+     STATE
+  ========================= */
   const [userId, setUserId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -38,62 +45,98 @@ export default function EditProfile() {
     createdAt: "N/A",
   });
 
-  // ✅ baseline snapshot (for "no edits" detection)
-  const initialRef = useRef({ name: "", gender: "" });
-
-  // ✅ inline validation state
   const [errors, setErrors] = useState({ name: "", gender: "" });
 
-  // ✅ guard to avoid repeated session warnings
-  const didWarnNoUser = useRef(false);
+  // baseline snapshot for no-changes detection
+  const initialRef = useRef({ name: "", gender: "" });
 
-  // ✅ CenterMessageModal state
+  // CenterMessageModal state
   const [centerModal, setCenterModal] = useState({
     visible: false,
-    type: "info", // "success" | "error" | "info" | "warning"
+    type: "info",
     title: "Notice",
     message: "",
-    // optional: afterClose action control
     nextRoute: null,
   });
 
-  const safeStr = (v) => String(v ?? "").trim();
-  const isNonEmpty = (v) => safeStr(v).length > 0;
+  /* =========================
+     DERIVED
+  ========================= */
+  const hasAnyError = useMemo(() => !!(errors.name || errors.gender), [errors]);
 
-  const openCenterModal = (message, type = "info", title = "Notice", nextRoute = null) => {
-    setCenterModal({
-      visible: true,
-      type,
-      title,
-      message: String(message || ""),
-      nextRoute,
-    });
-  };
+  // ✅ UPDATED: static subtitle (replaces "Gender: ...")
+  const headerSubtitle = useMemo(() => {
+    return "Update your personal information";
+  }, []);
 
-  const closeCenterModal = () => {
+  /* =========================
+     MODAL HELPERS
+  ========================= */
+  const openCenterModal = useCallback(
+    (message, type = "info", title = "Notice", nextRoute = null) => {
+      setCenterModal({
+        visible: true,
+        type,
+        title,
+        message: String(message || ""),
+        nextRoute,
+      });
+    },
+    []
+  );
+
+  const closeCenterModal = useCallback(() => {
     const route = centerModal.nextRoute;
     setCenterModal((m) => ({ ...m, visible: false, nextRoute: null }));
-    if (route) {
-      // ✅ navigate after user closes modal
-      router.replace(route);
+    if (route) router.replace(route);
+  }, [centerModal.nextRoute, router]);
+
+  /* =========================
+     FORM HELPERS
+  ========================= */
+  const clearErrors = useCallback(() => setErrors({ name: "", gender: "" }), []);
+  const setFieldError = useCallback(
+    (field, msg) => setErrors((prev) => ({ ...prev, [field]: msg })),
+    []
+  );
+
+  const formatCreatedAt = (createdAt) => {
+    try {
+      if (!createdAt) return "N/A";
+      const d = createdAt?.toDate ? createdAt.toDate() : new Date(createdAt);
+      if (Number.isNaN(d.getTime())) return "N/A";
+      return d.toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return "N/A";
     }
   };
 
-  const clearErrors = () => setErrors({ name: "", gender: "" });
-  const setFieldError = (field, msg) => setErrors((prev) => ({ ...prev, [field]: msg }));
+  const hasNoChanges = useCallback(() => {
+    const baseName = safeStr(initialRef.current?.name);
+    const baseGender = safeStr(initialRef.current?.gender);
+    const curName = safeStr(form.name);
+    const curGender = safeStr(form.gender);
+    return baseName === curName && baseGender === curGender;
+  }, [form.name, form.gender]);
 
-  const hasAnyError = useMemo(() => !!(errors.name || errors.gender), [errors]);
-
-  const validateBeforeSave = () => {
+  const validateBeforeSave = useCallback(() => {
     const next = { name: "", gender: "" };
 
-    if (!isNonEmpty(userId)) {
-      openCenterModal("Session required. Please sign in again.", "error", "Session Required", "/Login");
+    if (!safeStr(userId)) {
+      openCenterModal(
+        "Session required. Please sign in again.",
+        "error",
+        "Session Required",
+        "/Login"
+      );
       return false;
     }
 
     const cleanName = safeStr(form.name);
-
     if (!cleanName) next.name = "Name is required.";
     else if (cleanName.length < 2) next.name = "Name must be at least 2 characters.";
     else if (!/^[A-Za-z\s.'-]+$/.test(cleanName))
@@ -111,95 +154,76 @@ export default function EditProfile() {
     }
 
     return true;
-  };
+  }, [form.gender, form.name, openCenterModal, userId]);
 
-  const hasNoChanges = () => {
-    const baseName = safeStr(initialRef.current?.name);
-    const baseGender = safeStr(initialRef.current?.gender);
-    const curName = safeStr(form.name);
-    const curGender = safeStr(form.gender);
-    return baseName === curName && baseGender === curGender;
-  };
+  /* =========================
+     LOAD USER
+  ========================= */
+  const loadUser = useCallback(async () => {
+    try {
+      setLoading(true);
 
-  /* ================= LOAD USER ================= */
-  useEffect(() => {
-    const loadUser = async () => {
-      try {
-        setLoading(true);
-
-        const uid = await AsyncStorage.getItem(USER_ID_KEY);
-
-        if (!uid) {
-          setUserId(null);
-          if (!didWarnNoUser.current) {
-            didWarnNoUser.current = true;
-            // ✅ keep Alert for blocking/session cases
-            Alert.alert("Session Required", "Please sign in to edit your profile.");
-          }
-          router.replace("/Login");
-          return;
-        }
-
-        setUserId(uid);
-
-        const snap = await getDoc(doc(db, "users", uid));
-        if (!snap.exists()) {
-          Alert.alert("Profile Not Found", "Your profile record was not found.");
-          router.replace("/User/Profile");
-          return;
-        }
-
-        const data = snap.data() || {};
-
-        // Format createdAt
-        let formattedDate = "N/A";
-        try {
-          if (data.createdAt) {
-            const date = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt);
-            if (!Number.isNaN(date.getTime())) {
-              formattedDate = date.toLocaleDateString("en-US", {
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              });
-            }
-          }
-        } catch {}
-
-        const loadedName = safeStr(data.name);
-        const loadedGender = safeStr(data.gender);
-
-        // ✅ set baseline for "no edits"
-        initialRef.current = { name: loadedName, gender: loadedGender };
-
-        setForm({
-          name: loadedName,
-          email: safeStr(data.email),
-          gender: loadedGender,
-          subscription_type: safeStr(data.subscription_type) || "Free",
-          createdAt: formattedDate,
-        });
-      } catch (e) {
-        console.log("Load profile error:", e?.message || e);
-        openCenterModal("Failed to load your profile. Please try again.", "error", "Error");
-      } finally {
-        setLoading(false);
+      const uid = await AsyncStorage.getItem(USER_ID_KEY);
+      if (!uid) {
+        setUserId(null);
+        openCenterModal(
+          "Please sign in to edit your profile.",
+          "warning",
+          "Session Required",
+          "/Login"
+        );
+        return;
       }
-    };
 
+      setUserId(uid);
+
+      const snap = await getDoc(doc(db, "users", uid));
+      if (!snap.exists()) {
+        openCenterModal(
+          "Your profile record was not found.",
+          "error",
+          "Profile Not Found",
+          "/User/Profile"
+        );
+        return;
+      }
+
+      const data = snap.data() || {};
+      const loadedName = safeStr(data.name);
+      const loadedGender = safeStr(data.gender);
+      const createdAt = formatCreatedAt(data.createdAt);
+
+      initialRef.current = { name: loadedName, gender: loadedGender };
+
+      setForm({
+        name: loadedName,
+        email: safeStr(data.email),
+        gender: loadedGender,
+        subscription_type: safeStr(data.subscription_type) || "Free",
+        createdAt,
+      });
+    } catch (e) {
+      console.log("Load profile error:", e?.message || e);
+      openCenterModal("Failed to load your profile. Please try again.", "error", "Error");
+    } finally {
+      setLoading(false);
+    }
+  }, [openCenterModal]);
+
+  useEffect(() => {
     loadUser();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadUser]);
 
-  /* ================= SAVE ================= */
-  const handleSave = async () => {
+  /* =========================
+     SAVE
+  ========================= */
+  const handleSave = useCallback(async () => {
     if (saving) return;
 
     clearErrors();
 
     if (!validateBeforeSave()) return;
 
-    // ✅ requested: if no edits -> show message (central modal)
     if (hasNoChanges()) {
       openCenterModal("No changes to save. Please edit your profile first.", "info", "No Changes");
       return;
@@ -216,78 +240,107 @@ export default function EditProfile() {
         gender: cleanGender,
       });
 
-      // ✅ update baseline
       initialRef.current = { name: cleanName, gender: cleanGender };
 
-      // ✅ success message then go back to Profile after close
-      openCenterModal(
-        "Profile updated successfully.",
-        "success",
-        "Success",
-        "/User/Profile"
-      );
+      openCenterModal("Profile updated successfully.", "success", "Success", "/User/Profile");
     } catch (e) {
       console.log("Update profile error:", e?.message || e);
       openCenterModal("Failed to update profile. Please try again.", "error", "Error");
     } finally {
       setSaving(false);
     }
-  };
+  }, [
+    clearErrors,
+    form.gender,
+    form.name,
+    hasNoChanges,
+    openCenterModal,
+    saving,
+    userId,
+    validateBeforeSave,
+  ]);
 
+  /* =========================
+     RENDER: LOADING
+  ========================= */
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#01579B" />
+      <View style={styles.loadingPage}>
+        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+        <View style={styles.loadingCard}>
+          <ActivityIndicator size="large" color="#0F3E48" />
+          <Text style={styles.loadingText}>Loading profile…</Text>
+        </View>
+
+        <CenterMessageModal
+          visible={centerModal.visible}
+          type={centerModal.type}
+          title={centerModal.title}
+          message={centerModal.message}
+          primaryText="OK"
+          onPrimaryPress={closeCenterModal}
+          onClose={closeCenterModal}
+        />
       </View>
     );
   }
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: "#F8FAFC" }}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* ===== HEADER (UNCHANGED) ===== */}
-        <View style={styles.profileHeaderRow}>
-          <View style={styles.profileHeaderLeft}>
-            <TouchableOpacity
-              style={styles.profileHeaderAvatar}
-              onPress={router.back}
-              disabled={saving}
-            >
-              <Ionicons name="arrow-back" size={20} color="#0F3E48" />
-            </TouchableOpacity>
+    <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      {/* ✅ STATUS BAR (WHITE HEADER) */}
+      <StatusBar
+        barStyle="dark-content"
+        backgroundColor="#FFFFFF"
+        translucent={Platform.OS === "android"}
+      />
 
-            <View>
-              <Text style={styles.profileHeaderTitle}>Edit Profile</Text>
-              <Text style={styles.profileHeaderSubtitle}>
-                Update your personal information
-              </Text>
+      {/* ✅ WHITE TOP HEADER */}
+      <View style={styles.topHeader}>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={router.back}
+          disabled={saving}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="arrow-back" size={20} color="#0F3E48" />
+        </TouchableOpacity>
+
+        <View style={styles.topHeaderText}>
+          <Text style={styles.topTitle}>Edit Profile</Text>
+
+          {/* ✅ SUBTITLE BELOW TITLE (replaces Gender text) */}
+          <Text style={styles.topSubtitle} numberOfLines={1}>
+            {headerSubtitle}
+          </Text>
+        </View>
+
+        <View style={styles.headerSpacer} />
+      </View>
+
+      <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        {/* ✅ ACCOUNT SUMMARY */}
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryBox}>
+            <View style={styles.summaryTop}>
+              <Ionicons name="card-outline" size={16} color="#16A34A" />
+              <Text style={styles.summaryLabel}>Subscription</Text>
             </View>
+            <Text style={styles.summaryValue}>{form.subscription_type}</Text>
+          </View>
+
+          <View style={styles.summaryBox}>
+            <View style={styles.summaryTop}>
+              <Ionicons name="calendar-outline" size={16} color="#0284C7" />
+              <Text style={styles.summaryLabel}>Member Since</Text>
+            </View>
+            <Text style={styles.summaryValue}>{form.createdAt}</Text>
           </View>
         </View>
 
-        <View style={styles.profileHeaderDivider} />
-
-        {/* ===== ACCOUNT SUMMARY (READ-ONLY) ===== */}
-        <View style={styles.infoRow}>
-          <View style={styles.infoBox}>
-            <Text style={styles.infoLabel}>Subscription</Text>
-            <Text style={styles.infoValue}>{form.subscription_type}</Text>
-          </View>
-          <View style={styles.infoBox}>
-            <Text style={styles.infoLabel}>Member Since</Text>
-            <Text style={styles.infoValue}>{form.createdAt}</Text>
-          </View>
-        </View>
-
-        {/* ===== FORM CARD ===== */}
+        {/* ✅ FORM CARD */}
         <View style={styles.card}>
+          <Text style={styles.cardHeader}>Personal Details</Text>
+
           <Label text="Full Name" />
           <View style={[styles.inputWrapper, !!errors.name && styles.inputWrapperError]}>
             <Ionicons
@@ -300,36 +353,25 @@ export default function EditProfile() {
               style={styles.input}
               value={form.name}
               onChangeText={(v) => {
-                setForm({ ...form, name: v });
+                setForm((p) => ({ ...p, name: v }));
                 if (errors.name) setFieldError("name", "");
               }}
               placeholder="Enter your full name"
               placeholderTextColor="#94A3B8"
+              editable={!saving}
+              returnKeyType="done"
             />
           </View>
           {!!errors.name && <Text style={styles.errorText}>{errors.name}</Text>}
 
           <Label text="Email Address" />
           <View style={[styles.inputWrapper, styles.readonlyWrap]}>
-            <Ionicons
-              name="mail-outline"
-              size={18}
-              color="#CBD5E1"
-              style={styles.inputIcon}
-            />
-            <TextInput
-              style={[styles.input, { color: "#94A3B8" }]}
-              value={form.email}
-              editable={false}
-            />
+            <Ionicons name="mail-outline" size={18} color="#CBD5E1" style={styles.inputIcon} />
+            <TextInput style={[styles.input, styles.readonlyText]} value={form.email} editable={false} />
           </View>
 
           <Label text="Gender" />
-          {!!errors.gender && (
-            <Text style={[styles.errorText, { marginTop: 0, marginBottom: 10 }]}>
-              {errors.gender}
-            </Text>
-          )}
+          {!!errors.gender && <Text style={styles.errorText}>{errors.gender}</Text>}
 
           <View style={styles.genderRow}>
             <TouchableOpacity
@@ -339,24 +381,14 @@ export default function EditProfile() {
                 !!errors.gender && !form.gender && styles.genderCardError,
               ]}
               onPress={() => {
-                setForm({ ...form, gender: "Male" });
+                setForm((p) => ({ ...p, gender: "Male" }));
                 if (errors.gender) setFieldError("gender", "");
               }}
               activeOpacity={0.85}
+              disabled={saving}
             >
-              <Ionicons
-                name="male"
-                size={20}
-                color={form.gender === "Male" ? "#fff" : "#0284C7"}
-              />
-              <Text
-                style={[
-                  styles.genderText,
-                  form.gender === "Male" && styles.genderTextActive,
-                ]}
-              >
-                Male
-              </Text>
+              <Ionicons name="male" size={20} color={form.gender === "Male" ? "#fff" : "#0284C7"} />
+              <Text style={[styles.genderText, form.gender === "Male" && styles.genderTextActive]}>Male</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -366,28 +398,24 @@ export default function EditProfile() {
                 !!errors.gender && !form.gender && styles.genderCardError,
               ]}
               onPress={() => {
-                setForm({ ...form, gender: "Female" });
+                setForm((p) => ({ ...p, gender: "Female" }));
                 if (errors.gender) setFieldError("gender", "");
               }}
               activeOpacity={0.85}
+              disabled={saving}
             >
-              <Ionicons
-                name="female"
-                size={20}
-                color={form.gender === "Female" ? "#fff" : "#DB2777"}
-              />
-              <Text
-                style={[
-                  styles.genderText,
-                  form.gender === "Female" && styles.genderTextActive,
-                ]}
-              >
-                Female
-              </Text>
+              <Ionicons name="female" size={20} color={form.gender === "Female" ? "#fff" : "#DB2777"} />
+              <Text style={[styles.genderText, form.gender === "Female" && styles.genderTextActive]}>Female</Text>
             </TouchableOpacity>
+          </View>
+
+          <View style={styles.saveHintRow}>
+            <Ionicons name="information-circle-outline" size={16} color="#64748B" />
+            <Text style={styles.saveHintText}>Only name and gender can be updated.</Text>
           </View>
         </View>
 
+        {/* ✅ SAVE BUTTON */}
         <View style={styles.buttonWrapper}>
           <Button
             title={saving ? "Saving..." : "Save Changes"}
@@ -412,139 +440,121 @@ export default function EditProfile() {
         type={centerModal.type}
         title={centerModal.title}
         message={centerModal.message}
+        primaryText="OK"
+        onPrimaryPress={closeCenterModal}
         onClose={closeCenterModal}
       />
     </KeyboardAvoidingView>
   );
 }
 
-const Label = ({ text }) => <Text style={styles.label}>{text}</Text>;
-
+/* =========================
+   STYLES
+========================= */
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8FAFC" },
-  scrollContent: { paddingHorizontal: 25, paddingBottom: 40 },
+  page: { flex: 1, backgroundColor: "#F8FAFC" },
 
-  profileHeaderRow: {
+  /* ===== Loading ===== */
+  loadingPage: { flex: 1, backgroundColor: "#F8FAFC", justifyContent: "center", alignItems: "center", padding: 18 },
+  loadingCard: {
+    width: "100%",
+    maxWidth: 420,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+    gap: 10,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+  },
+  loadingText: { color: "#475569", fontWeight: "900" },
+
+  /* ===== Header (WHITE) ===== */
+  topHeader: {
+    backgroundColor: "#FFFFFF",
+    paddingTop: Platform.OS === "ios" ? 56 : 68,
+    paddingBottom: 14,
+    paddingHorizontal: 18,
     flexDirection: "row",
     alignItems: "center",
-    paddingTop: 50,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
   },
-  profileHeaderLeft: { flexDirection: "row", alignItems: "center" },
-  profileHeaderAvatar: {
+  backBtn: {
     width: 42,
     height: 42,
     borderRadius: 14,
     backgroundColor: "#F1F5F9",
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 16,
   },
-  profileHeaderTitle: { fontSize: 19, fontWeight: "900", color: "#0F3E48" },
-  profileHeaderSubtitle: { fontSize: 12, color: "#64748B" },
-  profileHeaderDivider: {
-    height: 1,
-    backgroundColor: "#F1F5F9",
-    marginBottom: 20,
-  },
+  topHeaderText: { flex: 1, marginLeft: 12 },
+  topTitle: { color: "#0F3E48", fontWeight: "900", fontSize: 18 },
+  topSubtitle: { color: "#64748B", fontWeight: "700", marginTop: 3, fontSize: 12.5 },
+  headerSpacer: { width: 42 },
 
-  infoRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 20,
-    gap: 12,
-  },
-  infoBox: {
+  /* ===== Content ===== */
+  container: { flex: 1 },
+  scrollContent: { paddingHorizontal: 18, paddingTop: 16, paddingBottom: 40 },
+
+  summaryRow: { flexDirection: "row", gap: 12, marginBottom: 14 },
+  summaryBox: {
     flex: 1,
-    backgroundColor: "#FFF",
-    padding: 15,
-    borderRadius: 16,
+    backgroundColor: "#FFFFFF",
+    borderRadius: 18,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "#F1F5F9",
-    elevation: 1,
-  },
-  infoLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    color: "#94A3B8",
-    textTransform: "uppercase",
-    marginBottom: 4,
-  },
-  infoValue: { fontSize: 13, fontWeight: "700", color: "#0F3E48" },
-
-  card: {
-    backgroundColor: "#fff",
-    borderRadius: 24,
-    padding: 24,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "#F1F5F9",
+    borderColor: "#E2E8F0",
     elevation: 2,
     shadowColor: "#000",
-    shadowOpacity: 0.03,
+    shadowOpacity: 0.04,
     shadowRadius: 10,
   },
-  label: {
-    fontSize: 11,
-    fontWeight: "800",
-    color: "#475569",
-    marginTop: 15,
-    marginBottom: 8,
-    textTransform: "uppercase",
-  },
+  summaryTop: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 6 },
+  summaryLabel: { fontSize: 11, fontWeight: "900", color: "#64748B", textTransform: "uppercase", letterSpacing: 0.9 },
+  summaryValue: { fontSize: 13, fontWeight: "900", color: "#0F172A" },
 
-  inputWrapper: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#F8FAFC",
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 24,
+    padding: 18,
     borderWidth: 1,
     borderColor: "#E2E8F0",
-    borderRadius: 16,
-    paddingHorizontal: 15,
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
   },
-  inputWrapperError: {
-    borderColor: "#DC2626",
-    backgroundColor: "rgba(220,38,38,0.06)",
-  },
+  cardHeader: { fontSize: 14, fontWeight: "900", color: "#0F3E48", marginBottom: 6 },
+
+  label: { fontSize: 11, fontWeight: "900", color: "#475569", marginTop: 14, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.9 },
+
+  inputWrapper: { flexDirection: "row", alignItems: "center", backgroundColor: "#F8FAFC", borderWidth: 1, borderColor: "#E2E8F0", borderRadius: 16, paddingHorizontal: 14 },
+  inputWrapperError: { borderColor: "#DC2626", backgroundColor: "rgba(220,38,38,0.06)" },
   inputIcon: { marginRight: 10 },
-  input: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1E293B",
-  },
-  readonlyWrap: { backgroundColor: "#F1F5F9", borderColor: "#E2E8F0" },
+  input: { flex: 1, paddingVertical: 12, fontSize: 15, fontWeight: "700", color: "#0F172A" },
 
-  errorText: {
-    marginTop: 8,
-    color: "#DC2626",
-    fontWeight: "800",
-    fontSize: 12,
-    lineHeight: 16,
-  },
+  readonlyWrap: { backgroundColor: "#F1F5F9" },
+  readonlyText: { color: "#94A3B8" },
 
-  genderRow: { flexDirection: "row", gap: 10, marginTop: 6 },
-  genderCard: {
-    flex: 1,
-    flexDirection: "row",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    paddingVertical: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#FAFCFD",
-    gap: 6,
-  },
-  genderCardError: {
-    borderColor: "#DC2626",
-    backgroundColor: "rgba(220,38,38,0.06)",
-  },
+  errorText: { marginTop: 8, color: "#DC2626", fontWeight: "900", fontSize: 12, lineHeight: 16 },
+
+  genderRow: { flexDirection: "row", gap: 10, marginTop: 8 },
+  genderCard: { flex: 1, flexDirection: "row", borderRadius: 14, borderWidth: 1, borderColor: "#E2E8F0", paddingVertical: 12, alignItems: "center", justifyContent: "center", backgroundColor: "#FFFFFF", gap: 8 },
+  genderCardError: { borderColor: "#DC2626", backgroundColor: "rgba(220,38,38,0.06)" },
   genderActiveMale: { backgroundColor: "#0284C7", borderColor: "#0284C7" },
   genderActiveFemale: { backgroundColor: "#DB2777", borderColor: "#DB2777" },
-  genderText: { fontWeight: "800", fontSize: 13, color: "#64748B" },
-  genderTextActive: { color: "#fff" },
+  genderText: { fontWeight: "900", fontSize: 13, color: "#64748B" },
+  genderTextActive: { color: "#FFFFFF" },
 
-  buttonWrapper: { marginTop: 5 },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  saveHintRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 14 },
+  saveHintText: { color: "#64748B", fontWeight: "800", fontSize: 12 },
+
+  buttonWrapper: { marginTop: 14 },
 });

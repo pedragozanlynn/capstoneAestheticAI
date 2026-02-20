@@ -370,15 +370,12 @@ export default function Consultation() {
 
   return (
     <View style={styles.page}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="light-content" backgroundColor= "#01579B" />
 
       {/* ===== PREMIUM HEADER ===== */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-            <Ionicons name="chevron-back" size={28} color="#FFF" />
-          </TouchableOpacity>
-
+                 
           <View style={styles.headerActions}>
             {/* ✅ Chat icon with unread badge (CONNECTED to chatRooms unreadForUser sum) */}
             <TouchableOpacity
@@ -539,7 +536,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 20,
   },
-  headerActions: { flexDirection: "row", gap: 10 },
+  headerActions: { flexDirection: "row", gap: 12, left:260, },
   iconBtn: {
     width: 40,
     height: 40,

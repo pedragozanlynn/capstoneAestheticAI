@@ -12,14 +12,15 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { db } from "../../config/firebase";
 import BottomNavbar from "../components/BottomNav";
 import ConsultantDetailsModal from "../components/ConsultantDetailsModal";
 
-/** -----------------------------
- * ✅ Validation helpers (NO UI logic changes)
- * ----------------------------- */
+/* =========================
+   HELPERS (logic unchanged)
+========================= */
 const safeStr = (v) => (v == null ? "" : String(v).trim());
 
 const normalizeStatus = (status) => {
@@ -53,7 +54,7 @@ const validateConsultantDoc = (docData, docId) => {
 
   return {
     id: docId,
-    ...docData, // ✅ keep ALL fields for modal
+    ...docData, // keep ALL fields for modal
     fullName: fullName || "(No name)",
     email: email || "(No email)",
     status,
@@ -61,29 +62,32 @@ const validateConsultantDoc = (docData, docId) => {
   };
 };
 
-export default function Consultantst() {
+const TABS = [
+  { id: "all", label: "All" },
+  { id: "pending", label: "Pending" },
+  { id: "accepted", label: "Verified" },
+  { id: "rejected", label: "Rejected" },
+];
+
+export default function Consultants() {
+  const insets = useSafeAreaInsets();
+
   const [consultants, setConsultants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState("all");
+
   const [selectedConsultant, setSelectedConsultant] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
-  // ✅ prevent repeated alert spam on refresh
   const warnedInvalidRef = useRef(false);
 
   const fetchConsultants = async () => {
     setLoading(true);
     try {
-      const querySnapshot = await getDocs(collection(db, "consultants"));
-
-      const raw = querySnapshot.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
-
+      const snap = await getDocs(collection(db, "consultants"));
+      const raw = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const normalized = raw.map((r) => validateConsultantDoc(r, r.id));
 
-      // ✅ newest first
       const sorted = normalized.sort((a, b) => {
         const am = toMillisSafe(a.createdAt || a.created_at || a.timestamp);
         const bm = toMillisSafe(b.createdAt || b.created_at || b.timestamp);
@@ -101,7 +105,7 @@ export default function Consultantst() {
       }
 
       setConsultants(sorted);
-    } catch (error) {
+    } catch {
       Alert.alert(
         "Error",
         "Failed to load consultant data. Please check your internet connection and try again.",
@@ -120,10 +124,7 @@ export default function Consultantst() {
   }, []);
 
   const filteredConsultants = useMemo(() => {
-    return consultants.filter((c) => {
-      if (activeFilter === "all") return true;
-      return c.status === activeFilter;
-    });
+    return consultants.filter((c) => (activeFilter === "all" ? true : c.status === activeFilter));
   }, [consultants, activeFilter]);
 
   const openModal = (consultant) => {
@@ -143,20 +144,12 @@ export default function Consultantst() {
     const nextStatus = normalizeStatus(status);
     const allowed = ["pending", "accepted", "rejected"];
     if (!allowed.includes(nextStatus)) {
-      Alert.alert(
-        "Invalid status",
-        "Status must be Pending, Verified, or Rejected only."
-      );
+      Alert.alert("Invalid status", "Status must be Pending, Verified, or Rejected only.");
       return;
     }
 
-    setConsultants((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: nextStatus } : c))
-    );
-
-    setSelectedConsultant((prev) =>
-      prev?.id === id ? { ...prev, status: nextStatus } : prev
-    );
+    setConsultants((prev) => prev.map((c) => (c.id === id ? { ...c, status: nextStatus } : c)));
+    setSelectedConsultant((prev) => (prev?.id === id ? { ...prev, status: nextStatus } : prev));
 
     if (nextStatus === "accepted") {
       setActiveFilter("accepted");
@@ -174,62 +167,47 @@ export default function Consultantst() {
   };
 
   return (
-    <View style={styles.mainContainer}>
-      {/* FIXED HEADER (same as Withdrawals) */}
-      <View style={styles.header}>
-        {/* ✅ CHANGED: edges top-only (prevents extra bottom safe padding) */}
-        <SafeAreaView edges={["top"]}>
-          <Text style={styles.headerTitle}>Consultants</Text>
-          <Text style={styles.headerSubtitle}>
-            Manage consultants verifications
-          </Text>
-        </SafeAreaView>
-      </View>
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#01579B" />
 
-      {/* ✅ Tabs */}
+      <SafeAreaView edges={["top"]} style={styles.headerSafe}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Consultants</Text>
+          <Text style={styles.headerSubtitle}>Manage consultant verifications</Text>
+        </View>
+      </SafeAreaView>
+
       <View style={styles.filterWrapper}>
         <View style={styles.filterContainer}>
-          {[
-            { id: "all", label: "All" },
-            { id: "pending", label: "Pending" },
-            { id: "accepted", label: "Verified" },
-            { id: "rejected", label: "Rejected" },
-          ].map((tab) => (
-            <TouchableOpacity
-              key={tab.id}
-              onPress={() => setActiveFilter(tab.id)}
-              activeOpacity={0.85}
-              style={[
-                styles.filterTab,
-                activeFilter === tab.id && styles.activeFilterTab,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.filterTabText,
-                  activeFilter === tab.id && styles.activeFilterTabText,
-                ]}
+          {TABS.map((tab) => {
+            const active = activeFilter === tab.id;
+            return (
+              <TouchableOpacity
+                key={tab.id}
+                onPress={() => setActiveFilter(tab.id)}
+                activeOpacity={0.85}
+                style={[styles.filterTab, active && styles.activeFilterTab]}
               >
-                {tab.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
+                <Text style={[styles.filterTabText, active && styles.activeFilterTabText]}>
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </View>
 
       {loading ? (
         <View style={styles.centerLoader}>
-          <ActivityIndicator size="large" color={stylesVars.primary} />
+          <ActivityIndicator size="large" color="#01579B" />
           <Text style={styles.loadingText}>Loading consultants...</Text>
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 120 + insets.bottom }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
-          {...(Platform.OS === "ios"
-            ? { contentInsetAdjustmentBehavior: "never" }
-            : {})}
+          {...(Platform.OS === "ios" ? { contentInsetAdjustmentBehavior: "never" } : {})}
         >
           {filteredConsultants.length > 0 ? (
             filteredConsultants.map((c) => {
@@ -237,24 +215,9 @@ export default function Consultantst() {
               const isAccepted = c.status === "accepted" && isValid;
               const isRejected = c.status === "rejected" && isValid;
 
-              const badgeBg = isAccepted
-                ? "#E8F5E9"
-                : isRejected
-                ? "#FEE2E2"
-                : "#FFF3E0";
-
-              const dotColor = isAccepted
-                ? "#2ecc71"
-                : isRejected
-                ? "#DC2626"
-                : "#f39c12";
-
-              const badgeTextColor = isAccepted
-                ? "#1B5E20"
-                : isRejected
-                ? "#991B1B"
-                : "#E65100";
-
+              const badgeBg = isAccepted ? "#E8F5E9" : isRejected ? "#FEE2E2" : "#FFF3E0";
+              const dotColor = isAccepted ? "#2ecc71" : isRejected ? "#DC2626" : "#f39c12";
+              const badgeTextColor = isAccepted ? "#1B5E20" : isRejected ? "#991B1B" : "#E65100";
               const badgeLabel = isAccepted
                 ? "Verified Consultant"
                 : isRejected
@@ -280,23 +243,23 @@ export default function Consultantst() {
                             {c.fullName}
                           </Text>
 
-                          {isAccepted && (
+                          {isAccepted ? (
                             <Ionicons
                               name="checkmark-circle"
                               size={18}
                               color="#2ecc71"
                               style={{ marginLeft: 6 }}
                             />
-                          )}
+                          ) : null}
 
-                          {isRejected && (
+                          {isRejected ? (
                             <Ionicons
                               name="close-circle"
                               size={18}
                               color="#DC2626"
                               style={{ marginLeft: 6 }}
                             />
-                          )}
+                          ) : null}
                         </View>
 
                         <Text style={styles.emailText} numberOfLines={1}>
@@ -315,16 +278,8 @@ export default function Consultantst() {
 
                     <View style={styles.bottomSection}>
                       <View style={[styles.badge, { backgroundColor: badgeBg }]}>
-                        <View
-                          style={[
-                            styles.statusDot,
-                            { backgroundColor: dotColor },
-                          ]}
-                        />
-                        <Text
-                          style={[styles.badgeText, { color: badgeTextColor }]}
-                          numberOfLines={1}
-                        >
+                        <View style={[styles.statusDot, { backgroundColor: dotColor }]} />
+                        <Text style={[styles.badgeText, { color: badgeTextColor }]} numberOfLines={1}>
                           {badgeLabel}
                         </Text>
                       </View>
@@ -350,47 +305,37 @@ export default function Consultantst() {
         </ScrollView>
       )}
 
-      {selectedConsultant && (
+      {selectedConsultant ? (
         <ConsultantDetailsModal
           visible={modalVisible}
           onClose={() => setModalVisible(false)}
           data={selectedConsultant}
           onStatusUpdated={handleStatusUpdated}
         />
-      )}
+      ) : null}
 
       <BottomNavbar role="admin" />
     </View>
   );
 }
 
-/** ✅ UI Vars (design-only) */
-const stylesVars = {
-  primary: "#01579B",
-  headerBg: "#01579B",
-  bg: "#F8FAFC",
-  cardBorder: "#F1F5F9",
-  textMid: "#64748B",
-};
-
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1, backgroundColor: stylesVars.bg },
+  container: { flex: 1, backgroundColor: "#F8FAFC" },
 
-  // ✅ HEADER (same as Withdrawals)
+  headerSafe: { backgroundColor: "#01579B" },
   header: {
-    backgroundColor: "#01579B",
-    paddingTop: 28,        // ✅ lowered (was 34)
     paddingHorizontal: 16,
-    paddingBottom: 20,      // ✅ lowest
+    paddingTop: 18,
+    paddingBottom: 16,
   },
-  headerTitle: { fontSize: 24, fontWeight: "800", color: "#FFF" },
+  headerTitle: { fontSize: 25, fontWeight: "800", color: "#FFF" },
   headerSubtitle: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.7)",
+    fontSize: 13,
+    color: "rgba(255,255,255,0.72)",
     marginTop: 4,
+    fontWeight: "600",
   },
 
-  /** Tabs */
   filterWrapper: { paddingHorizontal: 16, marginTop: 12, marginBottom: 6 },
   filterContainer: {
     flexDirection: "row",
@@ -411,35 +356,20 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 2,
   },
-  filterTabText: {
-    color: stylesVars.textMid,
-    fontSize: 12,
-    fontWeight: "800",
-  },
-  activeFilterTabText: { color: stylesVars.primary },
+  filterTabText: { color: "#64748B", fontSize: 12, fontWeight: "800" },
+  activeFilterTabText: { color: "#01579B" },
 
-  /** Loader */
   centerLoader: { flex: 1, justifyContent: "center", alignItems: "center" },
-  loadingText: {
-    marginTop: 10,
-    color: stylesVars.textMid,
-    fontSize: 13,
-    fontWeight: "700",
-  },
+  loadingText: { marginTop: 10, color: "#64748B", fontSize: 13, fontWeight: "700" },
 
-  /** List */
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 140,
-  },
+  scrollContent: { padding: 16 },
 
-  /** Card */
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 18,
     marginBottom: 14,
     borderWidth: 1,
-    borderColor: stylesVars.cardBorder,
+    borderColor: "#F1F5F9",
     shadowColor: "#0F172A",
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.08,
@@ -462,59 +392,20 @@ const styles = StyleSheet.create({
 
   infoContainer: { flex: 1, marginLeft: 12 },
   nameHeader: { flexDirection: "row", alignItems: "center" },
-  nameText: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#1E293B",
-    letterSpacing: -0.2,
-  },
-  emailText: { fontSize: 13, color: stylesVars.textMid, marginTop: 2 },
+  nameText: { flex: 1, fontSize: 16, fontWeight: "800", color: "#1E293B", letterSpacing: -0.2 },
+  emailText: { fontSize: 13, color: "#64748B", marginTop: 2 },
 
-  validationHint: {
-    marginTop: 4,
-    fontSize: 11,
-    color: "#E11D48",
-    fontWeight: "700",
-  },
+  validationHint: { marginTop: 4, fontSize: 11, color: "#E11D48", fontWeight: "700" },
 
   divider: { height: 1, backgroundColor: "#F1F5F9", marginVertical: 14 },
 
   bottomSection: { flexDirection: "row" },
-  badge: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
+  badge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 7, borderRadius: 10 },
   statusDot: { width: 7, height: 7, borderRadius: 99, marginRight: 8 },
-  badgeText: {
-    fontSize: 10,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 0.6,
-  },
+  badgeText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.6 },
 
-  /** Empty */
-  emptyContainer: {
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 60,
-  },
-  emptyText: {
-    color: "#94A3B8",
-    fontSize: 14,
-    marginTop: 10,
-    textAlign: "center",
-    fontWeight: "700",
-  },
-  retryBtn: {
-    marginTop: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: "#E2E8F0",
-  },
-  retryText: { color: stylesVars.primary, fontWeight: "900", fontSize: 12 },
+  emptyContainer: { alignItems: "center", justifyContent: "center", marginTop: 60 },
+  emptyText: { color: "#94A3B8", fontSize: 14, marginTop: 10, textAlign: "center", fontWeight: "700" },
+  retryBtn: { marginTop: 14, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 12, backgroundColor: "#E2E8F0" },
+  retryText: { color: "#01579B", fontWeight: "900", fontSize: 12 },
 });
