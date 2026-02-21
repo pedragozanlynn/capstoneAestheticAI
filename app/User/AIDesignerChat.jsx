@@ -173,6 +173,26 @@ const PROMPT_FILTERS = {
 export default function AIDesignerChat() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  // ✅ FIX: refs used across the screen
+const flatListRef = useRef(null);          // <--- this fixes your current error
+const sendingRef = useRef(false);          // <--- you use this in sendMessage()
+const injectedProjectImageRef = useRef(false); // <--- you use this in history load
+// ✅ Fix: keep project-passed images visible even when history realtime updates
+const [projectPinnedMessages, setProjectPinnedMessages] = useState([]);
+const projectPinnedRef = useRef([]);
+
+// helper: normalize param (expo-router can return string[])
+const paramStr = (v) => (Array.isArray(v) ? v[0] : v) ?? "";
+const tabStr = String(paramStr(tab)).trim().toLowerCase();
+
+// ✅ Safe scroll helper (prevents crashes if list not mounted yet)
+const scrollToBottomSafe = (ms = 120) => {
+  setTimeout(() => {
+    try {
+      flatListRef?.current?.scrollToEnd?.({ animated: true });
+    } catch {}
+  }, ms);
+};
 
   const { tab, prompt, refImage, inputImage } = useLocalSearchParams();
   const params = useLocalSearchParams();
@@ -360,7 +380,62 @@ export default function AIDesignerChat() {
     lockedFromProjectRef.current = false;
     chainRefKind.current = "ref";
   };
-  // ==============================
+
+  const injectProjectImagesIntoChat = ({ stableRef, originalRef, promptText }) => {
+    if (!isUsableImageRef(stableRef) && !isUsableImageRef(originalRef)) return;
+  
+    const pinned = [];
+  
+    // ✅ Pin ORIGINAL (from Projects)
+    if (isUsableImageRef(originalRef)) {
+      pinned.push({
+        role: "ai",
+        mode: MODE.CUSTOMIZE,
+        inputImage: originalRef,
+        image: null,
+        explanation: "Loaded from Projects (Original reference).",
+        tips: [],
+        layoutSuggestions: [],
+        furnitureMatches: [],
+        palette: null,
+        savedToProjects: true,
+        _pinned: true,
+      });
+    }
+  
+    // ✅ Pin RESULT (from Projects) — optional but helpful
+    if (isUsableImageRef(stableRef)) {
+      pinned.push({
+        role: "ai",
+        mode: MODE.CUSTOMIZE,
+        inputImage: isUsableImageRef(originalRef) ? originalRef : null,
+        image: stableRef,
+        explanation: promptText
+          ? `Loaded from Projects (Result). You can customize this: ${promptText}`
+          : "Loaded from Projects (Result). You can continue customizing this.",
+        tips: [],
+        layoutSuggestions: [],
+        furnitureMatches: [],
+        palette: null,
+        savedToProjects: true,
+        _pinned: true,
+      });
+    }
+  
+    // ✅ Save pinned ONCE (avoid duplicates)
+    const sig = JSON.stringify({
+      stableRef: String(stableRef || ""),
+      originalRef: String(originalRef || ""),
+    });
+  
+    if (projectPinnedRef.current?.[0] === sig) return;
+    projectPinnedRef.current = [sig];
+  
+    setProjectPinnedMessages(pinned);
+  
+    scrollToBottomSafe(150);
+  };
+   // ==============================
   // ✅ Project → Chat AUTO CUSTOMIZE PREFILL
   // ==============================
   useEffect(() => {
@@ -372,43 +447,64 @@ export default function AIDesignerChat() {
   
     const generated = typeof refImage === "string" ? refImage.trim() : "";
     const original = typeof inputImage === "string" ? inputImage.trim() : "";
+    const promptText = typeof prompt === "string" ? prompt.trim() : "";
   
-    if (isUsableImageRef(generated)) {
-      (async () => {
-        // ✅ If project refImage is Pollinations, rehost it to Supabase immediately
+    const run = async () => {
+      // ✅ prevent duplicates
+      if (injectedProjectImageRef.current) return;
+  
+      // ✅ If project refImage is present, treat it as RESULT (AI chain base)
+      if (isUsableImageRef(generated)) {
         let stable = generated;
-    
+  
         try {
           if (isPollinationsUrl(generated)) {
-            const up = await uploadAIResultForHistory(generated, titleParam || chatTitle || "project");
+            const up = await uploadAIResultForHistory(
+              generated,
+              titleParam || chatTitle || "project"
+            );
             if (isUsableImageRef(up)) stable = up;
           }
         } catch {}
-    
+  
         setChainReference(stable, { fromProject: true, kind: "ai" });
         setLastGeneratedImageUrl(stable);
-    
+  
         if (isUsableImageRef(original)) setLastReferenceImageUrl(original);
-    
+  
+        // ✅ IMPORTANT: show images in chat immediately (works even if chatId=new)
+        injectedProjectImageRef.current = true;
+        injectProjectImagesIntoChat({
+          stableRef: stable,
+          originalRef: isUsableImageRef(original) ? original : null,
+          promptText,
+        });
+  
         setUploadedImage(null);
         setUploadedImageBase64(null);
-      })();
-    
-      return;
-    }
+        return;
+      }
   
-    // Fallback only if refImage is missing: keep old behavior but do NOT treat it as AI chain
-    if (isUsableImageRef(original)) {
-      setChainReference(original, { fromProject: true, kind: "ref" });
-      setLastReferenceImageUrl(original);
-      setUploadedImage(null);
-      setUploadedImageBase64(null);
-    }
+      // ✅ Fallback: only ORIGINAL available
+      if (isUsableImageRef(original)) {
+        setChainReference(original, { fromProject: true, kind: "ref" });
+        setLastReferenceImageUrl(original);
+  
+        injectedProjectImageRef.current = true;
+        injectProjectImagesIntoChat({
+          stableRef: null,
+          originalRef: original,
+          promptText,
+        });
+  
+        setUploadedImage(null);
+        setUploadedImageBase64(null);
+      }
+    };
+  
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, refImage, inputImage]);
-
-  const sendingRef = useRef(false);
-  const flatListRef = useRef(null);
+  }, [tab, refImage, inputImage, prompt, titleParam]);
 
   // ==============================
   // ✅ Firestore conversation state
@@ -796,8 +892,22 @@ if (isUsableImageRef(savedResult)) {
         if (loaded.length > 0) {
           setMessages(loaded);
           setIsTyping(false);
-          setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-        }
+
+          // ✅ Re-inject project images (once) after history load so they remain visible
+          const generated = typeof refImage === "string" ? refImage.trim() : "";
+          const original = typeof inputImage === "string" ? inputImage.trim() : "";
+          const promptText = typeof prompt === "string" ? prompt.trim() : "";
+
+          if (!injectedProjectImageRef.current && tab === "customize") {
+            injectedProjectImageRef.current = true;
+            injectProjectImagesIntoChat({
+              stableRef: isUsableImageRef(generated) ? generated : null,
+              originalRef: isUsableImageRef(original) ? original : null,
+              promptText,
+            });
+          }
+
+          scrollToBottomSafe(120);        }
       },
       (err) => console.warn("History load error:", err?.message || String(err))
     );
@@ -1135,7 +1245,7 @@ if (isUsableImageRef(savedResult)) {
             furnitureMatches: [],
           },
         ]);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
+        scrollToBottomSafe(120);
         return;
       }
 
@@ -1226,8 +1336,7 @@ if (isUsableImageRef(savedResult)) {
         setInput("");
         setIsTyping(false);
         setPromptSuggestions([]);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-        return;
+        scrollToBottomSafe(120);        return;
       }
 
       // ✅ Save user message to Firestore (store HTTPS ref when available)
@@ -1249,7 +1358,12 @@ if (isUsableImageRef(savedResult)) {
       if (!realtime) {
         setMessages((prev) => [
           ...prev,
-          { role: "user", text: clean, image: uploadedRefUrlForThisTurn || uploadedImage || null },
+          {
+            _id: `u_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            role: "user",
+            text: clean,
+            image: uploadedRefUrlForThisTurn || uploadedImage || null,
+          },
         ]);
       }
 
@@ -1331,8 +1445,7 @@ if (isUsableImageRef(savedResult)) {
           },
         ]);
 
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-        return;
+        scrollToBottomSafe(120);        return;
       }
 
       // ✅ increment daily count AFTER success
@@ -1515,8 +1628,7 @@ const firestoreInputImageUrl =
         ]);
       }
 
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-    } catch (err) {
+      scrollToBottomSafe(120);    } catch (err) {
       console.error("AI UI ERROR:", err);
       setIsTyping(false);
       setMessages((prev) => [
@@ -1569,8 +1681,7 @@ const firestoreInputImageUrl =
       setUploadedImage(optimized.uri);
       setUploadedImageBase64(optimized.base64);
 
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-    }
+      scrollToBottomSafe(120);    }
   };
 
   const takePhoto = async () => {
@@ -1602,8 +1713,7 @@ const firestoreInputImageUrl =
       setUploadedImage(optimized.uri);
       setUploadedImageBase64(optimized.base64);
 
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 120);
-    }
+      scrollToBottomSafe(120);    }
   };
 
   const clearAttachment = () => {
@@ -1645,13 +1755,19 @@ const firestoreInputImageUrl =
       item?.mode === MODE.DESIGN ||
       (!item?.mode && !!item?.image && !safeFirestoreImage(item?.inputImage));
 
-// ✅ Original should appear ONLY for CUSTOMIZE mode
-const showOriginal =
-  isAi &&
-  item?.mode === MODE.CUSTOMIZE &&
-  !!item?.inputImage &&
-  isUsableImageRef(item.inputImage);    
-  const showResult = isAi && !!item?.image && isUsableImageRef(item.image);
+      const originalUri = normalizeAnyImageToUri(item?.inputImage);
+      const resultUri = normalizeAnyImageToUri(item?.image);
+      
+      // ✅ Original only for CUSTOMIZE
+      const showOriginal =
+        isAi &&
+        item?.mode === MODE.CUSTOMIZE &&
+        !!originalUri;
+      
+      // ✅ Result for any AI message that has an image
+      const showResult =
+        isAi &&
+        !!resultUri;
 
     const shouldShowCompare =
       isAi &&
@@ -1681,8 +1797,8 @@ const showOriginal =
                 <View style={styles.imageBlock}>
                   <Text style={styles.imageLabel}>Original</Text>
                   <Image
-                    source={{ uri: item.inputImage }}
-                    style={styles.previewImage}
+source={{ uri: originalUri }}                   
+ style={styles.previewImage}
                     onError={(e) =>
                       console.log("❌ Original image load failed:", item.inputImage, e?.nativeEvent)
                     }
@@ -1694,8 +1810,8 @@ const showOriginal =
                 <View style={styles.imageBlock}>
                   <Text style={styles.imageLabel}>Result</Text>
                   <Image
-                    source={{ uri: item.image }}
-                    style={styles.previewImage}
+                  source={{ uri: resultUri }}                    
+                 style={styles.previewImage}
                     onError={(e) =>
                       console.log("❌ Result image load failed:", item.image, e?.nativeEvent)
                     }
@@ -1848,12 +1964,73 @@ const showOriginal =
 
   const chipsToShow = uploadedImage ? imageQuickPrompts : quickPrompts;
 
+  
+
   const sendEnabled = useMemo(() => {
     if (isLocked) return false;
     if (isTyping) return false;
     return validatePromptUI(input, { strict: true }).ok;
   }, [isLocked, isTyping, input]);
 
+  const displayMessages = useMemo(() => {
+    const pinned = Array.isArray(projectPinnedMessages) ? projectPinnedMessages : [];
+    const normal = Array.isArray(messages) ? messages : [];
+  
+    // build signatures for pinned so we can skip duplicates from normal
+    const pinnedSigs = new Set(
+      pinned.map((m) =>
+        JSON.stringify({
+          role: m?.role || "",
+          mode: m?.mode || "",
+          inputImage: String(m?.inputImage || ""),
+          image: String(m?.image || ""),
+          text: String(m?.text || ""),
+          explanation: String(m?.explanation || ""),
+          pinned: m?._pinned === true ? 1 : 0,
+        })
+      )
+    );
+  
+    const out = [];
+  
+    // push pinned first
+    for (const m of pinned) {
+      const sig =
+        m?._sig ||
+        JSON.stringify({
+          role: m?.role || "",
+          mode: m?.mode || "",
+          inputImage: String(m?.inputImage || ""),
+          image: String(m?.image || ""),
+          text: String(m?.text || ""),
+          explanation: String(m?.explanation || ""),
+          pinned: 1,
+        });
+  
+      out.push({ ...m, _sig: sig });
+    }
+  
+    // then push normal, skipping anything that matches pinned
+    for (const m of normal) {
+      const sig =
+        m?._sig ||
+        JSON.stringify({
+          role: m?.role || "",
+          mode: m?.mode || "",
+          inputImage: String(m?.inputImage || ""),
+          image: String(m?.image || ""),
+          text: String(m?.text || ""),
+          explanation: String(m?.explanation || ""),
+          pinned: m?._pinned === true ? 1 : 0,
+        });
+  
+      if (pinnedSigs.has(sig)) continue;
+  
+      out.push({ ...m, _sig: sig });
+    }
+  
+    return out;
+  }, [projectPinnedMessages, messages]);
   return (
     <SafeAreaView style={styles.safeArea}>
       <CenterMessageModal
@@ -1904,14 +2081,13 @@ const showOriginal =
         )}
 
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-          <FlatList
-            ref={flatListRef}
-            data={messages}
-            renderItem={renderMessage}
-            keyExtractor={(_, i) => i.toString()}
-            contentContainerStyle={styles.scrollArea}
-          />
-
+        <FlatList
+  ref={flatListRef}
+  data={displayMessages}
+  renderItem={renderMessage}
+  keyExtractor={(item, i) => String(item?._id || item?._sig || item?._key || i)}
+    contentContainerStyle={styles.scrollArea}
+/>
           {isTyping && (
             <View style={[styles.typingWrap, { bottom: (keyboardHeight || 0) + 190 }]}>
               <View style={styles.typingBubble}>
