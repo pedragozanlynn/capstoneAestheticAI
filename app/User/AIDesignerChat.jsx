@@ -335,6 +335,7 @@ export default function AIDesignerChat() {
   // ✅ LOCKED chain reference (Single Source of Truth for NEXT ITERATION)
   // ==============================
   const lockedChainRef = useRef(null);
+  const chainRefKind = useRef("ref");
   const [lockedChainRefUrl, setLockedChainRefUrl] = useState(null);
 
   // If chat started from Projects, user can’t change via upload, but chain can still update via results
@@ -346,14 +347,16 @@ export default function AIDesignerChat() {
     return s.startsWith("http://") || s.startsWith("https://") || s.startsWith("data:image/");
   };
 
-  const setChainReference = (url, { fromProject = false } = {}) => {
+  const setChainReference = (url, { fromProject = false, kind = "ai" } = {}) => {
     const safe = typeof url === "string" ? url.trim() : "";
     const v = safeFirestoreImage(safe) || (safe.startsWith("data:image/") ? safe : null);
     if (!v) return;
-
+  
     lockedChainRef.current = v;
     setLockedChainRefUrl(v);
-
+  
+    chainRefKind.current = kind;
+  
     if (fromProject) lockedFromProjectRef.current = true;
   };
 
@@ -361,8 +364,8 @@ export default function AIDesignerChat() {
     lockedChainRef.current = null;
     setLockedChainRefUrl(null);
     lockedFromProjectRef.current = false;
+    chainRefKind.current = "ref";
   };
-
   // ==============================
   // ✅ Project → Chat AUTO CUSTOMIZE PREFILL
   // ==============================
@@ -375,14 +378,7 @@ export default function AIDesignerChat() {
       const generated = typeof refImage === "string" ? refImage : "";
       const original = typeof inputImage === "string" ? inputImage : "";
 
-      // Prefer generated AI image as the starting chain ref
-      if (generated.startsWith("http")) {
-        setChainReference(generated, { fromProject: true });
-        setLastGeneratedImageUrl(generated);
-      } else if (original.startsWith("http")) {
-        setChainReference(original, { fromProject: true });
-        setLastReferenceImageUrl(original);
-      }
+    
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, refImage, inputImage]);
@@ -466,6 +462,19 @@ export default function AIDesignerChat() {
 
     return null;
   };
+
+  // ✅ DESIGN should NEVER use the last reference/original.
+// It should use only the last AI result (iterative design) or nothing.
+const pickDesignBase = () => {
+  const lastGen = typeof lastGeneratedImageUrl === "string" ? lastGeneratedImageUrl.trim() : "";
+  if (isUsableImageRef(lastGen)) return lastGen;
+
+  // If chain ref is AI, allow it. If it's REF, ignore it.
+  const locked = typeof lockedChainRef.current === "string" ? lockedChainRef.current.trim() : "";
+  if (chainRefKind.current === "ai" && isUsableImageRef(locked)) return locked;
+
+  return null;
+};
 
   // ✅ Upload helpers
   const uploadUserImageForHistory = async (uri, promptText) => {
@@ -712,30 +721,43 @@ export default function AIDesignerChat() {
             m.mode ||
             (hasRef ? MODE.CUSTOMIZE : hasResult ? MODE.DESIGN : null);
 
-          const aiItem = {
-            role: "ai",
-            mode: inferredMode,
-            explanation: m.explanation || "",
-            tips: Array.isArray(m.tips) ? m.tips : [],
-            palette: m.palette || null,
-            layoutSuggestions: layoutSuggestionsAll,
-            furnitureMatches: furnitureMatchesAll,
-            inputImage: m.inputImage || null,
-            image: m.image || null,
-            prompt: m.prompt || null,
-            savedToProjects: m.savedToProjects === true,
-          };
+            const aiItem = {
+              role: "ai",
+              mode: inferredMode,
+              explanation: m.explanation || "",
+              tips: Array.isArray(m.tips) ? m.tips : [],
+              palette: m.palette || null,
+              layoutSuggestions: layoutSuggestionsAll,
+              furnitureMatches: furnitureMatchesAll,
+            
+              // ✅ IMPORTANT: fallback so old records still show Original
+              inputImage:
+                m.inputImage ||
+                m.lastReferenceImage ||
+                m.lastReferenceImageUrl ||
+                null,
+            
+              image: m.image || null,
+              prompt: m.prompt || null,
+              savedToProjects: m.savedToProjects === true,
+            };
+           // ✅ Update chain refs from Firestore message fields
+const savedResult = safeFirestoreImage(m.image);
+const savedOriginal =
+  safeFirestoreImage(m.inputImage) ||
+  safeFirestoreImage(m.lastReferenceImage) ||
+  safeFirestoreImage(m.lastReferenceImageUrl) ||
+  null;
 
-          // update chain pointers
-          if (m.image && String(m.image).startsWith("http")) {
-            setLastGeneratedImageUrl(String(m.image));
-            setChainReference(String(m.image));
-          }
-
-          if (m.inputImage && String(m.inputImage).startsWith("http")) {
-            setLastReferenceImageUrl(String(m.inputImage));
-          }
-
+// Prefer AI result as the chain base
+if (isUsableImageRef(savedResult)) {
+  setLastGeneratedImageUrl(savedResult);
+  setChainReference(savedResult, { fromProject: true, kind: "ai" });
+} else if (isUsableImageRef(savedOriginal)) {
+  setLastReferenceImageUrl(savedOriginal);
+  setChainReference(savedOriginal, { fromProject: true, kind: "ref" });
+}
+        
           return aiItem;
         });
 
@@ -1149,11 +1171,10 @@ export default function AIDesignerChat() {
           ? uploadedImageBase64
           : null;
 
-      // ✅ Determine ORIGINAL for THIS request
-      const requestOriginal =
-        desiredMode === MODE.CUSTOMIZE
-          ? (uploadedRefUrlForThisTurn || pickChainBase({ base64Immediate }))
-          : (isUsableImageRef(lastGeneratedImageUrl) ? lastGeneratedImageUrl : null);
+          const requestOriginal =
+          desiredMode === MODE.CUSTOMIZE
+            ? (uploadedRefUrlForThisTurn || pickChainBase({ base64Immediate }))
+            : pickDesignBase(); // ✅ FIX: never uses last reference
 
       if (desiredMode === MODE.CUSTOMIZE && !isUsableImageRef(requestOriginal)) {
         if (!realtime) {
@@ -1331,10 +1352,12 @@ export default function AIDesignerChat() {
         normalizeBackendImageToUri?.(detectedImage) ||
         normalizeAnyImageToUri(detectedImage) ||
         null;
-
-      // Firestore input image
-      const firestoreInputImageUrl =
-        isUsableImageRef(requestOriginal) ? requestOriginal : null;
+// ✅ Only CUSTOMIZE should store/show Original.
+// DESIGN should not show Original even if it used a base image internally.
+const firestoreInputImageUrl =
+  desiredMode === MODE.CUSTOMIZE && isUsableImageRef(requestOriginal)
+    ? requestOriginal
+    : null;
 
       // push AI message to UI:
       setMessages((prev) => [
@@ -1381,8 +1404,7 @@ export default function AIDesignerChat() {
         setLastGeneratedImageUrl(finalResultUrl);
 
         // ✅ After any successful generation, chain base becomes AI RESULT.
-        setChainReference(finalResultUrl, { fromProject: lockedFromProjectRef.current });
-
+        setChainReference(finalResultUrl, { fromProject: lockedFromProjectRef.current, kind: "ai" });
         // update last AI message image if it was base64
         if (!isHistoryRealtimeActive() && publicUrl) {
           setMessages((prev) => {
@@ -1418,20 +1440,23 @@ export default function AIDesignerChat() {
           safeFirestoreImage(firestoreInputImageUrl) ||
           null;
 
-        await saveAIResponse(cid, {
-          mode: desiredMode,
-          explanation,
-          tips,
-          palette,
-          layoutSuggestions: proNow ? backendLayoutSuggestions : [],
-          furnitureMatches: proNow ? furnitureMatchesAll : [],
-          image: imageToSave,
-          sessionId: result?.sessionId || sessionId || null,
-          lastReferenceImage: desiredMode === MODE.CUSTOMIZE ? refToStore : null,
-          inputImage: safeFirestoreImage(firestoreInputImageUrl) || null,
-          prompt: clean,
-          savedToProjects: false,
-        });
+          await saveAIResponse(cid, {
+            mode: desiredMode,
+            explanation,
+            tips,
+            palette,
+            layoutSuggestions: proNow ? backendLayoutSuggestions : [],
+            furnitureMatches: proNow ? furnitureMatchesAll : [],
+            image: imageToSave,
+            sessionId: result?.sessionId || sessionId || null,
+          
+            // ✅ IMPORTANT: store BOTH for compatibility
+            inputImage: desiredMode === MODE.CUSTOMIZE ? refToStore : null,
+            lastReferenceImage: desiredMode === MODE.CUSTOMIZE ? refToStore : null,
+          
+            prompt: clean,
+            savedToProjects: false,
+          });
       } catch (e) {
         console.warn("saveAIResponse failed:", e?.message || e);
       }
@@ -1588,8 +1613,13 @@ export default function AIDesignerChat() {
       item?.mode === MODE.DESIGN ||
       (!item?.mode && !!item?.image && !safeFirestoreImage(item?.inputImage));
 
-    const showOriginal = isAi && !!item?.inputImage && isUsableImageRef(item.inputImage);
-    const showResult = isAi && !!item?.image && isUsableImageRef(item.image);
+// ✅ Original should appear ONLY for CUSTOMIZE mode
+const showOriginal =
+  isAi &&
+  item?.mode === MODE.CUSTOMIZE &&
+  !!item?.inputImage &&
+  isUsableImageRef(item.inputImage);    
+  const showResult = isAi && !!item?.image && isUsableImageRef(item.image);
 
     const shouldShowCompare =
       isAi &&
@@ -2142,9 +2172,28 @@ const styles = StyleSheet.create({
   sectionMeta: { fontSize: 11, fontWeight: "500", color: "#64748B" },
   paragraph: { fontSize: 13, color: "#0F172A", lineHeight: 20, fontWeight: "400" },
 
-  tipRow: { flexDirection: "row", gap: 8, marginTop: 6, paddingRight: 6 },
-  tipBullet: { fontSize: 14, fontWeight: "500", color: "#0EA5E9", marginTop: -1 },
-  bulletText: { flex: 1, fontSize: 13, color: "#0F172A", lineHeight: 19, fontWeight: "500" },
+  tipRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    marginTop: 8,
+    paddingRight: 8,
+  },
+  tipBullet: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#0EA5E9",
+    lineHeight: 20,
+    marginTop: 1,
+  },
+  bulletText: {
+    flex: 1,
+    fontSize: 12,
+    color: "#0F172A",
+    lineHeight: 20,
+    fontWeight: "4500",
+    opacity: 0.92,
+  },
 
   paletteRow: {
     flexDirection: "row",
