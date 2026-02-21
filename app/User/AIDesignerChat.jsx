@@ -1,10 +1,4 @@
-// app/User/AIDesignChat.jsx
-// ✅ FIXED: Customize shows Original(uploaded) then Result
-// ✅ CHAIN: Next Customize Original = last AI result
-// ✅ CHAIN: Next Design Original = last AI result (iterative design)
-// ✅ FIX: Background upload no longer overwrites chain reference with old uploaded original
-// ✅ UI: Design can show Original+Result when iterative
-// ✅ TIMEOUT FIX: Downscale/compress base64 + HTTPS fallback for customize (prevents TIMEOUT)
+
 
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
@@ -374,11 +368,41 @@ export default function AIDesignerChat() {
   }, [prompt]);
 
   useEffect(() => {
-    if (tab === "customize") {
-      const generated = typeof refImage === "string" ? refImage : "";
-      const original = typeof inputImage === "string" ? inputImage : "";
-
+    if (tab !== "customize") return;
+  
+    const generated = typeof refImage === "string" ? refImage.trim() : "";
+    const original = typeof inputImage === "string" ? inputImage.trim() : "";
+  
+    if (isUsableImageRef(generated)) {
+      (async () => {
+        // ✅ If project refImage is Pollinations, rehost it to Supabase immediately
+        let stable = generated;
     
+        try {
+          if (isPollinationsUrl(generated)) {
+            const up = await uploadAIResultForHistory(generated, titleParam || chatTitle || "project");
+            if (isUsableImageRef(up)) stable = up;
+          }
+        } catch {}
+    
+        setChainReference(stable, { fromProject: true, kind: "ai" });
+        setLastGeneratedImageUrl(stable);
+    
+        if (isUsableImageRef(original)) setLastReferenceImageUrl(original);
+    
+        setUploadedImage(null);
+        setUploadedImageBase64(null);
+      })();
+    
+      return;
+    }
+  
+    // Fallback only if refImage is missing: keep old behavior but do NOT treat it as AI chain
+    if (isUsableImageRef(original)) {
+      setChainReference(original, { fromProject: true, kind: "ref" });
+      setLastReferenceImageUrl(original);
+      setUploadedImage(null);
+      setUploadedImageBase64(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, refImage, inputImage]);
@@ -476,6 +500,11 @@ const pickDesignBase = () => {
   return null;
 };
 
+const isPollinationsUrl = (u) => {
+  const s = typeof u === "string" ? u.trim() : "";
+  return !!s && s.includes("image.pollinations.ai");
+};
+
   // ✅ Upload helpers
   const uploadUserImageForHistory = async (uri, promptText) => {
     const safeUri = typeof uri === "string" ? uri.trim() : "";
@@ -515,7 +544,10 @@ const pickDesignBase = () => {
     }
 
     if (!uri) return null;
-    if (uri.startsWith("http://") || uri.startsWith("https://")) return uri;
+
+    // ✅ If it's already http(s) BUT from Pollinations, still rehost to Supabase (530-proof)
+    const isHttp = uri.startsWith("http://") || uri.startsWith("https://");
+    if (isHttp && !isPollinationsUrl(uri)) return uri;
 
     const cid = conversationIdRef.current || (await ensureConversationOnce(promptText));
 

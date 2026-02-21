@@ -80,8 +80,7 @@ export default function Project() {
   }, []);
 
   /* ===========================
-     ✅ DELETE SUCCESS MODAL (ONLY CHANGE YOU ASKED)
-     - replaces: showToast("Project removed successfully.", "success")
+     ✅ DELETE SUCCESS MODAL
      =========================== */
   const [deleteSuccessModal, setDeleteSuccessModal] = useState({
     visible: false,
@@ -89,7 +88,10 @@ export default function Project() {
   });
 
   const openDeleteSuccessModal = (message = "Project removed successfully.") => {
-    setDeleteSuccessModal({ visible: true, message: String(message || "Project removed successfully.") });
+    setDeleteSuccessModal({
+      visible: true,
+      message: String(message || "Project removed successfully."),
+    });
   };
 
   const closeDeleteSuccessModal = () => {
@@ -221,6 +223,32 @@ export default function Project() {
     });
   };
 
+  // ✅ NEW: Open AIDesignChat in CUSTOMIZE using saved AI image (project.image)
+  const openCustomizeFromProject = (project) => {
+    try {
+      const img = typeof project?.image === "string" ? project.image.trim() : "";
+      if (!img) {
+        showToast("This project has no AI image to customize.", "info");
+        return;
+      }
+
+      router.push({
+        pathname: "/User/AIDesignChat",
+        params: {
+          tab: "customize",
+          source: "root",
+          chatId: "new", // ✅ new session (recommended)
+          title: project?.title || project?.prompt || "Project",
+          refImage: img, // ✅ IMPORTANT: saved AI pic is the reference to scan/customize
+          inputImage: "", // ✅ keep blank so it won't override chain with old original
+        },
+      });
+    } catch (e) {
+      console.log("openCustomizeFromProject error:", e?.message || e);
+      showToast("Unable to open customize. Please try again.", "error");
+    }
+  };
+
   // ✅ Delete action (same logic, only success UI changed to modal)
   const handleDeleteProject = async (projectId) => {
     if (!projectId) return showToast("Invalid project.", "error");
@@ -230,7 +258,6 @@ export default function Project() {
       if (String(projectId).startsWith("aestheticai:project-image:")) {
         await AsyncStorage.removeItem(projectId);
 
-        // ✅ ONLY CHANGED: success toast -> CenterMessageModal
         openDeleteSuccessModal("Project removed successfully.");
 
         loadProjects();
@@ -239,7 +266,6 @@ export default function Project() {
 
       await deleteDoc(doc(db, "projects", projectId));
 
-      // ✅ ONLY CHANGED: success toast -> CenterMessageModal
       openDeleteSuccessModal("Project removed successfully.");
 
       loadProjects();
@@ -354,6 +380,18 @@ export default function Project() {
                         </Text>
                       </View>
                     </View>
+
+                    {/* ✅ NEW: Customize button (uses saved AI image as reference) */}
+                    {typeof project.image === "string" && !!project.image && (
+                      <TouchableOpacity
+                        style={styles.customizeBtn}
+                        activeOpacity={0.9}
+                        onPress={() => openCustomizeFromProject(project)}
+                      >
+                        <Ionicons name="color-wand-outline" size={16} color="#FFFFFF" />
+                        <Text style={styles.customizeBtnText}>Customize</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </TouchableOpacity>
               );
@@ -551,6 +589,24 @@ const styles = StyleSheet.create({
   },
   projectDate: { fontSize: 11, color: "#64748B", fontWeight: "800" },
   projectMode: { fontSize: 10.5, color: "#64748B", fontWeight: "900", letterSpacing: 0.8 },
+
+  /* ✅ NEW: Customize button styles */
+  customizeBtn: {
+    marginTop: 10,
+    backgroundColor: "#0EA5E9",
+    paddingVertical: 10,
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  customizeBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "900",
+    fontSize: 12,
+    letterSpacing: 0.3,
+  },
 
   /* ===== EMPTY ===== */
   emptyWrap: { alignItems: "center", marginTop: 40 },

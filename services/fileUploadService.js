@@ -15,6 +15,9 @@ const isHttpUri = (uri = "") => {
   return s.startsWith("http://") || s.startsWith("https://");
 };
 
+// ✅ Detect Pollinations (common 530 source)
+const isPollinationsUri = (uri = "") => safeStr(uri).includes("image.pollinations.ai");
+
 // Android camera/gallery may return content://
 const isLocalUri = (uri = "") => {
   const u = safeStr(uri);
@@ -96,6 +99,39 @@ const buildPublicUrl = (bucket, path) => {
 };
 
 // ------------------------------
+// ✅ NEW: Download remote file to cache (fixes 530)
+// ------------------------------
+const downloadRemoteToCache = async (remoteUrl) => {
+  const url = safeStr(remoteUrl);
+  if (!url) throw new Error("downloadRemoteToCache: missing url");
+
+  const tmp = `${FileSystem.cacheDirectory}remote_${Date.now()}_${randomSuffix()}.img`;
+
+  // ✅ Pollinations often blocks "non-browser" requests; set a browser-like UA.
+  const headers = {
+    Accept: "image/*,*/*;q=0.8",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    Referer: "https://image.pollinations.ai/",
+  };
+
+  const res = await FileSystem.downloadAsync(url, tmp, {
+    headers: isPollinationsUri(url) ? headers : { Accept: "image/*,*/*;q=0.8" },
+  });
+
+  // expo-file-system returns { uri, status, headers, md5 }
+  const status = res?.status ?? 0;
+  if (status < 200 || status >= 300) {
+    try {
+      await FileSystem.deleteAsync(tmp, { idempotent: true });
+    } catch {}
+    throw new Error(`Failed to fetch remote file: ${status}`);
+  }
+
+  return tmp; // local file:// path
+};
+
+// ------------------------------
 // ✅ Read local/remote into bytes (used by "bytes upload")
 // ------------------------------
 const uriToBytes = async (uri) => {
@@ -105,12 +141,19 @@ const uriToBytes = async (uri) => {
   // data:image/...;base64,...
   if (isDataImageUri(u)) return dataUriToBytes(u);
 
-  // http/https
+  // ✅ http/https (FIXED: use downloadAsync -> read base64)
   if (isHttpUri(u)) {
-    const r = await fetch(u);
-    if (!r.ok) throw new Error(`Failed to fetch remote file: ${r.status}`);
-    const ab = await r.arrayBuffer();
-    return new Uint8Array(ab);
+    const base64Encoding = FileSystem?.EncodingType?.Base64 || "base64";
+    const tmpPath = await downloadRemoteToCache(u);
+
+    try {
+      const b64 = await FileSystem.readAsStringAsync(tmpPath, { encoding: base64Encoding });
+      return decodeBase64ToBytes(b64);
+    } finally {
+      try {
+        await FileSystem.deleteAsync(tmpPath, { idempotent: true });
+      } catch {}
+    }
   }
 
   // local file:// or content://
@@ -206,7 +249,6 @@ const uploadLocalFileToStorage = async ({ bucket, path, localUri, contentType })
 
   return true;
 };
-
 
 // ------------------------------
 // ✅ REST upload wrapper used by generic uploadToSupabase (bytes path)
@@ -346,7 +388,7 @@ export const uploadAIImageToSupabase = async ({
 
     // ✅ Upload strategy:
     // - Local file/content => uploadAsync
-    // - data:image or http/https => bytes upload
+    // - data:image or http/https => bytes upload (NOW FIXED for 530)
     if (isLocalUri(effectiveUri)) {
       await uploadLocalFileToStorage({
         bucket,
@@ -426,7 +468,6 @@ export const uploadValidIdFront = async (file) => {
     return null;
   }
 };
-
 
 // ------------------------------
 // ✅ Valid ID (Back) upload
